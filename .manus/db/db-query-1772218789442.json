@@ -1,0 +1,9 @@
+{
+  "query": "DELETE FROM game_rooms;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute DELETE FROM game_rooms;",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 64
+}

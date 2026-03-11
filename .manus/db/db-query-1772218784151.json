@@ -1,0 +1,91 @@
+{
+  "query": "SELECT id, roomCode, hostUserId, status, maxPlayers, currentPlayers, createdAt FROM game_rooms ORDER BY id DESC;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT id, roomCode, hostUserId, status, maxPlayers, currentPlayers, createdAt FROM game_rooms ORDER BY id DESC;",
+  "rows": [
+    {
+      "id": "240003",
+      "roomCode": "KJRFAVZC",
+      "hostUserId": "300001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "1",
+      "createdAt": "2026-02-27 14:20:11"
+    },
+    {
+      "id": "240001",
+      "roomCode": "QZBIN0GW",
+      "hostUserId": "120001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "4",
+      "createdAt": "2026-02-27 13:55:56"
+    },
+    {
+      "id": "180005",
+      "roomCode": "PAF6CZ77",
+      "hostUserId": "270001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "1",
+      "createdAt": "2026-02-27 11:25:54"
+    },
+    {
+      "id": "180004",
+      "roomCode": "TXLSV39U",
+      "hostUserId": "270001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "4",
+      "createdAt": "2026-02-27 11:09:57"
+    },
+    {
+      "id": "180003",
+      "roomCode": "A2FS258F",
+      "hostUserId": "270001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "1",
+      "createdAt": "2026-02-27 11:06:11"
+    },
+    {
+      "id": "180002",
+      "roomCode": "02DQOMVN",
+      "hostUserId": "270001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "4",
+      "createdAt": "2026-02-27 11:03:44"
+    },
+    {
+      "id": "180001",
+      "roomCode": "5K393DH4",
+      "hostUserId": "120001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "4",
+      "createdAt": "2026-02-27 10:55:32"
+    },
+    {
+      "id": "150003",
+      "roomCode": "R82UGLPU",
+      "hostUserId": "120001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "4",
+      "createdAt": "2026-02-27 10:23:11"
+    },
+    {
+      "id": "120004",
+      "roomCode": "STCB862X",
+      "hostUserId": "270001",
+      "status": "waiting",
+      "maxPlayers": "4",
+      "currentPlayers": "1",
+      "createdAt": "2026-02-27 09:52:35"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\troomCode\thostUserId\tstatus\tmaxPlayers\tcurrentPlayers\tcreatedAt\n240003\tKJRFAVZC\t300001\twaiting\t4\t1\t2026-02-27 14:20:11\n240001\tQZBIN0GW\t120001\twaiting\t4\t4\t2026-02-27 13:55:56\n180005\tPAF6CZ77\t270001\twaiting\t4\t1\t2026-02-27 11:25:54\n180004\tTXLSV39U\t270001\twaiting\t4\t4\t2026-02-27 11:09:57\n180003\tA2FS258F\t270001\twaiting\t4\t1\t2026-02-27 11:06:11\n180002\t02DQOMVN\t270001\twaiting\t4\t4\t2026-02-27 11:03:44\n180001\t5K393DH4\t120001\twaiting\t4\t4\t2026-02-27 10:55:32\n150003\tR82UGLPU\t120001\twaiting\t4\t4\t2026-02-27 10:23:11\n120004\tSTCB862X\t270001\twaiting\t4\t1\t2026-02-27 09:52:35\n",
+  "stderr": "",
+  "execution_time_ms": 61
+}

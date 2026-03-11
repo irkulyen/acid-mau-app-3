@@ -1,0 +1,17 @@
+{
+  "query": "SELECT id, email, name, \"loginMethod\", LENGTH(\"passwordHash\") as hash_length FROM users WHERE email = 'acid@acid.de';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT id, email, name, \"loginMethod\", LENGTH(\"passwordHash\") as hash_length FROM users WHERE email = 'acid@acid.de';",
+  "rows": [
+    {
+      "id": "270001",
+      "email": "acid@acid.de",
+      "name": "Amselgott",
+      "loginMethod": "loginMethod",
+      "hash_length": "12"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\temail\tname\tloginMethod\thash_length\n270001\tacid@acid.de\tAmselgott\tloginMethod\t12\n",
+  "stderr": "",
+  "execution_time_ms": 51
+}

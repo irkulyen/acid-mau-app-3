@@ -1,0 +1,49 @@
+{
+  "query": "SELECT column_name FROM information_schema.columns WHERE table_name = 'player_profiles' ORDER BY ordinal_position;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT column_name FROM information_schema.columns WHERE table_name = 'player_profiles' ORDER BY ordinal_position;",
+  "rows": [
+    {
+      "column_name": "id"
+    },
+    {
+      "column_name": "userId"
+    },
+    {
+      "column_name": "username"
+    },
+    {
+      "column_name": "avatarUrl"
+    },
+    {
+      "column_name": "isPremium"
+    },
+    {
+      "column_name": "premiumExpiresAt"
+    },
+    {
+      "column_name": "totalGamesPlayed"
+    },
+    {
+      "column_name": "totalGamesWon"
+    },
+    {
+      "column_name": "currentWinStreak"
+    },
+    {
+      "column_name": "longestWinStreak"
+    },
+    {
+      "column_name": "totalLossPoints"
+    },
+    {
+      "column_name": "createdAt"
+    },
+    {
+      "column_name": "updatedAt"
+    }
+  ],
+  "messages": [],
+  "stdout": "column_name\nid\nuserId\nusername\navatarUrl\nisPremium\npremiumExpiresAt\ntotalGamesPlayed\ntotalGamesWon\ncurrentWinStreak\nlongestWinStreak\ntotalLossPoints\ncreatedAt\nupdatedAt\n",
+  "stderr": "",
+  "execution_time_ms": 57
+}

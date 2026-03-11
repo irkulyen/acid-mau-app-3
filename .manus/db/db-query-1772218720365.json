@@ -1,0 +1,34 @@
+{
+  "query": "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE();",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE();",
+  "rows": [
+    {
+      "table_name": "__drizzle_migrations"
+    },
+    {
+      "table_name": "users"
+    },
+    {
+      "table_name": "friendships"
+    },
+    {
+      "table_name": "game_history"
+    },
+    {
+      "table_name": "game_participants"
+    },
+    {
+      "table_name": "game_rooms"
+    },
+    {
+      "table_name": "player_profiles"
+    },
+    {
+      "table_name": "purchased_cosmetics"
+    }
+  ],
+  "messages": [],
+  "stdout": "table_name\n__drizzle_migrations\nusers\nfriendships\ngame_history\ngame_participants\ngame_rooms\nplayer_profiles\npurchased_cosmetics\n",
+  "stderr": "",
+  "execution_time_ms": 77
+}

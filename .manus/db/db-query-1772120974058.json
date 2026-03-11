@@ -1,0 +1,40 @@
+{
+  "query": "SELECT u.id, u.email, u.name, pp.username FROM users u LEFT JOIN player_profiles pp ON pp.userId = u.id;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT u.id, u.email, u.name, pp.username FROM users u LEFT JOIN player_profiles pp ON pp.userId = u.id;",
+  "rows": [
+    {
+      "id": "120001",
+      "email": "maik_scheibe@web.de",
+      "name": "Acid_King",
+      "username": "Acid_King"
+    },
+    {
+      "id": "150001",
+      "email": "irkulyen07@gmail.com",
+      "name": "Acid_King",
+      "username": "NULL"
+    },
+    {
+      "id": "180001",
+      "email": "test2@test.de",
+      "name": "TestUser2",
+      "username": "NULL"
+    },
+    {
+      "id": "210001",
+      "email": "testuser999@test.com",
+      "name": "TestUser999",
+      "username": "TestUser999"
+    },
+    {
+      "id": "240001",
+      "email": "flowtest12445@test.com",
+      "name": "FlowTest16161",
+      "username": "FlowTestUser27423"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\temail\tname\tusername\n120001\tmaik_scheibe@web.de\tAcid_King\tAcid_King\n150001\tirkulyen07@gmail.com\tAcid_King\tNULL\n180001\ttest2@test.de\tTestUser2\tNULL\n210001\ttestuser999@test.com\tTestUser999\tTestUser999\n240001\tflowtest12445@test.com\tFlowTest16161\tFlowTestUser27423\n",
+  "stderr": "",
+  "execution_time_ms": 56
+}

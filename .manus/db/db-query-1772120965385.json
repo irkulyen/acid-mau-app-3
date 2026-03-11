@@ -1,0 +1,25 @@
+{
+  "query": "SELECT * FROM player_profiles WHERE userId = 120001;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT * FROM player_profiles WHERE userId = 120001;",
+  "rows": [
+    {
+      "id": "30001",
+      "userId": "120001",
+      "username": "Acid_King",
+      "avatarUrl": "NULL",
+      "isPremium": "0",
+      "premiumExpiresAt": "NULL",
+      "totalGamesPlayed": "0",
+      "totalGamesWon": "0",
+      "currentWinStreak": "0",
+      "longestWinStreak": "0",
+      "totalLossPoints": "0",
+      "createdAt": "2026-02-16 10:52:28",
+      "updatedAt": "2026-02-16 10:52:28"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\tuserId\tusername\tavatarUrl\tisPremium\tpremiumExpiresAt\ttotalGamesPlayed\ttotalGamesWon\tcurrentWinStreak\tlongestWinStreak\ttotalLossPoints\tcreatedAt\tupdatedAt\n30001\t120001\tAcid_King\tNULL\t0\tNULL\t0\t0\t0\t0\t0\t2026-02-16 10:52:28\t2026-02-16 10:52:28\n",
+  "stderr": "",
+  "execution_time_ms": 53
+}

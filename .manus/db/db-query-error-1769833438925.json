@@ -1,0 +1,8 @@
+{
+  "query": "INSERT INTO users (username, email, passwordHash) VALUES (\"testuser\", \"test@test.com\", \"$2b$10$9MAw1F2aQZkDWwzJT4UuneUcJkEUP1xVA.FfT1Rzcl68eLNyFyUHa\");",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute INSERT INTO users (username, email, passwordHash) VALUES (\"testuser\", \"test@test.com\", \"$2b$10$9MAw1F2aQZkDWwzJT4UuneUcJkEUP1xVA.FfT1Rzcl68eLNyFyUHa\");",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1054 (42S22) at line 1: Unknown column 'username' in 'field list'"
+  ]
+}

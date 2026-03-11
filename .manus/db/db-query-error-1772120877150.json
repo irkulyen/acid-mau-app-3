@@ -1,0 +1,8 @@
+{
+  "query": "SELECT pp.*, u.email, u.name FROM player_profiles pp JOIN users u ON pp.user_id = u.id WHERE u.name = 'Acid_King' OR u.email = 'maik_scheibe@web.de';",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT pp.*, u.email, u.name FROM player_profiles pp JOIN users u ON pp.user_id = u.id WHERE u.name = 'Acid_King' OR u.email = 'maik_scheibe@web.de';",
+  "returncode": 1,
+  "logs": [
+    "ERROR 1054 (42S22) at line 1: Unknown column 'pp.user_id' in 'on clause'"
+  ]
+}

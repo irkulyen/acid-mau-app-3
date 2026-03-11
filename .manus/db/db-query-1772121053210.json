@@ -1,0 +1,45 @@
+{
+  "query": "SELECT id, email, name, loginMethod, LEFT(passwordHash, 20) as pwHash FROM users;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT id, email, name, loginMethod, LEFT(passwordHash, 20) as pwHash FROM users;",
+  "rows": [
+    {
+      "id": "120001",
+      "email": "maik_scheibe@web.de",
+      "name": "Acid_King",
+      "loginMethod": "email",
+      "pwHash": "$2b$10$AbMPJGCuyf.Nb"
+    },
+    {
+      "id": "150001",
+      "email": "irkulyen07@gmail.com",
+      "name": "Acid_King",
+      "loginMethod": "email",
+      "pwHash": "$2b$10$VjHs79sQat6Fn"
+    },
+    {
+      "id": "180001",
+      "email": "test2@test.de",
+      "name": "TestUser2",
+      "loginMethod": "email",
+      "pwHash": "$2b$10$JncM4THCjeCZ3"
+    },
+    {
+      "id": "210001",
+      "email": "testuser999@test.com",
+      "name": "TestUser999",
+      "loginMethod": "email",
+      "pwHash": "$2b$10$0D6Q3fj9hCHgN"
+    },
+    {
+      "id": "240001",
+      "email": "flowtest12445@test.com",
+      "name": "FlowTest16161",
+      "loginMethod": "email",
+      "pwHash": "$2b$10$bNAbKGnjJ0mio"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\temail\tname\tloginMethod\tpwHash\n120001\tmaik_scheibe@web.de\tAcid_King\temail\t$2b$10$AbMPJGCuyf.Nb\n150001\tirkulyen07@gmail.com\tAcid_King\temail\t$2b$10$VjHs79sQat6Fn\n180001\ttest2@test.de\tTestUser2\temail\t$2b$10$JncM4THCjeCZ3\n210001\ttestuser999@test.com\tTestUser999\temail\t$2b$10$0D6Q3fj9hCHgN\n240001\tflowtest12445@test.com\tFlowTest16161\temail\t$2b$10$bNAbKGnjJ0mio\n",
+  "stderr": "",
+  "execution_time_ms": 57
+}

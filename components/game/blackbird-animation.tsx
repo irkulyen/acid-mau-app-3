@@ -1,0 +1,873 @@
+import { useEffect, useState, useCallback } from "react";
+import { View, Text, StyleSheet, Dimensions } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSequence,
+  withRepeat,
+  withDelay,
+  withSpring,
+  Easing,
+  runOnJS,
+  interpolateColor,
+} from "react-native-reanimated";
+
+const { width: SW, height: SH } = Dimensions.get("window");
+
+const TRAIL_EMOJIS = ["⭐", "💫", "✨", "🌟", "💥", "🎵", "🎶", "❗", "❓", "🔥", "💀", "🃏"];
+
+const ROUND_START_PHRASES = [
+  "Neue Runde!", "Aufgewacht!", "Weiter geht's!", "Los los los!",
+  "Keine Pause!", "Nächste Runde!", "Frisch ans Werk!", "Karten neu!",
+  "Wer wird's?", "Immer weiter!", "Kein Erbarmen!", "Augen auf!",
+];
+
+const WINNER_PHRASES = [
+  (n: string) => `${n} ist fertig! 🎉`,
+  (n: string) => `${n} legt die letzte Karte! 🏆`,
+  (n: string) => `${n} raus! 🚀`,
+  (n: string) => `Gut gemacht, ${n}! 👏`,
+  (n: string) => `${n} ist durch! ⚡`,
+  (n: string) => `${n} – keine Karten mehr! 😎`,
+];
+
+const LOSER_PHRASES = [
+  (n: string) => `${n} hat verloren! 😂`,
+  (n: string) => `${n} kassiert Punkte! 💸`,
+  (n: string) => `Autsch, ${n}! 😬`,
+  (n: string) => `${n} – das war nix! 🤦`,
+  (n: string) => `${n} zieht den Kürzeren! 😭`,
+  (n: string) => `Pech gehabt, ${n}! 😈`,
+  (n: string) => `${n} scheidet aus? Fast! 😅`,
+];
+
+const DRAW_CHAIN_PHRASES = [
+  (count: number) => `${count} Karten ziehen! 💀`,
+  (count: number) => `${count}er Kette! Das wird teuer! 💸`,
+  (count: number) => `Aua, ${count} Karten! 😱`,
+  (count: number) => `${count}x Ziehen! Hahaha! 😈`,
+  (count: number) => `${count} Karten?! RIP! ☠️`,
+];
+
+const ASS_PHRASES = [
+  "Aussetzen! Ha! 🛑",
+  "Tja, Pech! Nächster! 😏",
+  "Übersprungen! 💨",
+  "Ass! Sitz! 🪑",
+  "Nix da, aussetzen! 🚫",
+];
+
+const UNTER_PHRASES = [
+  (suit: string) => `${suit} ist Trumpf! 🎯`,
+  (suit: string) => `Wunsch: ${suit}! 🃏`,
+  (suit: string) => `${suit} gewünscht! 👆`,
+  (suit: string) => `Ab jetzt ${suit}! 🔄`,
+];
+
+type EventType = "round_start" | "winner" | "loser" | "draw_chain" | "ass" | "unter";
+
+interface TrailParticle {
+  id: number;
+  emoji: string;
+  x: number;
+  y: number;
+}
+
+interface ConfettiPiece {
+  id: number;
+  x: number;
+  y: number;
+  color: string;
+  size: number;
+  angle: number;
+}
+
+interface BlackbirdAnimationProps {
+  visible: boolean;
+  loserName?: string;
+  winnerName?: string;
+  eventType?: EventType;
+  drawChainCount?: number;
+  wishSuit?: string;
+  onDone?: () => void;
+  onStart?: () => void;
+}
+
+function pickRandom<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+const CONFETTI_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#FF8C00", "#00FF88", "#FF69B4", "#7B68EE"];
+
+export function BlackbirdAnimation({
+  visible, loserName, winnerName, eventType, drawChainCount, wishSuit, onDone, onStart,
+}: BlackbirdAnimationProps) {
+  const translateX = useSharedValue(-120);
+  const translateY = useSharedValue(SH * 0.3);
+  const rotate = useSharedValue(0);
+  const scaleX = useSharedValue(1);
+  const scaleY = useSharedValue(1);
+  const wingPhase = useSharedValue(0);
+  const opacity = useSharedValue(0);
+  const speechOpacity = useSharedValue(0);
+  const speechScale = useSharedValue(0.3);
+  const glowPulse = useSharedValue(0);
+  const flashOpacity = useSharedValue(0);
+  const shakeX = useSharedValue(0);
+  const featherShimmer = useSharedValue(0);
+  const tailWag = useSharedValue(0);
+  const bodyGlow = useSharedValue(0);
+  const eyeGlow = useSharedValue(0);
+  const [trail, setTrail] = useState<TrailParticle[]>([]);
+  const [confetti, setConfetti] = useState<ConfettiPiece[]>([]);
+  const [phrase, setPhrase] = useState("");
+  const [speechPos, setSpeechPos] = useState({ x: 0, y: 0 });
+  const [currentEvent, setCurrentEvent] = useState<EventType>("round_start");
+
+  const addTrailParticle = useCallback((x: number, y: number) => {
+    const emoji = pickRandom(TRAIL_EMOJIS);
+    setTrail((prev) => [...prev.slice(-18), { id: Date.now() + Math.random(), emoji, x, y }]);
+  }, []);
+
+  const spawnConfetti = useCallback((centerX: number, centerY: number) => {
+    const pieces: ConfettiPiece[] = [];
+    for (let i = 0; i < 24; i++) {
+      pieces.push({
+        id: Date.now() + i + Math.random(),
+        x: centerX + (Math.random() - 0.5) * SW * 0.6,
+        y: centerY + (Math.random() - 0.5) * SH * 0.3,
+        color: pickRandom(CONFETTI_COLORS),
+        size: 6 + Math.random() * 10,
+        angle: Math.random() * 360,
+      });
+    }
+    setConfetti(pieces);
+    setTimeout(() => setConfetti([]), 2500);
+  }, []);
+
+  useEffect(() => {
+    if (!visible) {
+      setTrail([]);
+      setConfetti([]);
+      return;
+    }
+
+    // Determine event type and phrase
+    let evType: EventType = eventType || "round_start";
+    let selectedPhrase: string;
+
+    if (winnerName) {
+      evType = "winner";
+      selectedPhrase = pickRandom(WINNER_PHRASES)(winnerName);
+    } else if (loserName) {
+      evType = "loser";
+      selectedPhrase = pickRandom(LOSER_PHRASES)(loserName);
+    } else if (eventType === "draw_chain" && drawChainCount) {
+      selectedPhrase = pickRandom(DRAW_CHAIN_PHRASES)(drawChainCount);
+    } else if (eventType === "ass") {
+      selectedPhrase = pickRandom(ASS_PHRASES);
+    } else if (eventType === "unter" && wishSuit) {
+      const suitLabels: Record<string, string> = { eichel: "🌰 Eichel", gruen: "🍀 Grün", rot: "❤️ Rot", schellen: "🔔 Schellen" };
+      selectedPhrase = pickRandom(UNTER_PHRASES)(suitLabels[wishSuit] || wishSuit);
+    } else {
+      selectedPhrase = pickRandom(ROUND_START_PHRASES);
+    }
+
+    setPhrase(selectedPhrase);
+    setCurrentEvent(evType);
+
+    // Reset all
+    translateX.value = -120;
+    translateY.value = SH * 0.3;
+    rotate.value = 0;
+    scaleX.value = 1;
+    scaleY.value = 1;
+    opacity.value = 0;
+    speechOpacity.value = 0;
+    speechScale.value = 0.3;
+    flashOpacity.value = 0;
+    shakeX.value = 0;
+    featherShimmer.value = 0;
+    tailWag.value = 0;
+    bodyGlow.value = 0;
+    eyeGlow.value = 0;
+    setTrail([]);
+    setConfetti([]);
+
+    if (onStart) runOnJS(onStart)();
+
+    // === DRAMATIC ENTRANCE: Screen flash ===
+    const isBigEvent = evType === "winner" || evType === "loser" || evType === "round_start";
+    if (isBigEvent) {
+      flashOpacity.value = withSequence(
+        withTiming(0.35, { duration: 80 }),
+        withTiming(0, { duration: 400, easing: Easing.out(Easing.ease) }),
+      );
+      // Screen shake
+      shakeX.value = withSequence(
+        withTiming(6, { duration: 40 }),
+        withTiming(-6, { duration: 40 }),
+        withTiming(4, { duration: 40 }),
+        withTiming(-3, { duration: 40 }),
+        withTiming(0, { duration: 60 }),
+      );
+    }
+
+    // Fade in
+    opacity.value = withTiming(1, { duration: 180 });
+
+    // Neon glow pulse – faster, more dramatic
+    glowPulse.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 280, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0.2, { duration: 280, easing: Easing.inOut(Easing.ease) }),
+      ),
+      14,
+      false,
+    );
+
+    // Feather shimmer – continuous highlight sweep
+    featherShimmer.value = withRepeat(
+      withTiming(1, { duration: 800, easing: Easing.linear }),
+      10,
+      false,
+    );
+
+    // Tail wag
+    tailWag.value = withRepeat(
+      withSequence(
+        withTiming(15, { duration: 150, easing: Easing.inOut(Easing.ease) }),
+        withTiming(-15, { duration: 150, easing: Easing.inOut(Easing.ease) }),
+      ),
+      20,
+      false,
+    );
+
+    // Body glow pulse (event-colored)
+    bodyGlow.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 500, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 500, easing: Easing.inOut(Easing.ease) }),
+      ),
+      8,
+      false,
+    );
+
+    // Eye glow
+    eyeGlow.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 350, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0.3, { duration: 350, easing: Easing.inOut(Easing.ease) }),
+      ),
+      12,
+      false,
+    );
+
+    // Event-based flights
+    const isQuickEvent = evType === "draw_chain" || evType === "ass" || evType === "unter";
+    const dur = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.inOut(Easing.ease) });
+    const fast = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.out(Easing.cubic) });
+
+    if (isQuickEvent) {
+      // Quick fly-by
+      translateX.value = withSequence(
+        withTiming(SW * 0.15, dur(600)),
+        withTiming(SW * 0.35, dur(400)),
+        withTiming(SW * 0.35, { duration: 1200 }),
+        withTiming(SW * 0.55, dur(400)),
+        withTiming(SW + 140, fast(600), (finished) => {
+          if (finished) {
+            opacity.value = withTiming(0, { duration: 150 });
+            if (onDone) runOnJS(onDone)();
+          }
+        }),
+      );
+      translateY.value = withSequence(
+        withTiming(SH * 0.25, dur(600)),
+        withTiming(SH * 0.2, dur(400)),
+        withTiming(SH * 0.2, { duration: 1200 }),
+        withTiming(SH * 0.28, dur(400)),
+        withTiming(SH * 0.15, fast(600)),
+      );
+      rotate.value = withSequence(
+        withTiming(-10, dur(600)),
+        withTiming(5, dur(400)),
+        withTiming(0, { duration: 1200 }),
+        withTiming(10, dur(400)),
+        withTiming(-5, fast(600)),
+      );
+    } else {
+      // Full dramatic flight: ~6.5 seconds with dive-bomb and loop
+      translateX.value = withSequence(
+        withTiming(SW * 0.18, dur(1100)),
+        withTiming(SW * 0.08, dur(400)),
+        withTiming(SW * 0.36, dur(550)),
+        withTiming(SW * 0.36, { duration: 900 }),
+        withTiming(SW * 0.12, dur(700)),
+        withTiming(SW * 0.48, dur(550)),
+        withTiming(SW * 0.38, dur(280)),
+        withTiming(SW * 0.7, dur(520)),
+        withTiming(SW + 140, fast(800), (finished) => {
+          if (finished) {
+            opacity.value = withTiming(0, { duration: 200 });
+            if (onDone) runOnJS(onDone)();
+          }
+        }),
+      );
+
+      translateY.value = withSequence(
+        withTiming(SH * 0.26, dur(1100)),
+        withTiming(SH * 0.10, dur(400)),
+        withTiming(SH * 0.2, dur(550)),
+        withTiming(SH * 0.02, dur(450)),
+        withTiming(SH * 0.45, dur(450)),
+        withTiming(SH * 0.28, dur(700)),
+        withTiming(SH * 0.50, dur(550)),
+        withTiming(SH * 0.33, dur(280)),
+        withTiming(SH * 0.4, dur(520)),
+        withTiming(SH * 0.22, fast(800)),
+      );
+
+      rotate.value = withSequence(
+        withTiming(0, dur(1100)),
+        withTiming(-18, dur(400)),
+        withTiming(12, dur(550)),
+        withTiming(360, { duration: 900, easing: Easing.linear }),
+        withTiming(180, dur(350)),
+        withTiming(180, dur(700)),
+        withTiming(0, dur(500)),
+        withTiming(-22, dur(280)),
+        withTiming(8, dur(520)),
+        withTiming(0, fast(800)),
+      );
+
+      scaleX.value = withSequence(
+        withTiming(1, dur(2050)),
+        withTiming(-1, dur(350)),
+        withTiming(-1, dur(700)),
+        withTiming(1, dur(350)),
+        withTiming(1, fast(1350)),
+      );
+
+      scaleY.value = withSequence(
+        withTiming(1, dur(1100)),
+        withTiming(1.4, dur(250)),
+        withTiming(0.7, dur(250)),
+        withTiming(1.3, dur(350)),
+        withTiming(0.75, dur(350)),
+        withTiming(1.35, dur(250)),
+        withTiming(0.6, dur(250)),
+        withTiming(1, dur(350)),
+        withTiming(1.2, dur(250)),
+        withTiming(0.85, dur(250)),
+        withTiming(1, fast(800)),
+      );
+    }
+
+    // Wing flapping – faster for dramatic effect
+    wingPhase.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 90, easing: Easing.linear }),
+        withTiming(0, { duration: 90, easing: Easing.linear }),
+      ),
+      isQuickEvent ? 18 : 36,
+      false,
+    );
+
+    // Speech bubble timing
+    const speechDelay = isQuickEvent ? 800 : 1800;
+    const speechDuration = isQuickEvent ? 1800 : 2200;
+    const speechTimer = setTimeout(() => {
+      setSpeechPos({
+        x: isQuickEvent ? SW * 0.12 : SW * 0.14,
+        y: isQuickEvent ? SH * 0.06 : SH * 0.04,
+      });
+      speechScale.value = withSpring(1, { damping: 12, stiffness: 200 });
+      speechOpacity.value = withTiming(1, { duration: 200 });
+
+      // Confetti burst for winner/loser
+      if (evType === "winner" || evType === "loser") {
+        runOnJS(spawnConfetti)(SW * 0.4, SH * 0.15);
+      }
+
+      setTimeout(() => {
+        speechOpacity.value = withTiming(0, { duration: 500 });
+        speechScale.value = withTiming(0.8, { duration: 500 });
+      }, speechDuration);
+    }, speechDelay);
+
+    // Trail particles
+    const intervals: ReturnType<typeof setTimeout>[] = [speechTimer];
+    const trailCount = isQuickEvent ? 6 : 14;
+    const totalTime = isQuickEvent ? 3200 : 6500;
+    for (let i = 0; i < trailCount; i++) {
+      const t = (totalTime / trailCount) * (i + 0.5);
+      const progress = t / totalTime;
+      const x = SW * (0.05 + progress * 0.85);
+      const y = SH * (0.15 + Math.sin(progress * Math.PI * 3) * 0.15 + Math.random() * 0.08);
+      const timer = setTimeout(() => runOnJS(addTrailParticle)(x, y), t);
+      intervals.push(timer);
+    }
+
+    return () => intervals.forEach(clearTimeout);
+  }, [visible]);
+
+  const containerStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateX: translateX.value },
+      { translateY: translateY.value },
+      { rotate: `${rotate.value}deg` },
+      { scaleX: scaleX.value },
+      { scaleY: scaleY.value },
+    ],
+    opacity: opacity.value,
+  }));
+
+  const wingUpStyle = useAnimatedStyle(() => ({
+    transform: [{ scaleY: 1 - wingPhase.value * 0.8 }],
+  }));
+
+  const glowStyle = useAnimatedStyle(() => ({
+    opacity: 0.3 + glowPulse.value * 0.7,
+  }));
+
+  const speechStyle = useAnimatedStyle(() => ({
+    opacity: speechOpacity.value,
+    transform: [{ scale: speechScale.value }],
+  }));
+
+  const flashStyle = useAnimatedStyle(() => ({
+    opacity: flashOpacity.value,
+  }));
+
+  const shakeStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: shakeX.value }],
+  }));
+
+  const shimmerStyle = useAnimatedStyle(() => ({
+    opacity: 0.15 + featherShimmer.value * 0.45,
+    transform: [{ translateX: -10 + featherShimmer.value * 50 }],
+  }));
+
+  const tailStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${-25 + tailWag.value}deg` }],
+  }));
+
+  const bodyGlowStyle = useAnimatedStyle(() => ({
+    opacity: bodyGlow.value * 0.35,
+  }));
+
+  const eyeGlowStyle = useAnimatedStyle(() => ({
+    opacity: 0.6 + eyeGlow.value * 0.4,
+    transform: [{ scale: 0.95 + eyeGlow.value * 0.1 }],
+  }));
+
+  // Event-based colors
+  const getColors = () => {
+    switch (currentEvent) {
+      case "winner": return { bubble: "rgba(5, 25, 5, 0.97)", border: "#22C55E", text: "#4ADE80", tail: "#22C55E", glow: "#00FF00", body: "#003300" };
+      case "loser": return { bubble: "rgba(30, 5, 5, 0.97)", border: "#FF4444", text: "#FF6B6B", tail: "#FF4444", glow: "#FF0000", body: "#330000" };
+      case "draw_chain": return { bubble: "rgba(30, 15, 0, 0.97)", border: "#FF8C00", text: "#FFB347", tail: "#FF8C00", glow: "#FF6600", body: "#331A00" };
+      case "ass": return { bubble: "rgba(20, 0, 30, 0.97)", border: "#A855F7", text: "#C084FC", tail: "#A855F7", glow: "#9333EA", body: "#1A0033" };
+      case "unter": return { bubble: "rgba(0, 15, 25, 0.97)", border: "#06B6D4", text: "#67E8F9", tail: "#06B6D4", glow: "#0891B2", body: "#001A26" };
+      default: return { bubble: "rgba(255, 255, 255, 0.97)", border: "#FFD700", text: "#111", tail: "#FFD700", glow: "#FFD700", body: "#332B00" };
+    }
+  };
+  const colors = getColors();
+
+  if (!visible && trail.length === 0 && confetti.length === 0) return null;
+
+  return (
+    <Animated.View style={[StyleSheet.absoluteFill, shakeStyle]} pointerEvents="none">
+      {/* Screen flash */}
+      <Animated.View style={[{
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: colors.glow,
+        zIndex: 95,
+      }, flashStyle]} />
+
+      {/* Confetti */}
+      {confetti.map((p) => (
+        <ConfettiPiece key={p.id} x={p.x} y={p.y} color={p.color} size={p.size} angle={p.angle} />
+      ))}
+
+      {/* Trail particles */}
+      {trail.map((p) => (
+        <TrailParticle key={p.id} emoji={p.emoji} x={p.x} y={p.y} />
+      ))}
+
+      {/* Speech bubble – larger, more dramatic */}
+      <Animated.View
+        style={[
+          {
+            position: "absolute",
+            backgroundColor: colors.bubble,
+            borderRadius: 18,
+            paddingHorizontal: 18,
+            paddingVertical: 14,
+            borderWidth: 3,
+            borderColor: colors.border,
+            shadowColor: colors.glow,
+            shadowOpacity: 0.9,
+            shadowRadius: 24,
+            elevation: 16,
+            maxWidth: SW * 0.78,
+            left: speechPos.x,
+            top: speechPos.y,
+            zIndex: 110,
+          },
+          speechStyle,
+        ]}
+      >
+        {/* Inner glow */}
+        <View style={{
+          position: "absolute",
+          top: 2, left: 2, right: 2, bottom: 2,
+          borderRadius: 16,
+          borderWidth: 1,
+          borderColor: colors.border,
+          opacity: 0.3,
+        }} />
+        <Text style={{
+          color: colors.text,
+          fontWeight: "900",
+          fontSize: 18,
+          textAlign: "center",
+          textShadowColor: colors.glow,
+          textShadowRadius: 8,
+          textShadowOffset: { width: 0, height: 0 },
+          letterSpacing: 0.5,
+        }}>
+          {phrase}
+        </Text>
+        {/* Speech tail */}
+        <View style={{
+          position: "absolute",
+          bottom: -11,
+          left: 20,
+          width: 0,
+          height: 0,
+          borderLeftWidth: 9,
+          borderRightWidth: 9,
+          borderTopWidth: 11,
+          borderLeftColor: "transparent",
+          borderRightColor: "transparent",
+          borderTopColor: colors.border,
+        }} />
+        <View style={{
+          position: "absolute",
+          bottom: -8,
+          left: 22,
+          width: 0,
+          height: 0,
+          borderLeftWidth: 7,
+          borderRightWidth: 7,
+          borderTopWidth: 9,
+          borderLeftColor: "transparent",
+          borderRightColor: "transparent",
+          borderTopColor: colors.bubble,
+        }} />
+      </Animated.View>
+
+      {/* The Bird – larger (90x62) */}
+      {visible && (
+        <Animated.View style={[{ position: "absolute", width: 90, height: 62, zIndex: 105 }, containerStyle]}>
+          {/* Outer neon glow – bigger, more dramatic */}
+          <Animated.View style={[{
+            position: "absolute",
+            width: 80,
+            height: 52,
+            borderRadius: 26,
+            top: 5,
+            left: 5,
+            backgroundColor: colors.glow,
+            shadowColor: colors.glow,
+            shadowOpacity: 1,
+            shadowRadius: 30,
+            elevation: 20,
+          }, glowStyle]} />
+
+          {/* Event-colored body glow overlay */}
+          <Animated.View style={[{
+            position: "absolute",
+            width: 52,
+            height: 34,
+            borderRadius: 20,
+            top: 14,
+            left: 16,
+            backgroundColor: colors.glow,
+          }, bodyGlowStyle]} />
+
+          {/* Tail feathers – animated wag */}
+          <Animated.View style={[{
+            position: "absolute", width: 22, height: 14,
+            backgroundColor: "#1a1a2e", borderRadius: 7,
+            top: 28, left: 0,
+            transformOrigin: "right center",
+          }, tailStyle]}>
+            {/* Tail detail */}
+            <View style={{
+              position: "absolute", width: 18, height: 10,
+              backgroundColor: "#16213e", borderRadius: 5,
+              top: 2, left: 0,
+            }} />
+            {/* Tail tip accent */}
+            <Animated.View style={[{
+              position: "absolute", width: 8, height: 3,
+              backgroundColor: colors.glow, borderRadius: 2,
+              top: 5, left: 0,
+            }, glowStyle]} />
+          </Animated.View>
+
+          {/* Body – main shape */}
+          <View style={{
+            position: "absolute", width: 50, height: 34,
+            backgroundColor: "#0a0a1a", borderRadius: 18,
+            top: 14, left: 16,
+          }} />
+          {/* Body highlight – top */}
+          <View style={{
+            position: "absolute", width: 40, height: 18,
+            backgroundColor: "#1a1a3e", borderRadius: 12,
+            top: 16, left: 22,
+            opacity: 0.5,
+          }} />
+          {/* Shimmer streak across body */}
+          <Animated.View style={[{
+            position: "absolute", width: 14, height: 28,
+            backgroundColor: "#ffffff",
+            borderRadius: 7,
+            top: 17, left: 20,
+            overflow: "hidden",
+          }, shimmerStyle]} />
+          {/* Belly – lighter */}
+          <View style={{
+            position: "absolute", width: 26, height: 14,
+            backgroundColor: "#2a2a4e", borderRadius: 10,
+            top: 28, left: 26,
+            opacity: 0.45,
+          }} />
+
+          {/* Head – slightly larger */}
+          <View style={{
+            position: "absolute", width: 28, height: 25,
+            backgroundColor: "#0a0a1a", borderRadius: 14,
+            top: 6, left: 48,
+          }} />
+          {/* Head highlight */}
+          <View style={{
+            position: "absolute", width: 18, height: 12,
+            backgroundColor: "#1a1a3e", borderRadius: 8,
+            top: 8, left: 52,
+            opacity: 0.4,
+          }} />
+
+          {/* Beak – two-tone, larger */}
+          <View style={{
+            position: "absolute", width: 18, height: 7,
+            backgroundColor: "#FFD700", borderRadius: 4,
+            top: 18, left: 74,
+          }} />
+          <View style={{
+            position: "absolute", width: 16, height: 4,
+            backgroundColor: "#FFA500", borderRadius: 3,
+            top: 22, left: 74,
+          }} />
+          {/* Beak shine */}
+          <View style={{
+            position: "absolute", width: 6, height: 2,
+            backgroundColor: "#FFF8DC", borderRadius: 1,
+            top: 19, left: 76,
+            opacity: 0.6,
+          }} />
+
+          {/* Eye – glowing, animated */}
+          <Animated.View style={[{
+            position: "absolute", width: 13, height: 13,
+            backgroundColor: "#FFD700", borderRadius: 7,
+            top: 10, left: 60,
+            shadowColor: "#FFD700",
+            shadowOpacity: 1,
+            shadowRadius: 8,
+            elevation: 8,
+          }, eyeGlowStyle]}>
+            <View style={{
+              width: 7, height: 7,
+              backgroundColor: "#000",
+              borderRadius: 4,
+              position: "absolute", top: 3, left: 3,
+            }} />
+            <View style={{
+              width: 3, height: 3,
+              backgroundColor: "#FFF",
+              borderRadius: 2,
+              position: "absolute", top: 3, left: 6,
+            }} />
+            {/* Red eye reflection for loser/draw events */}
+            {(currentEvent === "loser" || currentEvent === "draw_chain") && (
+              <View style={{
+                width: 2, height: 2,
+                backgroundColor: "#FF0000",
+                borderRadius: 1,
+                position: "absolute", top: 5, left: 4,
+              }} />
+            )}
+          </Animated.View>
+
+          {/* Angry eyebrow – thicker */}
+          <View style={{
+            position: "absolute", width: 11, height: 3.5,
+            backgroundColor: "#FF3333", borderRadius: 2,
+            top: 6, left: 58,
+            transform: [{ rotate: "-35deg" }],
+          }} />
+
+          {/* Wings – primary */}
+          <Animated.View style={[{
+            position: "absolute", width: 38, height: 22,
+            backgroundColor: "#111133", borderRadius: 12,
+            top: 0, left: 16,
+            transformOrigin: "bottom center",
+            borderWidth: 1.5,
+            borderColor: "rgba(100, 100, 200, 0.3)",
+          }, wingUpStyle]} />
+          {/* Wing inner */}
+          <Animated.View style={[{
+            position: "absolute", width: 32, height: 18,
+            backgroundColor: "#0d0d28", borderRadius: 10,
+            top: 2, left: 22,
+            transformOrigin: "bottom center",
+          }, wingUpStyle]} />
+          {/* Wing feather detail */}
+          <Animated.View style={[{
+            position: "absolute", width: 26, height: 3,
+            backgroundColor: "rgba(100, 100, 200, 0.2)", borderRadius: 2,
+            top: 10, left: 22,
+            transformOrigin: "bottom center",
+          }, wingUpStyle]} />
+
+          {/* Neon accent stripes on wing */}
+          <Animated.View style={[{
+            position: "absolute", width: 28, height: 3,
+            backgroundColor: colors.glow,
+            borderRadius: 2,
+            top: 18, left: 20,
+          }, glowStyle]} />
+          <Animated.View style={[{
+            position: "absolute", width: 18, height: 2,
+            backgroundColor: colors.glow,
+            borderRadius: 1,
+            top: 22, left: 24,
+            opacity: 0.5,
+          }, glowStyle]} />
+
+          {/* Feet – slightly larger */}
+          <View style={{
+            position: "absolute", width: 8, height: 6,
+            backgroundColor: "#FFA500", borderRadius: 3,
+            top: 47, left: 30,
+          }} />
+          <View style={{
+            position: "absolute", width: 8, height: 6,
+            backgroundColor: "#FFA500", borderRadius: 3,
+            top: 47, left: 42,
+          }} />
+          {/* Toe details */}
+          <View style={{
+            position: "absolute", width: 4, height: 3,
+            backgroundColor: "#FF8C00", borderRadius: 2,
+            top: 52, left: 28,
+          }} />
+          <View style={{
+            position: "absolute", width: 4, height: 3,
+            backgroundColor: "#FF8C00", borderRadius: 2,
+            top: 52, left: 44,
+          }} />
+
+          {/* Crown/crest on head */}
+          <View style={{
+            position: "absolute", width: 8, height: 8,
+            backgroundColor: "#FFD700", borderRadius: 4,
+            top: 2, left: 58,
+            transform: [{ rotate: "45deg" }],
+          }} />
+          <View style={{
+            position: "absolute", width: 6, height: 6,
+            backgroundColor: "#FFA500", borderRadius: 3,
+            top: 1, left: 64,
+            transform: [{ rotate: "30deg" }],
+          }} />
+        </Animated.View>
+      )}
+    </Animated.View>
+  );
+}
+
+function TrailParticle({ emoji, x, y }: { emoji: string; x: number; y: number }) {
+  const opacity = useSharedValue(1);
+  const scale = useSharedValue(0.2);
+  const rotate = useSharedValue(0);
+  const translateY = useSharedValue(0);
+
+  useEffect(() => {
+    scale.value = withSpring(1.8, { damping: 8, stiffness: 180 });
+    rotate.value = withTiming(Math.random() * 60 - 30, { duration: 500 });
+    translateY.value = withTiming(-20 + Math.random() * -30, { duration: 800, easing: Easing.out(Easing.ease) });
+    opacity.value = withDelay(400, withTiming(0, { duration: 800 }));
+  }, []);
+
+  const style = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [
+      { scale: scale.value },
+      { rotate: `${rotate.value}deg` },
+      { translateY: translateY.value },
+    ],
+  }));
+
+  return (
+    <Animated.View style={[{ position: "absolute", left: x, top: y, zIndex: 100 }, style]}>
+      <Text style={{ fontSize: 24 }}>{emoji}</Text>
+    </Animated.View>
+  );
+}
+
+function ConfettiPiece({ x, y, color, size, angle }: { x: number; y: number; color: string; size: number; angle: number }) {
+  const opacity = useSharedValue(0);
+  const scale = useSharedValue(0);
+  const translateY = useSharedValue(0);
+  const rotate = useSharedValue(0);
+
+  useEffect(() => {
+    opacity.value = withSequence(
+      withTiming(1, { duration: 150 }),
+      withDelay(1200, withTiming(0, { duration: 800 })),
+    );
+    scale.value = withSpring(1, { damping: 6, stiffness: 200 });
+    translateY.value = withTiming(80 + Math.random() * 120, { duration: 2000, easing: Easing.in(Easing.ease) });
+    rotate.value = withTiming(angle + 360 + Math.random() * 720, { duration: 2000, easing: Easing.out(Easing.ease) });
+  }, []);
+
+  const style = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+    transform: [
+      { scale: scale.value },
+      { translateY: translateY.value },
+      { rotate: `${rotate.value}deg` },
+    ],
+  }));
+
+  return (
+    <Animated.View style={[{
+      position: "absolute",
+      left: x,
+      top: y,
+      width: size,
+      height: size * 0.6,
+      backgroundColor: color,
+      borderRadius: size * 0.15,
+      zIndex: 108,
+    }, style]} />
+  );
+}

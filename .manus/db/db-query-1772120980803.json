@@ -1,0 +1,50 @@
+{
+  "query": "SELECT u.id, u.email, u.name, u.loginMethod, pp.id as profile_id, pp.username FROM users u LEFT JOIN player_profiles pp ON pp.userId = u.id ORDER BY u.id;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2vNNKbvA8pWhADr.f2cf229b4301 --database kbHacnFh2yYvDXeV9UnSSX --execute SELECT u.id, u.email, u.name, u.loginMethod, pp.id as profile_id, pp.username FROM users u LEFT JOIN player_profiles pp ON pp.userId = u.id ORDER BY u.id;",
+  "rows": [
+    {
+      "id": "120001",
+      "email": "maik_scheibe@web.de",
+      "name": "Acid_King",
+      "loginMethod": "email",
+      "profile_id": "30001",
+      "username": "Acid_King"
+    },
+    {
+      "id": "150001",
+      "email": "irkulyen07@gmail.com",
+      "name": "Acid_King",
+      "loginMethod": "email",
+      "profile_id": "NULL",
+      "username": "NULL"
+    },
+    {
+      "id": "180001",
+      "email": "test2@test.de",
+      "name": "TestUser2",
+      "loginMethod": "email",
+      "profile_id": "NULL",
+      "username": "NULL"
+    },
+    {
+      "id": "210001",
+      "email": "testuser999@test.com",
+      "name": "TestUser999",
+      "loginMethod": "email",
+      "profile_id": "60001",
+      "username": "TestUser999"
+    },
+    {
+      "id": "240001",
+      "email": "flowtest12445@test.com",
+      "name": "FlowTest16161",
+      "loginMethod": "email",
+      "profile_id": "90001",
+      "username": "FlowTestUser27423"
+    }
+  ],
+  "messages": [],
+  "stdout": "id\temail\tname\tloginMethod\tprofile_id\tusername\n120001\tmaik_scheibe@web.de\tAcid_King\temail\t30001\tAcid_King\n150001\tirkulyen07@gmail.com\tAcid_King\temail\tNULL\tNULL\n180001\ttest2@test.de\tTestUser2\temail\tNULL\tNULL\n210001\ttestuser999@test.com\tTestUser999\temail\t60001\tTestUser999\n240001\tflowtest12445@test.com\tFlowTest16161\temail\t90001\tFlowTestUser27423\n",
+  "stderr": "",
+  "execution_time_ms": 51
+}
