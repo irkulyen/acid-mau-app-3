@@ -429,6 +429,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
   io.on("connection", (socket: Socket) => {
     console.log(`[socket] Client connected: ${socket.id}`);
+    const normalizeRoomCode = (input: string) => input.trim().toUpperCase();
 
     // Reconnect to a game room
     socket.on("reconnect-room", async (data: { userId: number }) => {
@@ -482,6 +483,13 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
         // Send filtered game state to reconnected player
         socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+
+        // Explicit reconnect ACK for deterministic client flow
+        socket.emit("reconnect-room-success", {
+          roomId,
+          roomCode: gameState.roomCode,
+          phase: gameState.phase,
+        });
 
         // Send chat history
         try {
@@ -575,6 +583,13 @@ export function setupGameSocket(httpServer: HTTPServer) {
           maxPlayers,
         });
 
+        socket.emit("create-room-success", {
+          roomId,
+          roomCode,
+          maxPlayers,
+          currentPlayers: gameState.players.length,
+        });
+
         broadcastFilteredState(io, roomId, gameState);
 
         console.log(`[socket] Room created: ${roomCode} (${roomId}) by ${username} (${userId})`);
@@ -587,7 +602,8 @@ export function setupGameSocket(httpServer: HTTPServer) {
     // Join a game room
     socket.on("join-room", async (data: { roomCode: string; userId: number; username: string }) => {
       try {
-        const { roomCode, userId, username } = data;
+        const { userId, username } = data;
+        const roomCode = normalizeRoomCode(data.roomCode);
 
         // Track socket → user mapping
         socketUserMapping.set(socket.id, userId);
@@ -597,6 +613,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
         if (!room) {
           socket.emit("error", { message: "Room not found" });
+          socket.emit("join-room-failed", { roomCode, reason: "ROOM_NOT_FOUND" });
           return;
         }
 
@@ -637,12 +654,14 @@ export function setupGameSocket(httpServer: HTTPServer) {
             // Add new player
             if (gameState.phase !== "waiting") {
               socket.emit("error", { message: "Game already in progress" });
+              socket.emit("join-room-failed", { roomCode, reason: "GAME_ALREADY_IN_PROGRESS" });
               return;
             }
 
             const maxPlayers = (gameState as any).maxPlayers || 5;
             if (gameState.players.length >= maxPlayers) {
               socket.emit("error", { message: "Room is full" });
+              socket.emit("join-room-failed", { roomCode, reason: "ROOM_FULL" });
               return;
             }
 
@@ -697,10 +716,20 @@ export function setupGameSocket(httpServer: HTTPServer) {
         // Broadcast updated state to all players
         broadcastFilteredState(io, roomId, gameState);
 
+        // Explicit join ACK for deterministic client flow
+        socket.emit("join-room-success", {
+          roomId,
+          roomCode,
+          phase: gameState.phase,
+          currentPlayers: gameState.players.length,
+          maxPlayers: (gameState as any).maxPlayers || room.maxPlayers || 5,
+        });
+
         console.log(`[socket] User ${username} (${userId}) joined room ${roomCode} (${roomId})`);
       } catch (error) {
         console.error("[socket] Error joining room:", error);
         socket.emit("error", { message: "Failed to join room" });
+        socket.emit("join-room-failed", { roomCode: data.roomCode, reason: "JOIN_FAILED" });
       }
     });
 

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, Re
 import { io, Socket } from "socket.io-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { GameState, GameAction, Card } from "@/shared/game-types";
+import { getApiBaseUrl } from "@/constants/oauth";
 
 export interface ChatMessage {
   id: number;
@@ -68,8 +69,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const onBlackbirdEventRef = useRef<((event: BlackbirdEvent) => void) | null>(null);
   const onErrorRef = useRef<((error: string) => void) | null>(null);
 
+  const pendingJoinRef = useRef<string | null>(null);
+
   useEffect(() => {
-    const backendUrl = process.env.EXPO_PUBLIC_API_URL || "https://crazyamsel.manus.space";
+    const backendUrl = getApiBaseUrl();
     console.log("[socket] Connecting globally to:", backendUrl);
 
     const socket = io(backendUrl, {
@@ -104,6 +107,17 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     socket.on("room-created", (data: { roomId: number; roomCode: string; maxPlayers: number }) => {
       console.log("[socket] Room created:", data.roomCode);
       onRoomCreatedRef.current?.(data);
+    });
+
+    socket.on("join-room-success", (data: { roomId: number; roomCode: string }) => {
+      pendingJoinRef.current = null;
+      AsyncStorage.setItem("currentRoomCode", data.roomCode);
+      console.log("[socket] Join ACK:", data.roomCode, data.roomId);
+    });
+
+    socket.on("join-room-failed", (data: { reason: string }) => {
+      pendingJoinRef.current = null;
+      console.error("[socket] Join failed:", data.reason);
     });
 
     socket.on("game-preparation", (data: PreparationData) => {
@@ -153,8 +167,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const joinRoom = useCallback((roomCode: string, userId: number, username: string) => {
-    socketRef.current?.emit("join-room", { roomCode, userId, username });
-    AsyncStorage.setItem("currentRoomCode", roomCode);
+    const normalizedCode = roomCode.trim().toUpperCase();
+    pendingJoinRef.current = normalizedCode;
+    socketRef.current?.emit("join-room", { roomCode: normalizedCode, userId, username });
     AsyncStorage.setItem("currentUserId", userId.toString());
     AsyncStorage.setItem("currentUsername", username);
   }, []);
