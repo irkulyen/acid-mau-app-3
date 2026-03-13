@@ -13,9 +13,9 @@ const env = {
   appId: process.env.EXPO_PUBLIC_APP_ID ?? "",
   ownerId: process.env.EXPO_PUBLIC_OWNER_OPEN_ID ?? "",
   ownerName: process.env.EXPO_PUBLIC_OWNER_NAME ?? "",
-  // SYSTEMANWEISUNG: Zentrale Backend-URL für REST + WebSocket
-  // Permanente Backend-URL – hardcoded damit kein Build-Zeitpunkt-Problem entsteht
-  apiBaseUrl: "https://crazyamsel.manus.space",
+  // Zentrale Backend-URL für REST + WebSocket
+  // Kann via EXPO_PUBLIC_API_URL gesetzt werden.
+  apiBaseUrl: process.env.EXPO_PUBLIC_API_URL ?? "",
   deepLinkScheme: schemeFromBundleId,
 };
 
@@ -32,15 +32,26 @@ export const API_BASE_URL = env.apiBaseUrl;
  * Keine Fallbacks, keine Ableitungen.
  */
 export function getApiBaseUrl(): string {
-  if (!API_BASE_URL) {
-    // Im Web-Modus: relativer Pfad (kein Base-URL nötig)
-    if (typeof window !== "undefined" && typeof document !== "undefined") {
-      return "";
-    }
-    console.warn("[API] EXPO_PUBLIC_API_URL not set");
+  if (API_BASE_URL) {
+    return API_BASE_URL.replace(/\/$/, "");
+  }
+
+  // Web development can use same-origin requests.
+  if (typeof window !== "undefined" && typeof document !== "undefined") {
     return "";
   }
-  return API_BASE_URL.replace(/\/$/, "");
+
+  // Native development fallbacks for local server.
+  if (__DEV__) {
+    if (ReactNative.Platform.OS === "android") {
+      // Android emulator maps host localhost to 10.0.2.2
+      return "http://10.0.2.2:3000";
+    }
+    return "http://localhost:3000";
+  }
+
+  console.warn("[API] EXPO_PUBLIC_API_URL not set");
+  return "";
 }
 
 export const SESSION_TOKEN_KEY = "app_session_token";

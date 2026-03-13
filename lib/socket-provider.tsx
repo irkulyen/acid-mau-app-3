@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, useCallback, Re
 import { io, Socket } from "socket.io-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { GameState, GameAction, Card } from "@/shared/game-types";
+import { getApiBaseUrl } from "@/constants/oauth";
 
 export interface ChatMessage {
   id: number;
@@ -69,7 +70,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const onErrorRef = useRef<((error: string) => void) | null>(null);
 
   useEffect(() => {
-    const backendUrl = process.env.EXPO_PUBLIC_API_URL || "https://crazyamsel.manus.space";
+    const backendUrl = getApiBaseUrl();
     console.log("[socket] Connecting globally to:", backendUrl);
 
     const socket = io(backendUrl, {
