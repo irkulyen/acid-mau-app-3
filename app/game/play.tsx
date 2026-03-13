@@ -1,5 +1,5 @@
 import { Touchable } from "@/components/ui/button";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { View, Text, ScrollView, Alert, Modal, ImageBackground, Pressable, TextInput, KeyboardAvoidingView, Platform, FlatList } from "react-native";
 import { Image } from "expo-image";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -86,6 +86,7 @@ export default function GamePlayScreen() {
   const [showPreparation, setShowPreparation] = useState(false);
   const [prepSeatDraws, setPrepSeatDraws] = useState<PreparationDrawData[]>([]);
   const [prepDealerDraws, setPrepDealerDraws] = useState<PreparationDrawData[]>([]);
+  const showBlackbirdRef = useRef(false);
 
   // Pulsing glow animation for active player
   const glowOpacity = useSharedValue(0.4);
@@ -104,8 +105,12 @@ export default function GamePlayScreen() {
   const [chatInput, setChatInput] = useState("");
   const chatListRef = useRef<FlatList>(null);
 
+  useEffect(() => {
+    showBlackbirdRef.current = showBlackbird;
+  }, [showBlackbird]);
+
   // Process next blackbird event from queue
-  const processNextBlackbird = () => {
+  const processNextBlackbird = useCallback(() => {
     if (blackbirdQueueRef.current.length === 0) return;
     const event = blackbirdQueueRef.current.shift()!;
     setBlackbirdEvent(event.type);
@@ -119,7 +124,7 @@ export default function GamePlayScreen() {
       setShowRoundStart(true);
       setTimeout(() => setShowRoundStart(false), 2000);
     }
-  };
+  }, [playRoundEnd]);
 
   const { isConnected, gameState, chatMessages, unreadCount, sendAction, sendChatMessage, markChatRead, markChatClosed, sendPreparationDone, setOnPreparation, setOnBlackbirdEvent, setOnError } = useSocket();
 
@@ -131,7 +136,7 @@ export default function GamePlayScreen() {
     });
     setOnBlackbirdEvent((event: BlackbirdEvent) => {
       blackbirdQueueRef.current.push(event);
-      if (!showBlackbird) {
+      if (!showBlackbirdRef.current) {
         processNextBlackbird();
       }
     });
@@ -143,7 +148,13 @@ export default function GamePlayScreen() {
       setOnBlackbirdEvent(null);
       setOnError(null);
     };
-  }, [setOnPreparation, setOnBlackbirdEvent, setOnError]);
+  }, [setOnPreparation, setOnBlackbirdEvent, setOnError, processNextBlackbird]);
+
+  useEffect(() => {
+    if (gameState?.phase === "playing" && showPreparation) {
+      setShowPreparation(false);
+    }
+  }, [gameState?.phase, showPreparation]);
 
   const handleOpenChat = () => {
     setShowChat(true);
