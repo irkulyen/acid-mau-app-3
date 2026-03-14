@@ -327,6 +327,16 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket.on("join-failed", (data: { message: string; code?: string }) => {
         const message = data?.message || "Failed to join room";
         console.warn("[socket] join-failed:", data?.code || "UNKNOWN", message);
+        if (data?.code === "ROOM_NOT_FOUND") {
+          // Stale local room hints can cause endless auto-rejoin loops after server restarts.
+          // Clear them immediately when the server confirms the room no longer exists.
+          void AsyncStorage.multiRemove([
+            STORAGE_KEYS.roomCode,
+            STORAGE_KEYS.roomId,
+            STORAGE_KEYS.playerId,
+          ]);
+          setGameState(null);
+        }
         emitErrorDeduped(message);
       });
 
