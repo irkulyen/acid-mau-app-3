@@ -188,7 +188,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      if (userId) {
+      const hasRecoverHint = Boolean(normalizedRoomCode || roomId || playerId);
+      if (userId && hasRecoverHint) {
         recoverStartedAtRef.current = Date.now();
         recoverAttemptRef.current += 1;
         const attempt = recoverAttemptRef.current;
@@ -336,6 +337,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             STORAGE_KEYS.playerId,
           ]);
           setGameState(null);
+          // Do not surface this as a user-facing error toast outside explicit join flow.
+          return;
         }
         emitErrorDeduped(message);
       });
