@@ -5,6 +5,7 @@ const API_URL = (process.env.VERIFY_API_URL || process.env.SOAK_API_URL || "").t
 const TELEMETRY_TOKEN = (process.env.TELEMETRY_TOKEN || "").trim();
 const EXPECT_BUILD_ID = (process.env.EXPECT_BUILD_ID || "").trim();
 const STRICT = process.env.VERIFY_STRICT !== "false";
+const VERIFY_JWT_SECRET = (process.env.VERIFY_JWT_SECRET || process.env.JWT_SECRET || "").trim();
 
 if (!API_URL) {
   console.error("Missing VERIFY_API_URL (or SOAK_API_URL).");
@@ -40,6 +41,7 @@ function runSoak() {
       SOAK_API_URL: API_URL,
       SOAK_CLIENTS: process.env.SOAK_CLIENTS || "4",
       SOAK_DURATION_MS: process.env.SOAK_DURATION_MS || "10000",
+      SOAK_JWT_SECRET: VERIFY_JWT_SECRET,
     };
 
     const child = spawn(process.execPath, ["scripts/soak-room.mjs"], {
@@ -124,15 +126,23 @@ async function main() {
   }
 
   // Soak
-  const soakResult = await runSoak();
-  const soakText = `${soakResult.stdout}\n${soakResult.stderr}`.trim();
-  const soakJsonBlock = extractJsonBlock(soakText);
-  const soakJson = soakJsonBlock ? safeParseJson(soakJsonBlock) : null;
-  summary.checks.soak.exitCode = soakResult.code;
-  summary.checks.soak.payload = soakJson ?? soakText;
-  summary.checks.soak.ok = Boolean(soakJson?.ok);
-  if (!summary.checks.soak.ok) {
-    summary.failures.push("soak_failed");
+  if (!VERIFY_JWT_SECRET) {
+    summary.checks.soak = {
+      ok: true,
+      skipped: true,
+      reason: "missing_verify_jwt_secret",
+    };
+  } else {
+    const soakResult = await runSoak();
+    const soakText = `${soakResult.stdout}\n${soakResult.stderr}`.trim();
+    const soakJsonBlock = extractJsonBlock(soakText);
+    const soakJson = soakJsonBlock ? safeParseJson(soakJsonBlock) : null;
+    summary.checks.soak.exitCode = soakResult.code;
+    summary.checks.soak.payload = soakJson ?? soakText;
+    summary.checks.soak.ok = Boolean(soakJson?.ok);
+    if (!summary.checks.soak.ok) {
+      summary.failures.push("soak_failed");
+    }
   }
 
   const ok = summary.failures.length === 0;

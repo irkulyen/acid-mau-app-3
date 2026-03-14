@@ -9,7 +9,8 @@ const DURATION_MS = Math.max(3_000, Number(process.env.SOAK_DURATION_MS || 30_00
 const STEP_DELAY_MS = Math.max(20, Number(process.env.SOAK_STEP_DELAY_MS || 120));
 const CONNECT_TIMEOUT_MS = Math.max(2_000, Number(process.env.SOAK_CONNECT_TIMEOUT_MS || 12_000));
 const JOIN_RETRY_MAX = Math.max(1, Number(process.env.SOAK_JOIN_RETRY_MAX || 6));
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "your-secret-key-change-in-production");
+const JWT_SECRET_VALUE = (process.env.SOAK_JWT_SECRET || process.env.JWT_SECRET || "").trim();
+const JWT_SECRET = JWT_SECRET_VALUE ? new TextEncoder().encode(JWT_SECRET_VALUE) : null;
 const USER_ID_BASE = Number(
   process.env.SOAK_USER_ID_BASE || (20_000 + Math.floor((Date.now() % 8_000_000) / 1_000)),
 );
@@ -27,6 +28,9 @@ async function waitForStateOptional(socket, timeoutMs) {
 }
 
 async function createToken(userId) {
+  if (!JWT_SECRET) {
+    throw new Error("Missing SOAK_JWT_SECRET/JWT_SECRET for authenticated socket soak test");
+  }
   return new SignJWT({ userId, email: `soak+${userId}@test.local` })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
@@ -58,14 +62,22 @@ function waitForEvent(socket, event, timeoutMs, predicate = () => true) {
       reject(new Error(msg));
     };
 
+    const onConnectError = (err) => {
+      cleanup();
+      const msg = err instanceof Error ? err.message : `Socket connect_error while waiting for "${event}"`;
+      reject(new Error(msg));
+    };
+
     const cleanup = () => {
       clearTimeout(timer);
       socket.off(event, handler);
       socket.off("error", onError);
+      socket.off("connect_error", onConnectError);
     };
 
     socket.on(event, handler);
     socket.on("error", onError);
+    socket.on("connect_error", onConnectError);
   });
 }
 
