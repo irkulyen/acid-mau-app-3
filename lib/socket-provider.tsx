@@ -81,6 +81,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const lastStateUpdateAtRef = useRef(0);
   const recoverStartedAtRef = useRef(0);
   const recoverAttemptRef = useRef(0);
+  const recoverBlockedUntilRef = useRef(0);
   const recoverFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastMembershipRecoverAtRef = useRef(0);
   const lastNoStateRecoverAtRef = useRef(0);
@@ -163,6 +164,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const recoverSessionOnSocket = useCallback(async (socket: Socket | null) => {
     if (!socket || recoveringRef.current) return;
+    const now = Date.now();
+    if (recoverBlockedUntilRef.current > now) return;
+    if (recoverStartedAtRef.current > 0 && now - recoverStartedAtRef.current > 30_000) {
+      recoverAttemptRef.current = 0;
+      recoverStartedAtRef.current = 0;
+    }
+    if (recoverAttemptRef.current >= 3) return;
     recoveringRef.current = true;
     try {
       const values = await AsyncStorage.multiGet([
@@ -190,7 +198,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
       const hasRecoverHint = Boolean(normalizedRoomCode || roomId || playerId);
       if (userId && hasRecoverHint) {
-        recoverStartedAtRef.current = Date.now();
+        if (!recoverStartedAtRef.current) recoverStartedAtRef.current = Date.now();
         recoverAttemptRef.current += 1;
         const attempt = recoverAttemptRef.current;
         socket.emit("reconnect-room", {
@@ -277,6 +285,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
       socket.on("game-state-update", (state: GameState) => {
         lastStateUpdateAtRef.current = Date.now();
+        recoverAttemptRef.current = 0;
+        recoverStartedAtRef.current = 0;
+        recoverBlockedUntilRef.current = 0;
         setGameState(state);
         // Self-heal: if local user is missing from room state, request a targeted rejoin.
         void (async () => {
@@ -315,12 +326,18 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
       socket.on("room-created", (data: RoomCreatedPayload) => {
         console.log("[socket] Room created:", data.roomCode);
+        recoverAttemptRef.current = 0;
+        recoverStartedAtRef.current = 0;
+        recoverBlockedUntilRef.current = 0;
         persistSessionHints({ roomCode: data.roomCode.toUpperCase(), roomId: data.roomId });
         onRoomCreatedRef.current?.(data);
       });
 
       socket.on("room-joined", (data: RoomJoinedPayload) => {
         console.log("[socket] Room joined:", data.roomCode);
+        recoverAttemptRef.current = 0;
+        recoverStartedAtRef.current = 0;
+        recoverBlockedUntilRef.current = 0;
         persistSessionHints({ roomCode: data.roomCode.toUpperCase(), roomId: data.roomId });
         onRoomJoinedRef.current?.(data);
       });
@@ -413,6 +430,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           }
           return;
         }
+        if (/too many reconnect attempts/i.test(data.message)) {
+          recoverBlockedUntilRef.current = Date.now() + 30_000;
+          return;
+        }
         console.error("[socket] Error:", data.message);
         emitErrorDeduped(data.message);
       });
@@ -470,6 +491,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       if (!socket || !socket.connected) return;
       if (gameState) return;
       const now = Date.now();
+      if (recoverBlockedUntilRef.current > now) return;
       if (now - lastNoStateRecoverAtRef.current < 2500) return;
       lastNoStateRecoverAtRef.current = now;
       void recoverSessionOnSocket(socket);
