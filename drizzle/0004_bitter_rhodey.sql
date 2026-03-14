@@ -1,0 +1,1 @@
+ALTER TABLE `game_rooms` MODIFY COLUMN `roomCode` varchar(6) NOT NULL;
