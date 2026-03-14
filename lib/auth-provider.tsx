@@ -18,6 +18,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<Auth.User | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const isAuthError = (message?: string) => {
+    const normalized = (message || "").toLowerCase();
+    return (
+      normalized.includes("unauthorized") ||
+      normalized.includes("please login") ||
+      normalized.includes("no active session") ||
+      normalized.includes("not authenticated")
+    );
+  };
 
   const fetchUser = useCallback(async () => {
     console.log("[AuthProvider] fetchUser called");
@@ -26,10 +35,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setError(null);
 
       const sessionToken = await Auth.getSessionToken();
-      console.log(
-        "[AuthProvider] Session token:",
-        sessionToken ? `present (${sessionToken.substring(0, 20)}...)` : "missing",
-      );
+      console.log("[AuthProvider] Session token:", sessionToken ? "present" : "missing");
 
       if (!sessionToken) {
         console.log("[AuthProvider] No session token, setting user to null");
@@ -45,29 +51,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log("[AuthProvider] Using cached user info");
         setUser(cachedUser);
       } else {
-        // No cached user but have token - fetch from API
         console.log("[AuthProvider] No cached user, fetching from API...");
-        try {
-          const apiUser = await Api.getMe();
-          if (apiUser) {
-            const userInfo: Auth.User = {
-              id: apiUser.id,
-              openId: apiUser.openId,
-              name: apiUser.name,
-              email: apiUser.email,
-              loginMethod: apiUser.loginMethod,
-              lastSignedIn: new Date(apiUser.lastSignedIn),
-            };
-            setUser(userInfo);
-            await Auth.setUserInfo(userInfo);
-            console.log("[AuthProvider] User set from API:", userInfo);
-          } else {
-            console.log("[AuthProvider] No authenticated user from API");
-            setUser(null);
-          }
-        } catch (err) {
-          console.error("[AuthProvider] Failed to fetch user from API:", err);
+      }
+
+      // Always validate token against API to prevent stale cached identity mismatches.
+      try {
+        const apiUser = await Api.getMe();
+        if (apiUser) {
+          const userInfo: Auth.User = {
+            id: apiUser.id,
+            openId: apiUser.openId,
+            name: apiUser.name,
+            email: apiUser.email,
+            loginMethod: apiUser.loginMethod,
+            lastSignedIn: new Date(apiUser.lastSignedIn),
+          };
+          setUser(userInfo);
+          await Auth.setUserInfo(userInfo);
+          console.log("[AuthProvider] User set from API:", userInfo);
+        } else {
+          console.log("[AuthProvider] No authenticated user from API");
           setUser(null);
+          await Auth.removeSessionToken();
+          await Auth.clearUserInfo();
+        }
+      } catch (err) {
+        console.error("[AuthProvider] Failed to fetch user from API:", err);
+        if (isAuthError(err instanceof Error ? err.message : String(err))) {
+          setUser(null);
+          await Auth.removeSessionToken();
+          await Auth.clearUserInfo();
         }
       }
     } catch (err) {
@@ -105,9 +118,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log("[AuthProvider] Setting cached user immediately");
         setUser(cachedUser);
         setLoading(false);
-      } else {
-        fetchUser();
       }
+      // Always sync/validate with API after initial cache hydration.
+      void fetchUser();
     });
   }, [fetchUser]);
 

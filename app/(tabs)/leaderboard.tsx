@@ -1,4 +1,5 @@
 import { ScrollView, Text, View, ActivityIndicator } from "react-native";
+import { Image } from "expo-image";
 import { ScreenContainer } from "@/components/screen-container";
 import { trpc } from "@/lib/trpc";
 
@@ -36,7 +37,33 @@ export default function LeaderboardScreen() {
                 </View>
 
                 {/* Player Info */}
-                <View className="flex-1 ml-4">
+                <View className="flex-1 ml-4 flex-row items-center">
+                  {player.avatarUrl ? (
+                    <Image
+                      source={{ uri: player.avatarUrl }}
+                      style={{ width: 36, height: 36, borderRadius: 18, marginRight: 10, borderWidth: 1, borderColor: "rgba(148, 163, 184, 0.7)" }}
+                      contentFit="cover"
+                    />
+                  ) : (
+                    <View
+                      style={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: 18,
+                        marginRight: 10,
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "rgba(15, 23, 42, 0.9)",
+                        borderWidth: 1,
+                        borderColor: "rgba(148, 163, 184, 0.7)",
+                      }}
+                    >
+                      <Text className="text-foreground font-bold">
+                        {player.username.charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <View className="flex-1">
                   <Text className="text-foreground text-lg font-semibold">
                     {player.username}
                   </Text>
@@ -47,6 +74,7 @@ export default function LeaderboardScreen() {
                     <Text className="text-muted text-sm">
                       {player.totalGamesPlayed} Spiele
                     </Text>
+                  </View>
                   </View>
                 </View>
 

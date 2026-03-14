@@ -13,9 +13,9 @@ const env = {
   appId: process.env.EXPO_PUBLIC_APP_ID ?? "",
   ownerId: process.env.EXPO_PUBLIC_OWNER_OPEN_ID ?? "",
   ownerName: process.env.EXPO_PUBLIC_OWNER_NAME ?? "",
-  // SYSTEMANWEISUNG: Zentrale Backend-URL für REST + WebSocket
-  // Permanente Backend-URL – hardcoded damit kein Build-Zeitpunkt-Problem entsteht
-  apiBaseUrl: "https://crazyamsel.manus.space",
+  // Zentrale Backend-URL für REST + WebSocket.
+  // Muss in .env / Build-Env gesetzt sein, um gemischte Server-Ziele zu vermeiden.
+  apiBaseUrl: process.env.EXPO_PUBLIC_API_URL ?? "",
   deepLinkScheme: schemeFromBundleId,
 };
 
@@ -33,12 +33,7 @@ export const API_BASE_URL = env.apiBaseUrl;
  */
 export function getApiBaseUrl(): string {
   if (!API_BASE_URL) {
-    // Im Web-Modus: relativer Pfad (kein Base-URL nötig)
-    if (typeof window !== "undefined" && typeof document !== "undefined") {
-      return "";
-    }
-    console.warn("[API] EXPO_PUBLIC_API_URL not set");
-    return "";
+    throw new Error("EXPO_PUBLIC_API_URL ist nicht gesetzt");
   }
   return API_BASE_URL.replace(/\/$/, "");
 }

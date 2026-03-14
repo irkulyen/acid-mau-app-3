@@ -9,9 +9,11 @@ import { describe, it, expect } from "vitest";
  * 3. Profil abrufen (authentifiziert)
  */
 describe("User Journey: Registrierung → Login", () => {
-  it("sollte Registrierung, Login und Profil-Abruf erfolgreich durchführen", async () => {
-    // Backend-URL aus Environment-Variable
-    const apiUrl = process.env.EXPO_PUBLIC_API_URL || "https://3000-izbr78esawvil2ox6c839-3f2186c3.us2.manus.computer";
+  const apiUrl = process.env.E2E_API_URL;
+  const runRemoteE2E = Boolean(apiUrl);
+
+  (runRemoteE2E ? it : it.skip)("sollte Registrierung, Login und Profil-Abruf erfolgreich durchführen", async () => {
+    if (!apiUrl) throw new Error("E2E_API_URL fehlt");
     
     // Test-User-Daten (eindeutige E-Mail für jeden Test-Run)
     const testUser = {

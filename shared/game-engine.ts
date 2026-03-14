@@ -120,9 +120,11 @@ export function startNewRound(state: GameState): GameState {
       // REGEL: Ass als Startkarte → erster Spieler setzt aus
       newState.skipNextPlayer = true;
     } else if (startCard.rank === "bube") {
-      // REGEL: Unter als Startkarte → KEINE Wunschfarbe (nächster Spieler frei wählen)
-      // currentWishSuit bleibt null (bereits gesetzt)
+      // REGEL: Unter als Startkarte → freier Eröffnungszug (jede Karte erlaubt)
+      // Wunschfarbe bleibt explizit leer.
+      newState.currentWishSuit = null;
       newState.skipNextPlayer = false;
+      newState.openingFreePlay = true;
     } else if (startCard.rank === "7") {
       // REGEL: 7 als Startkarte → Ziehkette startet
       newState.drawChainCount = 2;
@@ -596,6 +598,7 @@ function handleRestartRound(state: GameState, playerId: number): GameState {
 function handleLeaveGame(state: GameState, playerId: number): GameState {
   const newState = { ...state };
   const playerIndex = newState.players.findIndex((p) => p.id === playerId);
+  const leavingPlayer = playerIndex >= 0 ? newState.players[playerIndex] : null;
   
   if (playerIndex === -1) {
     return state; // Player not found
@@ -605,7 +608,7 @@ function handleLeaveGame(state: GameState, playerId: number): GameState {
   newState.players = newPlayers;
 
   // If host leaves, assign new host
-  if (newState.hostUserId === playerId && newPlayers.length > 0) {
+  if (leavingPlayer && newState.hostUserId === leavingPlayer.userId && newPlayers.length > 0) {
     newState.hostUserId = newPlayers[0].userId;
   }
   

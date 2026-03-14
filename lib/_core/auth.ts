@@ -18,19 +18,13 @@ export async function getSessionToken(): Promise<string | null> {
     if (Platform.OS === "web") {
       // Use localStorage for web
       const token = window.localStorage.getItem(SESSION_TOKEN_KEY);
-      console.log(
-        "[Auth] Session token retrieved from localStorage:",
-        token ? `present (${token.substring(0, 20)}...)` : "missing",
-      );
+      console.log("[Auth] Session token retrieved from localStorage:", token ? "present" : "missing");
       return token;
     }
 
     // Use SecureStore for native
     const token = await SecureStore.getItemAsync(SESSION_TOKEN_KEY);
-    console.log(
-      "[Auth] Session token retrieved from SecureStore:",
-      token ? `present (${token.substring(0, 20)}...)` : "missing",
-    );
+    console.log("[Auth] Session token retrieved from SecureStore:", token ? "present" : "missing");
     return token;
   } catch (error) {
     console.error("[Auth] Failed to get session token:", error);
@@ -40,7 +34,7 @@ export async function getSessionToken(): Promise<string | null> {
 
 export async function setSessionToken(token: string): Promise<void> {
   try {
-    console.log("[Auth] Setting session token...", token.substring(0, 20) + "...");
+    console.log("[Auth] Setting session token...");
     
     if (Platform.OS === "web") {
       // Use localStorage for web

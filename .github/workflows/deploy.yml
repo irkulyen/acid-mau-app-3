@@ -1,0 +1,137 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm -s tsc --noEmit
+
+      - name: Run tests
+        run: pnpm -s vitest run --reporter=basic
+
+  build_and_push:
+    needs: test
+    if: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          IMAGE_REF="${{ secrets.DOCKER_USERNAME }}/acid-mau:${{ github.sha }}"
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE_REF=${IMAGE_REF}" >> "$GITHUB_ENV"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/acid-mau:latest
+            ${{ secrets.DOCKER_USERNAME }}/acid-mau:${{ github.sha }}
+
+  deploy:
+    needs: build_and_push
+    if: ${{ secrets.DEPLOY_HOST != '' && secrets.DEPLOY_USER != '' && secrets.DEPLOY_SSH_KEY != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          GIT_SHA: ${{ github.sha }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          envs: GIT_SHA,DEPLOY_PATH
+          script_stop: true
+          script: |
+            set -euo pipefail
+            APP_DIR="${DEPLOY_PATH:-/opt/acid-mau}"
+            cd "$APP_DIR"
+
+            if [ -f ".env" ]; then
+              if grep -q '^SERVER_BUILD_ID=' .env; then
+                sed -i "s/^SERVER_BUILD_ID=.*/SERVER_BUILD_ID=${GIT_SHA}/" .env
+              else
+                echo "SERVER_BUILD_ID=${GIT_SHA}" >> .env
+              fi
+            else
+              echo "SERVER_BUILD_ID=${GIT_SHA}" > .env
+            fi
+
+            docker compose pull
+            docker compose up -d
+            docker compose ps
+
+  verify_deploy:
+    needs: deploy
+    if: ${{ secrets.DEPLOY_API_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify live deployment
+        env:
+          VERIFY_API_URL: ${{ secrets.DEPLOY_API_URL }}
+          EXPECT_BUILD_ID: ${{ github.sha }}
+          TELEMETRY_TOKEN: ${{ secrets.TELEMETRY_TOKEN }}
+          SOAK_CLIENTS: "4"
+          SOAK_DURATION_MS: "10000"
+        run: pnpm -s verify:deploy

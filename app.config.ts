@@ -2,15 +2,9 @@
 import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
-// SYSTEMANWEISUNG: EXPO_PUBLIC_API_URL Fallback (REGLEMENTIERT)
-// Primäre Quelle: process.env.EXPO_PUBLIC_API_URL
-// Fallback: NUR für Development, NUR als Übergang
+// EXPO_PUBLIC_API_URL is mandatory to keep all clients on the same backend.
 if (!process.env.EXPO_PUBLIC_API_URL) {
-  // Fallback auf permanente Production-Domain
-  process.env.EXPO_PUBLIC_API_URL = "https://crazyamsel.manus.space";
-  console.warn(
-    "⚠️ EXPO_PUBLIC_API_URL nicht gesetzt – nutze DEV-Fallback (http://localhost:3000)"
-  );
+  throw new Error("EXPO_PUBLIC_API_URL ist nicht gesetzt");
 }
 
 // Bundle ID format: space.manus.<project_name_dots>.<timestamp>

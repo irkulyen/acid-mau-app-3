@@ -72,9 +72,9 @@ export default function HomeScreen() {
           {/* Hero Section */}
           <View className="items-center gap-3 mt-4">
             <Image
-              source={require("@/assets/images/acid-mau-logo.png")}
-              style={{ width: 120, height: 120 }}
-              contentFit="contain"
+              source={require("@/assets/images/icon.png")}
+              style={{ width: 120, height: 120, borderRadius: 20 }}
+              contentFit="cover"
             />
             <Text className="text-4xl font-bold text-primary" style={{ marginTop: -4 }}>Acid-Mau</Text>
             <Text className="text-base text-muted text-center">

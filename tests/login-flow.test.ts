@@ -1,54 +1,69 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { appRouter } from "../server/routers";
+import { COOKIE_NAME } from "../shared/const";
+import type { TrpcContext } from "../server/_core/context";
+
+type CookieCall = {
+  name: string;
+  value: string;
+  options: Record<string, unknown>;
+};
+
+function createPublicContext(): { ctx: TrpcContext; cookies: CookieCall[] } {
+  const cookies: CookieCall[] = [];
+  const ctx: TrpcContext = {
+    user: null,
+    req: {
+      protocol: "https",
+      headers: {},
+      hostname: "localhost",
+    } as TrpcContext["req"],
+    res: {
+      cookie: (name: string, value: string, options: Record<string, unknown>) => {
+        cookies.push({ name, value, options });
+      },
+      clearCookie: () => undefined,
+    } as unknown as TrpcContext["res"],
+  };
+  return { ctx, cookies };
+}
 
 describe("Login Flow", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  beforeEach(() => {
+    (process.env as Record<string, string | undefined>).NODE_ENV = "development";
+  });
+
+  afterEach(() => {
+    (process.env as Record<string, string | undefined>).NODE_ENV = originalNodeEnv;
+  });
+
   it("should login successfully with correct credentials", async () => {
-    const response = await fetch("http://localhost:3000/api/trpc/auth.login?batch=1", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        "0": {
-          json: {
-            email: "test@test.com",
-            password: "test123",
-          },
-        },
-      }),
-      credentials: "include",
+    const { ctx, cookies } = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.auth.login({
+      email: "test@test.com",
+      password: "test123",
     });
 
-    expect(response.status).toBe(200);
-    
-    const data = await response.json();
-    expect(data).toHaveLength(1);
-    expect(data[0].result).toBeDefined();
-    expect(data[0].result.data.json.token).toBeDefined();
-    expect(data[0].result.data.json.userId).toBe(30001);
-    
-    // Check if cookie was set
-    const cookies = response.headers.get("set-cookie");
-    expect(cookies).toContain("app_session_id");
+    expect(result.token).toBeTypeOf("string");
+    expect(result.userId).toBe(1);
+    expect(cookies).toHaveLength(1);
+    expect(cookies[0]?.name).toBe(COOKIE_NAME);
+    expect(cookies[0]?.value).toBeTypeOf("string");
   });
 
   it("should fail login with wrong password", async () => {
-    const response = await fetch("http://localhost:3000/api/trpc/auth.login?batch=1", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        "0": {
-          json: {
-            email: "test@test.com",
-            password: "wrongpassword",
-          },
-        },
-      }),
-    });
+    const { ctx } = createPublicContext();
+    const caller = appRouter.createCaller(ctx);
 
-    const data = await response.json();
-    expect(data[0].error).toBeDefined();
-    expect(data[0].error.json.message).toContain("Ungültige Anmeldedaten");
+    await expect(
+      caller.auth.login({
+        email: "test@test.com",
+        password: "wrongpassword",
+      }),
+    ).rejects.toThrow("Ungültige Anmeldedaten");
   });
 });

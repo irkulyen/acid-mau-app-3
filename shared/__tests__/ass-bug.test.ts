@@ -25,6 +25,7 @@ function makeState(players: ReturnType<typeof makePlayer>[], discardPile: Card[]
     phase: "playing",
     players,
     currentPlayerIndex: 0,
+    dealerIndex: 0,
     deck: [makeCard("eichel", "9"), makeCard("gras", "9"), makeCard("herz", "9")],
     discardPile,
     direction: "clockwise",
@@ -35,7 +36,6 @@ function makeState(players: ReturnType<typeof makePlayer>[], discardPile: Card[]
     hostUserId: 1,
     hasRoundStarted: true,
     openingFreePlay: false,
-    maxPlayers: 2,
   };
 }
 

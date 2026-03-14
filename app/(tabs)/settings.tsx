@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ScrollView, Text, View, Alert } from "react-native";
 import { Touchable } from "@/components/ui/button";
 import { ScreenContainer } from "@/components/screen-container";
@@ -12,8 +12,43 @@ export default function SettingsScreen() {
   const router = useRouter();
   const logoutMutation = trpc.auth.logout.useMutation();
   const { data: profile } = trpc.profile.me.useQuery(undefined, { enabled: !!user });
-  const { closeAllRooms, isConnected } = useSocket();
+  const { closeAllRooms, closeEmptyRooms, isConnected, socket } = useSocket();
   const [closingRooms, setClosingRooms] = useState(false);
+  const [closingEmptyRooms, setClosingEmptyRooms] = useState(false);
+  const normalizeAdminName = (value: string | null | undefined) =>
+    (value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const isNamedAdmin = useMemo(() => {
+    const names = [normalizeAdminName(profile?.username), normalizeAdminName(user?.name)];
+    return names.includes("admin") || names.includes("irkulyen");
+  }, [profile?.username, user?.name]);
+  const isAdmin = isNamedAdmin;
+
+  useEffect(() => {
+    if (!socket) return;
+    const onRoomsClosed = (data: { count: number }) => {
+      setClosingRooms(false);
+      Alert.alert("Erledigt", `${data.count} Räume wurden geschlossen.`);
+    };
+    const onEmptyRoomsClosed = (data: { count: number }) => {
+      setClosingEmptyRooms(false);
+      Alert.alert("Erledigt", `${data.count} leere Räume wurden bereinigt.`);
+    };
+    const onSocketError = (data: { message: string }) => {
+      if (!closingRooms && !closingEmptyRooms) return;
+      setClosingRooms(false);
+      setClosingEmptyRooms(false);
+      Alert.alert("Admin-Fehler", data?.message || "Unbekannter Fehler");
+    };
+
+    socket.on("admin:rooms-closed", onRoomsClosed);
+    socket.on("admin:empty-rooms-closed", onEmptyRoomsClosed);
+    socket.on("error", onSocketError);
+    return () => {
+      socket.off("admin:rooms-closed", onRoomsClosed);
+      socket.off("admin:empty-rooms-closed", onEmptyRoomsClosed);
+      socket.off("error", onSocketError);
+    };
+  }, [socket, closingRooms, closingEmptyRooms]);
 
   const handleLogout = async () => {
     console.log("[DEBUG] handleLogout called - DIRECT ACTION (no Alert)");
@@ -137,12 +172,41 @@ export default function SettingsScreen() {
             </View>
           </View>
 
-          {/* Admin Section - Acid_King only */}
-          {profile?.username === "Acid_King" && (
+          {/* Admin Section */}
+          {isAdmin && (
             <View className="bg-error rounded-2xl p-6 border border-error" style={{ opacity: 0.9 }}>
               <Text className="text-background text-lg font-bold mb-2">
                 Admin
               </Text>
+              <Touchable
+                onPress={() => {
+                  Alert.alert(
+                    "Leere Räume schließen?",
+                    "Schließt nur Räume ohne verbundene Spieler. Laufende Räume bleiben offen.",
+                    [
+                      { text: "Abbrechen", style: "cancel" },
+                      {
+                        text: "Leere schließen",
+                        style: "destructive",
+                        onPress: () => {
+                          if (!isConnected) {
+                            Alert.alert("Keine Verbindung", "Socket ist nicht verbunden.");
+                            return;
+                          }
+                          setClosingEmptyRooms(true);
+                          closeEmptyRooms(profile?.username || user?.name || "admin");
+                        },
+                      },
+                    ]
+                  );
+                }}
+                className="bg-background px-6 py-3 rounded-xl mb-3"
+                disabled={closingEmptyRooms}
+              >
+                <Text className="text-error font-bold text-center">
+                  {closingEmptyRooms ? "Bereinige..." : "Leere Räume schließen"}
+                </Text>
+              </Touchable>
               <Touchable
                 onPress={() => {
                   Alert.alert(
@@ -154,12 +218,12 @@ export default function SettingsScreen() {
                         text: "Alle schließen",
                         style: "destructive",
                         onPress: () => {
+                          if (!isConnected) {
+                            Alert.alert("Keine Verbindung", "Socket ist nicht verbunden.");
+                            return;
+                          }
                           setClosingRooms(true);
-                          closeAllRooms("Acid_King");
-                          setTimeout(() => {
-                            setClosingRooms(false);
-                            Alert.alert("Erledigt", "Alle Räume wurden geschlossen.");
-                          }, 2000);
+                          closeAllRooms(profile?.username || user?.name || "admin");
                         },
                       },
                     ]

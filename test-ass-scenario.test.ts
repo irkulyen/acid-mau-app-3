@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createGameState, startGame, processAction } from "./shared/game-engine";
 import { performGamePreparation } from "./shared/game-preparation";
+import { getEffectiveTopCard, getPlayableCards } from "./shared/game-rules";
 import type { Player } from "./shared/game-types";
 
 describe("2-Player Ass scenario", () => {
@@ -20,11 +21,19 @@ describe("2-Player Ass scenario", () => {
     console.log("- Player 0 hand:", gameState.players[0].hand.length);
     console.log("- Player 1 hand:", gameState.players[1].hand.length);
 
-    // Find an Ass in current player's hand
+    // Find a playable Ass in current player's hand
     const currentPlayer = gameState.players[gameState.currentPlayerIndex];
-    const assCard = currentPlayer.hand.find(c => c.rank === "ass");
+    const topCard = getEffectiveTopCard(gameState.discardPile);
+    const playableCards = getPlayableCards(
+      currentPlayer.hand,
+      topCard,
+      gameState.currentWishSuit,
+      gameState.drawChainCount,
+    );
+    const assCard = playableCards.find(c => c.rank === "ass");
 
     if (assCard) {
+      const hadSingleCardBeforePlay = currentPlayer.hand.length === 1;
       console.log("\nPlaying Ass:", assCard.id);
       gameState = processAction(gameState, { type: "PLAY_CARD", cardId: assCard.id }, currentPlayer.id);
       
@@ -36,9 +45,16 @@ describe("2-Player Ass scenario", () => {
       console.log("- skipNextPlayer:", gameState.skipNextPlayer);
       console.log("- currentPlayerIndex:", gameState.currentPlayerIndex);
 
-      expect(gameState.phase).toBe("playing");
+      if (hadSingleCardBeforePlay) {
+        // If Ass was the last card, round end is expected.
+        expect(gameState.phase).toBe("round_end");
+      } else {
+        expect(gameState.phase).toBe("playing");
+        // In a 2-player game, Ass must not skip and the same player should be up next.
+        expect(gameState.players[gameState.currentPlayerIndex].id).toBe(currentPlayer.id);
+      }
     } else {
-      console.log("No Ass found, test skipped");
+      console.log("No playable Ass found, test skipped");
     }
   });
 });

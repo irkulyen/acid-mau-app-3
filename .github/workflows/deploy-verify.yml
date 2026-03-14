@@ -1,0 +1,63 @@
+name: Deploy Verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      verify_api_url:
+        description: "API base URL to verify (e.g. https://example.com)"
+        required: true
+        type: string
+      expect_build_id:
+        description: "Expected build ID (optional)"
+        required: false
+        type: string
+      verify_strict:
+        description: "Strict mode (true/false)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      soak_clients:
+        description: "Number of soak clients"
+        required: false
+        default: "4"
+        type: string
+      soak_duration_ms:
+        description: "Soak duration in ms"
+        required: false
+        default: "10000"
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify deployment
+        env:
+          VERIFY_API_URL: ${{ inputs.verify_api_url }}
+          EXPECT_BUILD_ID: ${{ inputs.expect_build_id }}
+          VERIFY_STRICT: ${{ inputs.verify_strict }}
+          SOAK_CLIENTS: ${{ inputs.soak_clients }}
+          SOAK_DURATION_MS: ${{ inputs.soak_duration_ms }}
+          TELEMETRY_TOKEN: ${{ secrets.TELEMETRY_TOKEN }}
+        run: pnpm -s verify:deploy

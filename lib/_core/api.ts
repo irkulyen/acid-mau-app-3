@@ -24,7 +24,7 @@ export async function apiCall<T>(endpoint: string, options: RequestInit = {}): P
   
   if (sessionToken) {
     headers["Authorization"] = `Bearer ${sessionToken}`;
-    console.log("[API] Authorization header added:", sessionToken.substring(0, 20) + "...");
+    console.log("[API] Authorization header added");
   }
 
   const baseUrl = getApiBaseUrl();
@@ -102,7 +102,6 @@ export async function exchangeOAuthCode(
   console.log("[API] OAuth exchange result:", {
     hasSessionToken: !!sessionToken,
     hasUser: !!result.user,
-    sessionToken: sessionToken ? `${sessionToken.substring(0, 50)}...` : null,
   });
 
   return {

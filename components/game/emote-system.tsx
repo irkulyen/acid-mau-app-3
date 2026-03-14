@@ -223,7 +223,7 @@ const styles = StyleSheet.create({
   },
   pickerContainer: {
     position: "absolute",
-    bottom: 180,
+    bottom: 148,
     left: 12,
     zIndex: 80,
   },

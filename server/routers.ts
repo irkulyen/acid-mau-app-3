@@ -1,9 +1,34 @@
 import { z } from "zod";
+import { mkdir, writeFile } from "fs/promises";
+import path from "path";
 import { COOKIE_NAME } from "../shared/const.js";
 import * as db from "./db";
+import * as roomManager from "./room-manager";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
+import { storagePut } from "./storage";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { realtimeStore } from "./realtime-store";
+
+const DATA_IMAGE_REGEX = /^data:image\/(jpeg|jpg|png|webp);base64,[a-z0-9+/=]+$/i;
+
+function isValidAvatarUrl(value: string): boolean {
+  if (DATA_IMAGE_REGEX.test(value)) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+const avatarUrlInputSchema = z
+  .string()
+  .trim()
+  .refine((value) => isValidAvatarUrl(value), {
+    message: "avatarUrl must be an http(s) URL or data:image/*;base64",
+  })
+  .nullish();
 
 export const appRouter = router({
   // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -105,7 +130,7 @@ export const appRouter = router({
       .input(
         z.object({
           username: z.string().min(3).max(50),
-          avatarUrl: z.string().url().optional(),
+          avatarUrl: avatarUrlInputSchema,
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -124,7 +149,7 @@ export const appRouter = router({
       .input(
         z.object({
           username: z.string().min(3).max(50).optional(),
-          avatarUrl: z.string().url().optional(),
+          avatarUrl: avatarUrlInputSchema,
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -136,6 +161,82 @@ export const appRouter = router({
         }
         await db.updatePlayerProfile(ctx.user.id, input);
         return { success: true };
+      }),
+    uploadAvatar: protectedProcedure
+      .input(
+        z.object({
+          base64: z.string().min(1),
+          mimeType: z.string().min(3),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const allowed = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+        const normalizedMime = input.mimeType.toLowerCase();
+        if (!allowed.has(normalizedMime)) {
+          throw new Error("Unsupported image type");
+        }
+
+        const rawBase64 = input.base64.includes(",") ? input.base64.split(",").pop() || "" : input.base64;
+        const binary = Buffer.from(rawBase64, "base64");
+        if (!binary.length) {
+          throw new Error("Invalid image payload");
+        }
+
+        const maxBytes = 2 * 1024 * 1024;
+        if (binary.length > maxBytes) {
+          throw new Error("Image too large (max 2MB)");
+        }
+
+        const ext = normalizedMime === "image/png" ? "png" : normalizedMime === "image/webp" ? "webp" : "jpg";
+        const key = `avatars/u-${ctx.user.id}-${Date.now()}.${ext}`;
+
+        let resolvedAvatarUrl: string;
+        try {
+          const uploaded = await storagePut(key, binary, normalizedMime);
+          resolvedAvatarUrl = uploaded.url;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const missingStorageCredentials = message.includes(
+            "Storage proxy credentials missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY"
+          );
+          if (!missingStorageCredentials) {
+            throw error;
+          }
+
+          // Local/dev fallback without storage proxy: persist file on local disk and serve via /uploads.
+          const fileName = `u-${ctx.user.id}-${Date.now()}.${ext}`;
+          const uploadDir = path.join(process.cwd(), "uploads", "avatars");
+          await mkdir(uploadDir, { recursive: true });
+          await writeFile(path.join(uploadDir, fileName), binary);
+
+          const forwardedProtoHeader = ctx.req.headers["x-forwarded-proto"];
+          const forwardedHostHeader = ctx.req.headers["x-forwarded-host"];
+          const proto =
+            (Array.isArray(forwardedProtoHeader) ? forwardedProtoHeader[0] : forwardedProtoHeader)?.split(",")[0]?.trim() ||
+            ctx.req.protocol ||
+            "https";
+          const host =
+            (Array.isArray(forwardedHostHeader) ? forwardedHostHeader[0] : forwardedHostHeader)?.split(",")[0]?.trim() ||
+            ctx.req.get("host");
+          if (!host) {
+            throw new Error("Avatar-Fallback fehlgeschlagen: Host nicht ermittelbar.");
+          }
+
+          resolvedAvatarUrl = `${proto}://${host}/uploads/avatars/${fileName}`;
+        }
+
+        const existingProfile = await db.getPlayerProfile(ctx.user.id);
+        if (existingProfile) {
+          await db.updatePlayerProfile(ctx.user.id, { avatarUrl: resolvedAvatarUrl });
+        } else {
+          const fallbackUsername = (ctx.user.name || ctx.user.email || `user-${ctx.user.id}`).slice(0, 50);
+          await db.createPlayerProfile({
+            userId: ctx.user.id,
+            username: fallbackUsername,
+            avatarUrl: resolvedAvatarUrl,
+          });
+        }
+        return { avatarUrl: resolvedAvatarUrl };
       }),
     leaderboard: publicProcedure
       .input(z.object({ limit: z.number().min(1).max(100).default(10) }))
@@ -157,7 +258,15 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const roomCode = Math.random().toString(36).substring(2, 10).toUpperCase();
+        let roomCode = "";
+        let attempts = 0;
+        do {
+          roomCode = roomManager.generateRoomCode();
+          attempts++;
+        } while (attempts < 10 && (await db.getGameRoomByCode(roomCode)));
+        if (!roomCode || (await db.getGameRoomByCode(roomCode))) {
+          throw new Error("Failed to generate room code");
+        }
         const roomId = await db.createGameRoom({
           roomCode,
           hostUserId: ctx.user.id,
@@ -172,7 +281,27 @@ export const appRouter = router({
       return db.getGameRoomByCode(input.roomCode);
     }),
     available: protectedProcedure.query(async () => {
-      return db.getAvailablePublicRooms();
+      const rooms = await db.getAvailablePublicRooms();
+      const result = [] as typeof rooms;
+
+      for (const room of rooms) {
+        const state = await realtimeStore.getGameState(room.id);
+        if (!state) {
+          // Stale DB room without active realtime session: hide from listing.
+          continue;
+        }
+
+        if (state.phase !== "waiting") {
+          continue;
+        }
+
+        const currentPlayers = state.players.length;
+        const maxPlayers = (state as any).maxPlayers || room.maxPlayers;
+        if (currentPlayers >= maxPlayers) continue;
+        result.push({ ...room, currentPlayers, maxPlayers, status: "waiting" });
+      }
+
+      return result;
     }),
     join: protectedProcedure
       .input(z.object({ roomCode: z.string() }))

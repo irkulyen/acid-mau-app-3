@@ -34,6 +34,8 @@ Gehe zu **Settings → Secrets and variables → Actions** und füge hinzu:
 | `DEPLOY_HOST` | Server IP/Domain | `123.45.67.89` |
 | `DEPLOY_USER` | SSH Benutzername | `ubuntu` |
 | `DEPLOY_SSH_KEY` | Private SSH Key | `-----BEGIN RSA PRIVATE KEY-----...` |
+| `DEPLOY_PATH` | App-Pfad auf Server (optional) | `/opt/acid-mau` |
+| `DEPLOY_API_URL` | Öffentliche API-URL für Post-Deploy Verify | `https://deine-domain.com` |
 
 ---
 
@@ -87,6 +89,13 @@ JWT_SECRET=dein-jwt-secret-mindestens-32-zeichen
 OAUTH_CLIENT_ID=dein-oauth-client-id
 OAUTH_CLIENT_SECRET=dein-oauth-client-secret
 OAUTH_REDIRECT_URI=https://deine-domain.com/api/oauth/callback
+CORS_ALLOWED_ORIGINS=https://deine-app-domain.com,https://*.expo.dev,https://*.exp.direct
+ENFORCE_SINGLE_SOCKET_INSTANCE=true
+SINGLE_SOCKET_LOCK_TTL_SEC=45
+ROOM_RECONCILE_INTERVAL_MS=60000
+TELEMETRY_TOKEN=optionaler-bearer-token-fuer-api-telemetry
+SERVER_BUILD_ID=git-sha-oder-release-tag
+ADMIN_USER_IDS=123,456
 ```
 
 ### 5. Erste Deployment
@@ -100,11 +109,17 @@ docker-compose up -d
 
 ## CI/CD Pipeline
 
-### Workflow-Schritte
+### Workflow-Schritte (`deploy.yml`)
 
 1. **Test** – TypeScript-Check + Vitest
 2. **Build** – Docker Image bauen und zu Docker Hub pushen
 3. **Deploy** – SSH zum Server, `docker-compose pull` + `docker-compose up -d`
+4. **Verify** – automatische Live-Verifikation (`verify:deploy`) inkl. Build-ID/Soak
+
+### GitHub Actions Workflows im Repo
+
+- `CI`: TypeScript + Tests auf Push/PR
+- `Deploy Verify`: Manuell triggerbar mit `verify_api_url`, optional `expect_build_id`
 
 ### Manuelles Deployment
 
@@ -150,6 +165,43 @@ docker-compose ps
 curl http://localhost:3000/api/health
 ```
 
+### Multiplayer Smoke-Check
+
+Nach dem Deployment einen kurzen Socket-Lasttest ausführen:
+
+```bash
+SOAK_API_URL=https://deine-domain.com SOAK_CLIENTS=6 SOAK_DURATION_MS=20000 pnpm test:soak
+```
+
+Optional: Telemetrie abrufen (falls `TELEMETRY_TOKEN` gesetzt ist):
+
+```bash
+curl -H "Authorization: Bearer $TELEMETRY_TOKEN" https://deine-domain.com/api/telemetry
+```
+
+### Vollständige Deploy-Verifikation
+
+Health + Build-ID + Telemetry + Socket-Soak in einem Lauf:
+
+```bash
+VERIFY_API_URL=https://deine-domain.com EXPECT_BUILD_ID=$SERVER_BUILD_ID pnpm verify:deploy
+```
+
+Hinweis:
+- `VERIFY_STRICT=false` erlaubt fehlende Telemetry/Health-Felder für Legacy-Deployments.
+- Standard ist `STRICT=true` (fehlende Felder = Fail).
+
+### Diagnose: Freunde können Raum nicht beitreten
+
+1. `GET /api/health` prüfen:
+   - `socketPath` muss `/api/socket.io` sein.
+   - `corsAllowAllOrigins=false` in Produktion und `corsConfiguredOrigins` muss die echte Frontend-Domain enthalten.
+2. `GET /api/telemetry` prüfen:
+   - `pending`/`lastFlushedSnapshot` auf `cors.blocked.http` und `cors.blocked.socket` kontrollieren.
+   - `errors.join_room_reason.*` zeigt den häufigsten Join-Fehlergrund.
+3. End-to-End mit Lasttest validieren:
+   - `SOAK_API_URL=https://deine-domain.com SOAK_CLIENTS=6 SOAK_DURATION_MS=20000 pnpm test:soak`
+
 ---
 
 ## Troubleshooting
@@ -189,14 +241,13 @@ docker image prune -f
 
 ### Mehr API-Instanzen
 
-Bearbeite `docker-compose.yml`:
+Aktuell gilt: **Socket-Multiplayer ist nur als Single-Replica stabil**.
+Nutze daher vorerst genau **eine** `api`-Instanz und skaliere vertikal (CPU/RAM), bis eine cluster-fähige Socket-Architektur (Redis-Adapter + session affinity + verteilter State) umgesetzt ist.
 
-```yaml
-services:
-  api:
-    deploy:
-      replicas: 3  # 3 API-Instanzen
-```
+Wenn du dennoch mehrere Instanzen betreibst, benötigst du zwingend:
+1. Session Affinity (Sticky Sessions) am Load Balancer.
+2. Verteilte Socket.IO-Adapter-Infrastruktur.
+3. Konsistenten, nicht nur lokalen Realtime-Game-State.
 
 ### Load Balancer
 
@@ -209,13 +260,13 @@ Nutze **nginx** oder **Traefik** als Reverse Proxy vor den API-Containern.
 ### Datenbank-Backup
 
 ```bash
-docker-compose exec db pg_dump -U acid_mau acid_mau > backup_$(date +%Y%m%d).sql
+docker-compose exec db mysqldump -uroot -p"$DB_ROOT_PASSWORD" acid_mau > backup_$(date +%Y%m%d).sql
 ```
 
 ### Datenbank wiederherstellen
 
 ```bash
-docker-compose exec -T db psql -U acid_mau acid_mau < backup_20260226.sql
+docker-compose exec -T db mysql -uroot -p"$DB_ROOT_PASSWORD" acid_mau < backup_20260226.sql
 ```
 
 ---
@@ -224,4 +275,4 @@ docker-compose exec -T db psql -U acid_mau acid_mau < backup_20260226.sql
 
 - [Docker Dokumentation](https://docs.docker.com/)
 - [GitHub Actions Dokumentation](https://docs.github.com/en/actions)
-- [PostgreSQL Backup Guide](https://www.postgresql.org/docs/current/backup.html)
+- [MySQL Backup Guide](https://dev.mysql.com/doc/refman/8.0/en/backup-and-recovery.html)

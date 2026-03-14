@@ -1,4 +1,5 @@
 import * as db from "./db";
+import { ENV } from "./_core/env";
 
 /**
  * In-Memory Room Manager
@@ -18,6 +19,10 @@ interface RoomRecord {
 // In-Memory room storage (fallback)
 const inMemoryRooms = new Map<string, RoomRecord>();
 let nextRoomId = 1;
+
+function shouldUseInMemoryFallback() {
+  return !ENV.isProduction;
+}
 
 /**
  * Generiere einen eindeutigen Room-Code (6 Zeichen, alphanumerisch)
@@ -39,8 +44,10 @@ export async function createRoom(data: {
   roomCode: string;
   hostUserId: number;
   maxPlayers?: number;
+  isPrivate?: boolean;
 }): Promise<RoomRecord> {
   const maxPlayers = data.maxPlayers || 5;
+  const isPrivate = data.isPrivate === true;
 
   // Versuche DB zuerst
   try {
@@ -62,7 +69,7 @@ export async function createRoom(data: {
       hostUserId: data.hostUserId,
       maxPlayers,
       status: "waiting",
-      isPrivate: 0,
+      isPrivate: isPrivate ? 1 : 0,
     });
 
     const room: RoomRecord = {
@@ -78,6 +85,9 @@ export async function createRoom(data: {
     console.log(`[room-manager] Room created in DB: ${data.roomCode} (${roomId})`);
     return room;
   } catch (dbError) {
+    if (!shouldUseInMemoryFallback()) {
+      throw dbError;
+    }
     console.warn(`[room-manager] DB create failed, using in-memory: ${dbError}`);
 
     // Fallback: In-Memory
@@ -133,6 +143,9 @@ export async function getRoomByCode(roomCode: string): Promise<RoomRecord | null
 
     return null;
   } catch (error) {
+    if (!shouldUseInMemoryFallback()) {
+      throw error;
+    }
     console.warn(`[room-manager] DB query failed for ${roomCode}, checking in-memory only: ${error}`);
     // Fallback: In-Memory ist schon oben geprüft
     return null;
@@ -175,6 +188,9 @@ export async function getRoomById(roomId: number): Promise<RoomRecord | null> {
 
     return null;
   } catch (error) {
+    if (!shouldUseInMemoryFallback()) {
+      throw error;
+    }
     console.warn(`[room-manager] DB query failed for room ${roomId}: ${error}`);
     return null;
   }
@@ -205,6 +221,9 @@ export async function updateRoomStatus(
     ]);
     console.log(`[room-manager] Room ${roomId} status updated to ${status}`);
   } catch (error) {
+    if (!shouldUseInMemoryFallback()) {
+      throw error;
+    }
     console.warn(`[room-manager] DB update failed for room ${roomId}: ${error}`);
   }
 }
@@ -231,6 +250,9 @@ export async function deleteRoom(roomId: number): Promise<void> {
     ]);
     console.log(`[room-manager] Room ${roomId} deleted`);
   } catch (error) {
+    if (!shouldUseInMemoryFallback()) {
+      throw error;
+    }
     console.warn(`[room-manager] DB delete failed for room ${roomId}: ${error}`);
   }
 }
@@ -257,6 +279,9 @@ export async function getPublicRooms(): Promise<RoomRecord[]> {
       createdAt: r.createdAt || new Date(),
     }));
   } catch (error) {
+    if (!shouldUseInMemoryFallback()) {
+      throw error;
+    }
     console.warn(`[room-manager] DB query failed for public rooms: ${error}`);
     // Fallback: In-Memory Räume die "waiting" sind
     return Array.from(inMemoryRooms.values()).filter((r) => r.status === "waiting");

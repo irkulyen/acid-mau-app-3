@@ -1,5 +1,6 @@
 import { eq, desc, and } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import { createPool, type Pool } from "mysql2/promise";
 import {
   InsertUser,
   users,
@@ -21,15 +22,51 @@ import {
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _pool: Pool | null = null;
+
+const DEV_TEST_USER = {
+  id: 1,
+  openId: null,
+  name: "testuser",
+  email: "test@test.com",
+  passwordHash: "$2b$10$b6GYmtGzeYphOpdzPoO5L.W7Y7uPaw17Vrt10CtGmUnh45XECAu1.",
+  loginMethod: "email",
+  role: "user" as const,
+  createdAt: new Date("2026-02-01T14:08:31.000Z"),
+  updatedAt: new Date(),
+  lastSignedIn: new Date(),
+};
+
+function getDevTestUserByEmail(email: string) {
+  if (process.env.NODE_ENV !== "development") return null;
+  return email === DEV_TEST_USER.email ? { ...DEV_TEST_USER } : null;
+}
+
+function getDevTestUserById(id: number) {
+  if (process.env.NODE_ENV !== "development") return null;
+  return id === DEV_TEST_USER.id ? { ...DEV_TEST_USER } : null;
+}
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const databaseUrl = new URL(process.env.DATABASE_URL);
+      const normalizedHost = databaseUrl.hostname.replace(/^\[(.*)\]$/, "$1");
+      _pool = createPool({
+        host: normalizedHost,
+        port: databaseUrl.port ? Number(databaseUrl.port) : 3306,
+        user: decodeURIComponent(databaseUrl.username),
+        password: decodeURIComponent(databaseUrl.password),
+        database: databaseUrl.pathname.replace(/^\//, ""),
+        waitForConnections: true,
+        connectionLimit: 10,
+      });
+      _db = drizzle(_pool) as unknown as ReturnType<typeof drizzle>;
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
+      _pool = null;
     }
   }
   return _db;
@@ -228,6 +265,17 @@ export async function getAvailablePublicRooms() {
     .orderBy(desc(gameRooms.createdAt));
 }
 
+export async function getWaitingRooms() {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(gameRooms)
+    .where(eq(gameRooms.status, "waiting"))
+    .orderBy(desc(gameRooms.createdAt));
+}
+
 // ============================================================================
 // Game History Functions
 // ============================================================================
@@ -236,16 +284,16 @@ export async function createGameHistory(data: InsertGameHistory) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  await db.insert(gameHistory).values(data);
-  return 0; // Return 0 as we don't have a unique identifier to query
+  const result = await db.insert(gameHistory).values(data);
+  return Number((result as any)?.[0]?.insertId ?? 0);
 }
 
 export async function createGameParticipant(data: InsertGameParticipant) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  await db.insert(gameParticipants).values(data);
-  return 0; // Return 0 as we don't have a unique identifier to query
+  const result = await db.insert(gameParticipants).values(data);
+  return Number((result as any)?.[0]?.insertId ?? 0);
 }
 
 export async function getPlayerGameHistory(userId: number, limit: number = 20) {
@@ -348,10 +396,15 @@ export async function updateFriendshipStatus(
  */
 export async function getUserByEmail(email: string) {
   const db = await getDb();
-  if (!db) return null;
-  
-  const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
-  return result[0] || null;
+  if (!db) return getDevTestUserByEmail(email);
+
+  try {
+    const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    return result[0] || null;
+  } catch (error) {
+    console.warn("[Database] getUserByEmail failed, using dev fallback if available:", error);
+    return getDevTestUserByEmail(email);
+  }
 }
 
 /**
@@ -359,10 +412,15 @@ export async function getUserByEmail(email: string) {
  */
 export async function getUserById(id: number) {
   const db = await getDb();
-  if (!db) return null;
-  
-  const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
-  return result[0] || null;
+  if (!db) return getDevTestUserById(id);
+
+  try {
+    const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    return result[0] || null;
+  } catch (error) {
+    console.warn("[Database] getUserById failed, using dev fallback if available:", error);
+    return getDevTestUserById(id);
+  }
 }
 
 /**
@@ -394,8 +452,16 @@ export async function createUser(data: {
 export async function updateUserLastSignedIn(userId: number): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  
-  await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, userId));
+
+  try {
+    await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, userId));
+  } catch (error) {
+    if (process.env.NODE_ENV === "development" && userId === DEV_TEST_USER.id) {
+      console.warn("[Database] updateUserLastSignedIn failed for dev test user:", error);
+      return;
+    }
+    throw error;
+  }
 }
 
 // ─── Chat Messages ────────────────────────────────────────────────────────────

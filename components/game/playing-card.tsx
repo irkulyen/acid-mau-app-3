@@ -20,24 +20,24 @@ const SUIT_SYMBOLS: Record<string, string> = {
 };
 
 const SUIT_COLORS: Record<string, string> = {
-  eichel: "#8B4513",
-  gruen: "#228B22",
-  rot: "#DC143C",
-  schellen: "#DAA520",
+  eichel: "#6F4A1D",
+  gruen: "#2E7D32",
+  rot: "#B71C1C",
+  schellen: "#9C6B14",
 };
 
 const SUIT_BG_COLORS: Record<string, string> = {
-  eichel: "rgba(139, 69, 19, 0.15)",
-  gruen: "rgba(34, 139, 34, 0.15)",
-  rot: "rgba(220, 20, 60, 0.15)",
-  schellen: "rgba(218, 165, 32, 0.15)",
+  eichel: "rgba(111, 74, 29, 0.1)",
+  gruen: "rgba(46, 125, 50, 0.1)",
+  rot: "rgba(183, 28, 28, 0.1)",
+  schellen: "rgba(156, 107, 20, 0.1)",
 };
 
 const SUIT_BORDER_GLOW: Record<string, string> = {
-  eichel: "rgba(139, 69, 19, 0.4)",
-  gruen: "rgba(34, 139, 34, 0.4)",
-  rot: "rgba(220, 20, 60, 0.4)",
-  schellen: "rgba(218, 165, 32, 0.4)",
+  eichel: "rgba(111, 74, 29, 0.28)",
+  gruen: "rgba(46, 125, 50, 0.28)",
+  rot: "rgba(183, 28, 28, 0.28)",
+  schellen: "rgba(156, 107, 20, 0.28)",
 };
 
 const RANK_DISPLAY: Record<string, string> = {
@@ -134,16 +134,16 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
           cardSize,
           {
             borderColor: suitColor,
-            backgroundColor: "#0D0D0D",
+            backgroundColor: "#F5F2E8",
             shadowColor: isSpecial ? suitColor : "#000",
-            shadowOpacity: isSpecial ? 0.6 : 0.3,
-            shadowRadius: isSpecial ? 10 : 6,
+            shadowOpacity: isSpecial ? 0.32 : 0.2,
+            shadowRadius: isSpecial ? 9 : 6,
           },
           pressed && styles.pressed,
           disabled && styles.disabled,
         ]}
       >
-        {/* Subtle gradient background */}
+        {/* Paper tone surface */}
         <View
           style={[
             StyleSheet.absoluteFill,
@@ -154,9 +154,20 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
           ]}
         />
 
+        {/* Slight paper grain illusion */}
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              borderRadius: 10,
+              backgroundColor: "rgba(111, 92, 61, 0.05)",
+            },
+          ]}
+        />
+
         {/* Top-left corner: rank + suit mini */}
         <View style={styles.cornerTopLeft}>
-          <Text style={[styles.cornerRank, { color: "white", fontSize: textSize * 0.85, fontWeight: "900", textShadowColor: "rgba(0,0,0,0.8)", textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 2 }]}>
+          <Text style={[styles.cornerRank, { color: suitColor, fontSize: textSize * 0.85, fontWeight: "900" }]}>
             {rankDisplay}
           </Text>
           <Text style={{ fontSize: symbolSize, marginTop: -4 }}>{suitSymbol}</Text>
@@ -164,13 +175,13 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
 
         {/* Center: large suit symbol */}
         <View style={styles.cardCenter}>
-          <Text style={{ fontSize: textSize * 1.2 }}>{suitSymbol}</Text>
+          <Text style={{ fontSize: textSize * 1.22 }}>{suitSymbol}</Text>
         </View>
 
         {/* Bottom-right corner: rank + suit mini (rotated) */}
         <View style={styles.cornerBottomRight}>
           <Text style={{ fontSize: symbolSize, marginBottom: -4 }}>{suitSymbol}</Text>
-          <Text style={[styles.cornerRank, { color: "white", fontSize: textSize * 0.85, fontWeight: "900", textShadowColor: "rgba(0,0,0,0.8)", textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 2 }]}>
+          <Text style={[styles.cornerRank, { color: suitColor, fontSize: textSize * 0.85, fontWeight: "900" }]}>
             {rankDisplay}
           </Text>
         </View>
@@ -209,10 +220,10 @@ const styles = StyleSheet.create({
   },
   card: {
     borderRadius: 12,
-    borderWidth: 2,
+    borderWidth: 2.2,
     padding: 4,
     shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
+    elevation: 9,
     overflow: "visible",
   },
   cornerTopLeft: {

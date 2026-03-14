@@ -2,8 +2,15 @@ import bcrypt from "bcrypt";
 import { SignJWT, jwtVerify } from "jose";
 
 const SALT_ROUNDS = 10;
+const JWT_SECRET_RAW = process.env.JWT_SECRET;
+if (
+  process.env.NODE_ENV === "production" &&
+  (!JWT_SECRET_RAW || JWT_SECRET_RAW === "your-secret-key-change-in-production")
+) {
+  throw new Error("JWT_SECRET must be set to a strong value in production");
+}
 const JWT_SECRET = new TextEncoder().encode(
-  process.env.JWT_SECRET || "your-secret-key-change-in-production"
+  JWT_SECRET_RAW || "your-secret-key-change-in-production"
 );
 
 /**

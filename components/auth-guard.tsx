@@ -33,12 +33,27 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     retry: 1,
   });
 
-  // If profile query fails with auth error, clear token and redirect to login
+  const isAuthError = (message?: string) => {
+    const normalized = (message || "").toLowerCase();
+    return (
+      normalized.includes("unauthorized") ||
+      normalized.includes("not authenticated") ||
+      normalized.includes("please login") ||
+      normalized.includes("no active session")
+    );
+  };
+
+  // Only hard-logout on actual auth/session errors.
+  // Transient backend failures (e.g. rate limit, timeouts) must not kick players out mid-game.
   useEffect(() => {
     if (profileError && user) {
       console.log("[AuthGuard] Profile query failed:", profileError.message);
-      console.log("[AuthGuard] Clearing invalid session...");
-      logout();
+      if (isAuthError(profileError.message)) {
+        console.log("[AuthGuard] Auth/session error -> clearing session");
+        void logout();
+        return;
+      }
+      console.log("[AuthGuard] Non-auth profile error -> keeping session");
     }
   }, [profileError, user, logout]);
 

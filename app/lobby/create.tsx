@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { View, Text, Switch, ActivityIndicator, Pressable, ScrollView, Alert } from "react-native";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import { ScreenContainer } from "@/components/screen-container";
 import { useAuth } from "@/lib/auth-provider";
 import { useSocket } from "@/lib/socket-provider";
@@ -15,10 +16,12 @@ export default function CreateRoomScreen() {
   const [botCount, setBotCount] = useState(0);
   const [isCreating, setIsCreating] = useState(false);
 
-  const { isConnected, createRoom, setOnRoomCreated, setOnError } = useSocket();
+  const { isConnected, gameState, createRoom, leaveRoom, recoverSession, setOnRoomCreated, setOnError } = useSocket();
+  const canCreateRoom = Boolean(user && profile) && !isCreating;
 
-  // Registriere Callbacks beim Mount, entferne beim Unmount
-  useEffect(() => {
+  // Register callbacks only while this screen is focused.
+  // Prevents background screens from overriding active room/join handlers.
+  useFocusEffect(useCallback(() => {
     setOnRoomCreated((data) => {
       console.log("[create] Room created:", data.roomCode);
       setIsCreating(false);
@@ -27,6 +30,45 @@ export default function CreateRoomScreen() {
 
     setOnError((error) => {
       setIsCreating(false);
+      if (error.includes("User already has an active room session")) {
+        const roomCode = gameState?.roomCode;
+        const player = gameState?.players.find((p) => p.userId === user?.id);
+
+        Alert.alert(
+          "Aktive Sitzung gefunden",
+          roomCode
+            ? `Du bist noch im Raum ${roomCode}.`
+            : "Du bist noch in einem aktiven Raum.",
+          [
+            roomCode
+              ? {
+                  text: "Zum Raum",
+                  onPress: () => router.push(`/lobby/room?code=${roomCode}` as any),
+                }
+              : {
+                  text: "Sitzung aktualisieren",
+                  onPress: () => {
+                    void recoverSession();
+                  },
+                },
+            (gameState && player)
+              ? {
+                  text: "Verlassen & neu erstellen",
+                  style: "destructive",
+                  onPress: () => {
+                    leaveRoom(gameState.roomId, player.id);
+                    setTimeout(() => {
+                      if (user && profile) {
+                        createRoom(user.id, profile.username, maxPlayers, isPrivate);
+                      }
+                    }, 350);
+                  },
+                }
+              : { text: "OK", style: "cancel" },
+          ],
+        );
+        return;
+      }
       Alert.alert("Fehler", error);
     });
 
@@ -34,7 +76,7 @@ export default function CreateRoomScreen() {
       setOnRoomCreated(null);
       setOnError(null);
     };
-  }, [botCount, router, setOnRoomCreated, setOnError]);
+  }, [botCount, createRoom, gameState, isPrivate, leaveRoom, maxPlayers, profile, recoverSession, router, setOnRoomCreated, setOnError, user]));
 
   // Bot count can't exceed maxPlayers - 1 (at least 1 human)
   const maxBots = maxPlayers - 1;
@@ -46,19 +88,21 @@ export default function CreateRoomScreen() {
     }
   };
 
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     if (!user || !profile) {
       Alert.alert("Fehler", "Bitte melde dich an, um einen Raum zu erstellen");
       return;
     }
 
     if (!isConnected) {
-      Alert.alert("Fehler", "Keine Verbindung zum Server. Bitte warte kurz.");
+      setIsCreating(true);
+      await recoverSession();
+      createRoom(user.id, profile.username, maxPlayers, isPrivate);
       return;
     }
 
     setIsCreating(true);
-    createRoom(user.id, profile.username, maxPlayers);
+    createRoom(user.id, profile.username, maxPlayers, isPrivate);
   };
 
   return (
@@ -173,14 +217,14 @@ export default function CreateRoomScreen() {
 
             {/* Create Button */}
             <Pressable
-              onPress={handleCreateRoom}
-              disabled={isCreating || !isConnected}
+              onPress={canCreateRoom ? handleCreateRoom : undefined}
+              disabled={!canCreateRoom}
               style={({ pressed }) => [{
-                backgroundColor: '#228B22',
+                backgroundColor: canCreateRoom ? '#228B22' : '#94A3B8',
                 paddingHorizontal: 32,
                 paddingVertical: 20,
                 borderRadius: 16,
-                opacity: (isCreating || !isConnected) ? 0.5 : pressed ? 0.8 : 1,
+                opacity: canCreateRoom ? (pressed ? 0.8 : 1) : 0.55,
               }]}
             >
               {isCreating ? (
@@ -194,7 +238,7 @@ export default function CreateRoomScreen() {
 
             {!isConnected && (
               <Text className="text-muted text-center text-sm">
-                Verbinde mit Server...
+                Verbinde mit Server... (du kannst trotzdem tippen, wir versuchen Reconnect)
               </Text>
             )}
           </View>

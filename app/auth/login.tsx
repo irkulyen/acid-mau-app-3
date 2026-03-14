@@ -15,6 +15,19 @@ export default function LoginScreen() {
   const [error, setError] = useState("");
 
   const loginMutation = trpc.auth.login.useMutation();
+  const toFriendlyAuthError = (err: any): string => {
+    const raw = String(err?.message || "");
+    const normalized = raw.toLowerCase();
+    if (
+      normalized.includes("rate exceeded") ||
+      normalized.includes("too many") ||
+      normalized.includes("429") ||
+      (normalized.includes("json parse error") && normalized.includes("unexpected character: r"))
+    ) {
+      return "Zu viele Anfragen. Bitte 30-60 Sekunden warten und erneut anmelden.";
+    }
+    return raw || "Unbekannter Fehler";
+  };
 
   const handleEmailLogin = async () => {
     console.log("[Login] Button clicked - START");
@@ -34,8 +47,7 @@ export default function LoginScreen() {
         password,
       });
       
-      console.log("[Login] Success!", result);
-      console.log("[Login] Token received:", result.token.substring(0, 20) + "...");
+      console.log("[Login] Success!");
       
       // Store token in frontend (LocalStorage for web, SecureStore for native)
       const { setSessionToken } = await import("@/lib/_core/auth");
@@ -55,7 +67,7 @@ export default function LoginScreen() {
       
     } catch (error: any) {
       console.error("[Login] Error:", error);
-      setError("Login fehlgeschlagen: " + (error.message || "Unbekannter Fehler"));
+      setError("Login fehlgeschlagen: " + toFriendlyAuthError(error));
     } finally {
       setIsLoading(false);
     }

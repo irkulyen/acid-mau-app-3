@@ -1,10 +1,13 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { View, Text, Pressable, ActivityIndicator, ScrollView, Alert } from "react-native";
+import { Image } from "expo-image";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { useAuth } from "@/lib/auth-provider";
 import { useSocket, type PreparationData } from "@/lib/socket-provider";
+import { getApiBaseUrl } from "@/constants/oauth";
 import { GamePreparationScreen, type PreparationDrawData } from "@/components/game/game-preparation-screen";
+import { getBotProfileByName } from "@/lib/bot-profiles";
 import { trpc } from "@/lib/trpc";
 
 export default function RoomScreen() {
@@ -15,52 +18,109 @@ export default function RoomScreen() {
 
   const [isJoining, setIsJoining] = useState(true);
   const [botsAdded, setBotsAdded] = useState(false);
+  const [joinAttempt, setJoinAttempt] = useState(0);
+  const normalizedCode = useMemo(() => (code || "").toUpperCase(), [code]);
+  const joinUsername = useMemo(() => {
+    const preferred = (profile?.username || "").trim();
+    if (preferred.length >= 3) return preferred;
+    const fallbackName = (user?.name || "").trim();
+    if (fallbackName.length >= 3) return fallbackName;
+    if (user?.id) return `Spieler${user.id}`;
+    return "Spieler";
+  }, [profile?.username, user?.name, user?.id]);
 
   // Preparation state
   const [showPreparation, setShowPreparation] = useState(false);
   const [prepSeatDraws, setPrepSeatDraws] = useState<PreparationDrawData[]>([]);
   const [prepDealerDraws, setPrepDealerDraws] = useState<PreparationDrawData[]>([]);
-  const [preparationDone, setPreparationDone] = useState(false);
+  const [prepPhase, setPrepPhase] = useState<"seat_selection" | "dealer_selection">("seat_selection");
+  const [prepSeatOrder, setPrepSeatOrder] = useState<number[]>([]);
+  const [prepSeatChoices, setPrepSeatChoices] = useState<Array<{ userId: number; seatPosition: number }>>([]);
+  const [prepCurrentPicker, setPrepCurrentPicker] = useState<number | null>(null);
 
   const {
     isConnected,
     gameState,
     joinRoom,
+    recoverSession,
     leaveRoom,
     sendAction,
     addBot,
+    chooseSeat,
     sendPreparationDone,
     setOnPreparation,
+    setOnRoomJoined,
     setOnError,
   } = useSocket();
+  const backendUrl = useMemo(() => {
+    try {
+      return getApiBaseUrl();
+    } catch {
+      return "(nicht konfiguriert)";
+    }
+  }, []);
+  const roomStateMatchesCode = Boolean(gameState && gameState.roomCode.toUpperCase() === normalizedCode);
+  const activeGameState = roomStateMatchesCode ? gameState : null;
 
   // Registriere Callbacks
   useEffect(() => {
+    setOnRoomJoined((data) => {
+      if (data.roomCode.toUpperCase() === normalizedCode) {
+        // If room-joined arrives before/without a state packet, force recovery.
+        void recoverSession();
+        setTimeout(() => void recoverSession(), 700);
+      }
+    });
+
     setOnPreparation((data: PreparationData) => {
       console.log("[room] Preparation data received!", data);
       setPrepSeatDraws(data.seatDraws.map(d => ({ playerId: d.playerId, username: d.username, card: d.card })));
       setPrepDealerDraws(data.dealerDraws.map(d => ({ playerId: d.playerId, username: d.username, card: d.card })));
+      setPrepPhase(data.phase ?? "seat_selection");
+      setPrepSeatOrder(data.seatPickOrderUserIds ?? []);
+      setPrepSeatChoices(data.seatChoices ?? []);
+      setPrepCurrentPicker(data.currentPickerUserId ?? null);
       setShowPreparation(true);
     });
 
     setOnError((error: string) => {
       Alert.alert("Fehler", error);
+      if (isJoining && /Room not found|Invalid room code|User already in another active room|Game session unavailable|Room is full|Game already in progress|Too many join attempts|Failed to join|Socket-Verbindung blockiert|Server nicht erreichbar|Socket-Verbindung fehlgeschlagen/i.test(error)) {
+        setIsJoining(false);
+        router.replace("/lobby/join" as any);
+      }
     });
 
     return () => {
+      setOnRoomJoined(null);
       setOnPreparation(null);
       setOnError(null);
     };
-  }, [setOnPreparation, setOnError]);
+  }, [isJoining, normalizedCode, recoverSession, router, setOnPreparation, setOnRoomJoined, setOnError]);
 
   // Join room when connected
   useEffect(() => {
-    if (!user || !profile || !code) return;
+    if (!user || !code) return;
     if (isConnected && isJoining) {
-      joinRoom(code, user.id, profile.username);
-      setIsJoining(false);
+      joinRoom(normalizedCode, user.id, joinUsername);
+      setJoinAttempt((prev) => prev + 1);
     }
-  }, [isConnected, user, profile, code, isJoining]);
+  }, [isConnected, user, code, isJoining, joinRoom, joinUsername, normalizedCode]);
+
+  useEffect(() => {
+    if (!isConnected || !isJoining || activeGameState || !user || !code) return;
+    const timeout = setTimeout(() => {
+      if (joinAttempt >= 6) {
+        setIsJoining(false);
+        Alert.alert("Verbindung fehlgeschlagen", "Konnte dem Raum nicht beitreten. Bitte erneut versuchen.");
+        router.replace("/lobby/join" as any);
+        return;
+      }
+      joinRoom(normalizedCode, user.id, joinUsername);
+      setJoinAttempt((prev) => prev + 1);
+    }, 3500);
+    return () => clearTimeout(timeout);
+  }, [isConnected, isJoining, activeGameState, joinAttempt, user, code, joinRoom, joinUsername, router, normalizedCode]);
 
   // Auto-add bots after joining room
   useEffect(() => {
@@ -132,7 +192,6 @@ export default function RoomScreen() {
   // Handle preparation completion
   const handlePreparationComplete = useCallback(() => {
     setShowPreparation(false);
-    setPreparationDone(true);
     if (gameState?.roomId) {
       sendPreparationDone(gameState.roomId);
     }
@@ -140,36 +199,57 @@ export default function RoomScreen() {
 
   // Navigate to game when it starts AND preparation is done
   useEffect(() => {
-    if (gameState && gameState.phase === "playing") {
-      if (showPreparation) return;
+    if (gameState && gameState.roomCode.toUpperCase() === normalizedCode) {
+      setIsJoining(false);
+    }
+  }, [gameState, normalizedCode]);
+
+  // Navigate to game when it starts AND preparation is done
+  useEffect(() => {
+    if (gameState && gameState.phase === "playing" && !showPreparation) {
+      setShowPreparation(false);
       router.replace(`/game/play?code=${code}` as any);
     }
-  }, [gameState?.phase, showPreparation, preparationDone]);
+  }, [gameState?.phase, code, router, showPreparation]);
 
-  const isHost = gameState && user && gameState.hostUserId === user.id;
-  const canStart = gameState && gameState.players.length >= 2;
+  const isHost = activeGameState && user && activeGameState.hostUserId === user.id;
+  const canStart = activeGameState && activeGameState.players.length >= 2;
+  const myPreparationUserId = user?.id ?? activeGameState?.players.find((p) => profile?.username && p.username === profile.username)?.userId;
 
   // Show preparation screen
-  if (showPreparation && gameState) {
+  if (showPreparation && activeGameState) {
     return (
       <ScreenContainer edges={["top", "bottom", "left", "right"]}>
         <GamePreparationScreen
-          players={gameState.players}
+          players={activeGameState.players}
           serverSeatDraws={prepSeatDraws}
           serverDealerDraws={prepDealerDraws}
+          preparationPhase={prepPhase}
+          seatPickOrderUserIds={prepSeatOrder}
+          seatChoices={prepSeatChoices}
+          currentPickerUserId={prepCurrentPicker}
+          myUserId={myPreparationUserId}
+          myUsername={profile?.username}
+          onChooseSeat={(seatPosition, pickerUserId) => {
+            if (!activeGameState?.roomId) return;
+            chooseSeat(activeGameState.roomId, seatPosition, pickerUserId ?? myPreparationUserId);
+          }}
           onComplete={handlePreparationComplete}
         />
       </ScreenContainer>
     );
   }
 
-  if (!isConnected || !gameState) {
+  if (!isConnected || !activeGameState) {
     return (
       <ScreenContainer className="p-6">
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#228B22" />
           <Text className="text-foreground text-lg mt-4">
             {!isConnected ? "Verbinde mit Server..." : "Trete Spielraum bei..."}
+          </Text>
+          <Text className="text-muted text-xs mt-2 text-center">
+            Backend: {backendUrl}
           </Text>
         </View>
       </ScreenContainer>
@@ -184,31 +264,46 @@ export default function RoomScreen() {
           <Text className="text-3xl font-bold text-foreground">Warteraum</Text>
           <View className="flex-row items-center gap-2 mt-2">
             <Text className="text-muted">Raum-Code:</Text>
-            <Text className="text-primary text-xl font-bold">{gameState.roomCode}</Text>
+            <Text className="text-primary text-xl font-bold">{activeGameState.roomCode}</Text>
           </View>
         </View>
 
         {/* Player List */}
         <View className="bg-surface rounded-2xl p-6 border border-border mb-6">
           <Text className="text-foreground text-lg font-semibold mb-4">
-            Spieler ({gameState.players.length})
+            Spieler ({activeGameState.players.length})
           </Text>
           <View className="gap-3">
-            {gameState.players.map((player) => (
+            {activeGameState.players.map((player, index) => (
               <View
-                key={player.id}
+                key={`${player.id}-${player.userId}-${index}`}
                 className="flex-row items-center p-3 bg-background rounded-xl"
               >
-                <View className="w-10 h-10 rounded-full bg-primary items-center justify-center mr-3">
-                  <Text className="text-background text-lg font-bold">
-                    {player.username.charAt(0).toUpperCase()}
-                  </Text>
-                </View>
+                {(() => {
+                  const botImage = player.userId < 0 ? getBotProfileByName(player.username)?.imagePath : undefined;
+                  const avatarSource = player.avatarUrl ? { uri: player.avatarUrl } : botImage;
+                  if (avatarSource) {
+                    return (
+                      <Image
+                        source={avatarSource}
+                        style={{ width: 40, height: 40, borderRadius: 20, marginRight: 12, borderWidth: 1, borderColor: "rgba(148, 163, 184, 0.7)" }}
+                        contentFit="cover"
+                      />
+                    );
+                  }
+                  return (
+                    <View className="w-10 h-10 rounded-full bg-primary items-center justify-center mr-3">
+                      <Text className="text-background text-lg font-bold">
+                        {player.username.charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  );
+                })()}
                 <View className="flex-1">
                   <Text className="text-foreground font-semibold">
                     {player.username}
                   </Text>
-                  {player.userId === gameState.hostUserId && (
+                  {player.userId === activeGameState.hostUserId && (
                     <Text className="text-warning text-sm">Host</Text>
                   )}
                 </View>
@@ -255,13 +350,13 @@ export default function RoomScreen() {
 
               <Pressable
                 onPress={handleAddBot}
-                disabled={gameState && gameState.players.length >= (gameState as any).maxPlayers}
+                disabled={activeGameState && activeGameState.players.length >= (activeGameState as any).maxPlayers}
                 style={({ pressed }) => [{
                   backgroundColor: '#0a7ea4',
                   paddingHorizontal: 32,
                   paddingVertical: 16,
                   borderRadius: 16,
-                  opacity: (gameState && gameState.players.length >= (gameState as any).maxPlayers) ? 0.5 : pressed ? 0.8 : 1,
+                  opacity: (activeGameState && activeGameState.players.length >= (activeGameState as any).maxPlayers) ? 0.5 : pressed ? 0.8 : 1,
                 }]}
               >
                 <Text className="text-background text-lg font-semibold text-center">
@@ -291,8 +386,8 @@ export default function RoomScreen() {
           {isHost && (
             <Pressable
               onPress={handleDeleteRoom}
-              disabled={deleteRoomMutation.isPending}
-              style={({ pressed }) => [{
+                disabled={deleteRoomMutation.isPending}
+                style={({ pressed }) => [{
                 backgroundColor: '#EF4444',
                 paddingHorizontal: 32,
                 paddingVertical: 16,

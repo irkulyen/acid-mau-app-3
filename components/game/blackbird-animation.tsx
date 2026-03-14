@@ -18,54 +18,58 @@ const { width: SW, height: SH } = Dimensions.get("window");
 const TRAIL_EMOJIS = ["⭐", "💫", "✨", "🌟", "💥", "🎵", "🎶", "❗", "❓", "🔥", "💀", "🃏"];
 
 const ROUND_START_PHRASES = [
-  "Neue Runde!", "Aufgewacht!", "Weiter geht's!", "Los los los!",
-  "Keine Pause!", "Nächste Runde!", "Frisch ans Werk!", "Karten neu!",
-  "Wer wird's?", "Immer weiter!", "Kein Erbarmen!", "Augen auf!",
+  "Na gut… neue Runde.",
+  "Mal sehen, wer diesmal abstürzt.",
+  "Konzentriert euch. Oder versucht es zumindest.",
+  "Auf geht’s.",
 ];
 
 const WINNER_PHRASES = [
-  (n: string) => `${n} ist fertig! 🎉`,
-  (n: string) => `${n} legt die letzte Karte! 🏆`,
-  (n: string) => `${n} raus! 🚀`,
-  (n: string) => `Gut gemacht, ${n}! 👏`,
-  (n: string) => `${n} ist durch! ⚡`,
-  (n: string) => `${n} – keine Karten mehr! 😎`,
+  (n: string) => `${n} ist durch.`,
+  (n: string) => `${n} legt die letzte Karte.`,
+  (n: string) => "Und weg ist er.",
+  () => "Nicht schlecht.",
+  () => "Sauber gespielt.",
 ];
 
 const LOSER_PHRASES = [
-  (n: string) => `${n} hat verloren! 😂`,
-  (n: string) => `${n} kassiert Punkte! 💸`,
-  (n: string) => `Autsch, ${n}! 😬`,
-  (n: string) => `${n} – das war nix! 🤦`,
-  (n: string) => `${n} zieht den Kürzeren! 😭`,
-  (n: string) => `Pech gehabt, ${n}! 😈`,
-  (n: string) => `${n} scheidet aus? Fast! 😅`,
+  (n: string) => `Autsch, ${n}.`,
+  () => "Das tat weh.",
+  () => "Das war wohl nichts.",
 ];
 
 const DRAW_CHAIN_PHRASES = [
-  (count: number) => `${count} Karten ziehen! 💀`,
-  (count: number) => `${count}er Kette! Das wird teuer! 💸`,
-  (count: number) => `Aua, ${count} Karten! 😱`,
-  (count: number) => `${count}x Ziehen! Hahaha! 😈`,
-  (count: number) => `${count} Karten?! RIP! ☠️`,
+  (count: number) => `Oh oh… das wird teuer (+${count}).`,
+  () => "Zieh mal schön Karten.",
+  () => "Das eskaliert gerade.",
+  () => "Ich glaube, das tut gleich weh.",
+];
+
+const SEVEN_PLAYED_PHRASES = [
+  (count: number) => count > 1 ? `Sieben gelegt. Ziehkette bei ${count}.` : "Sieben gelegt.",
+  () => "Oh oh… das wird teuer.",
+  () => "Das eskaliert gerade.",
 ];
 
 const ASS_PHRASES = [
-  "Aussetzen! Ha! 🛑",
-  "Tja, Pech! Nächster! 😏",
-  "Übersprungen! 💨",
-  "Ass! Sitz! 🪑",
-  "Nix da, aussetzen! 🚫",
+  "Pause für dich.",
+  "Du setzt aus.",
+  "Kurz zuschauen.",
 ];
 
 const UNTER_PHRASES = [
-  (suit: string) => `${suit} ist Trumpf! 🎯`,
-  (suit: string) => `Wunsch: ${suit}! 🃏`,
-  (suit: string) => `${suit} gewünscht! 👆`,
-  (suit: string) => `Ab jetzt ${suit}! 🔄`,
+  () => "Neue Farbe.",
+  () => "Interessante Wahl.",
+  () => "Mal sehen, ob das funktioniert.",
 ];
 
-type EventType = "round_start" | "winner" | "loser" | "draw_chain" | "ass" | "unter";
+const MVP_PHRASES = [
+  (s: string) => `Highlight: ${s}`,
+  (s: string) => `MVP: ${s}`,
+  (s: string) => `Starker Moment: ${s}`,
+];
+
+type EventType = "round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "ass" | "unter" | "mvp";
 
 interface TrailParticle {
   id: number;
@@ -90,6 +94,11 @@ interface BlackbirdAnimationProps {
   eventType?: EventType;
   drawChainCount?: number;
   wishSuit?: string;
+  intensity?: 1 | 2 | 3 | 4 | 5;
+  spotlightPlayerName?: string;
+  statsText?: string;
+  variant?: string;
+  phrase?: string;
   onDone?: () => void;
   onStart?: () => void;
 }
@@ -101,10 +110,10 @@ function pickRandom<T>(arr: T[]): T {
 const CONFETTI_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#FF8C00", "#00FF88", "#FF69B4", "#7B68EE"];
 
 export function BlackbirdAnimation({
-  visible, loserName, winnerName, eventType, drawChainCount, wishSuit, onDone, onStart,
+  visible, loserName, winnerName, eventType, drawChainCount, wishSuit, intensity = 3, spotlightPlayerName, statsText, variant, phrase: phraseFromServer, onDone, onStart,
 }: BlackbirdAnimationProps) {
   const translateX = useSharedValue(-120);
-  const translateY = useSharedValue(SH * 0.3);
+  const translateY = useSharedValue(SH * 0.42);
   const rotate = useSharedValue(0);
   const scaleX = useSharedValue(1);
   const scaleY = useSharedValue(1);
@@ -163,15 +172,22 @@ export function BlackbirdAnimation({
     } else if (loserName) {
       evType = "loser";
       selectedPhrase = pickRandom(LOSER_PHRASES)(loserName);
+    } else if (eventType === "seven_played") {
+      selectedPhrase = pickRandom(SEVEN_PLAYED_PHRASES)(drawChainCount || 1);
     } else if (eventType === "draw_chain" && drawChainCount) {
       selectedPhrase = pickRandom(DRAW_CHAIN_PHRASES)(drawChainCount);
     } else if (eventType === "ass") {
       selectedPhrase = pickRandom(ASS_PHRASES);
     } else if (eventType === "unter" && wishSuit) {
-      const suitLabels: Record<string, string> = { eichel: "🌰 Eichel", gruen: "🍀 Grün", rot: "❤️ Rot", schellen: "🔔 Schellen" };
-      selectedPhrase = pickRandom(UNTER_PHRASES)(suitLabels[wishSuit] || wishSuit);
+      selectedPhrase = pickRandom(UNTER_PHRASES)();
+    } else if (eventType === "mvp" && statsText) {
+      selectedPhrase = pickRandom(MVP_PHRASES)(statsText);
     } else {
       selectedPhrase = pickRandom(ROUND_START_PHRASES);
+    }
+
+    if (phraseFromServer && phraseFromServer.trim().length > 0) {
+      selectedPhrase = phraseFromServer.trim();
     }
 
     setPhrase(selectedPhrase);
@@ -179,7 +195,7 @@ export function BlackbirdAnimation({
 
     // Reset all
     translateX.value = -120;
-    translateY.value = SH * 0.3;
+    translateY.value = SH * 0.42;
     rotate.value = 0;
     scaleX.value = 1;
     scaleY.value = 1;
@@ -198,18 +214,19 @@ export function BlackbirdAnimation({
     if (onStart) runOnJS(onStart)();
 
     // === DRAMATIC ENTRANCE: Screen flash ===
-    const isBigEvent = evType === "winner" || evType === "loser" || evType === "round_start";
+    const isBigEvent = evType === "winner" || evType === "loser" || evType === "round_start" || evType === "mvp";
     if (isBigEvent) {
+      const power = Math.max(1, intensity);
       flashOpacity.value = withSequence(
-        withTiming(0.35, { duration: 80 }),
+        withTiming(Math.min(0.2 + power * 0.08, 0.6), { duration: 80 }),
         withTiming(0, { duration: 400, easing: Easing.out(Easing.ease) }),
       );
       // Screen shake
       shakeX.value = withSequence(
-        withTiming(6, { duration: 40 }),
-        withTiming(-6, { duration: 40 }),
-        withTiming(4, { duration: 40 }),
-        withTiming(-3, { duration: 40 }),
+        withTiming(4 + power, { duration: 40 }),
+        withTiming(-(4 + power), { duration: 40 }),
+        withTiming(3 + Math.floor(power / 2), { duration: 40 }),
+        withTiming(-2 - Math.floor(power / 3), { duration: 40 }),
         withTiming(0, { duration: 60 }),
       );
     }
@@ -265,18 +282,18 @@ export function BlackbirdAnimation({
     );
 
     // Event-based flights
-    const isQuickEvent = evType === "draw_chain" || evType === "ass" || evType === "unter";
+    const isQuickEvent = evType !== "mvp";
     const dur = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.inOut(Easing.ease) });
     const fast = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.out(Easing.cubic) });
 
     if (isQuickEvent) {
       // Quick fly-by
       translateX.value = withSequence(
-        withTiming(SW * 0.15, dur(600)),
-        withTiming(SW * 0.35, dur(400)),
-        withTiming(SW * 0.35, { duration: 1200 }),
-        withTiming(SW * 0.55, dur(400)),
-        withTiming(SW + 140, fast(600), (finished) => {
+        withTiming(SW * 0.15, dur(380)),
+        withTiming(SW * 0.35, dur(240)),
+        withTiming(SW * 0.35, { duration: 480 }),
+        withTiming(SW * 0.55, dur(220)),
+        withTiming(SW + 140, fast(420), (finished) => {
           if (finished) {
             opacity.value = withTiming(0, { duration: 150 });
             if (onDone) runOnJS(onDone)();
@@ -284,18 +301,18 @@ export function BlackbirdAnimation({
         }),
       );
       translateY.value = withSequence(
-        withTiming(SH * 0.25, dur(600)),
-        withTiming(SH * 0.2, dur(400)),
-        withTiming(SH * 0.2, { duration: 1200 }),
-        withTiming(SH * 0.28, dur(400)),
-        withTiming(SH * 0.15, fast(600)),
+        withTiming(SH * 0.36, dur(380)),
+        withTiming(SH * 0.32, dur(240)),
+        withTiming(SH * 0.32, { duration: 480 }),
+        withTiming(SH * 0.39, dur(220)),
+        withTiming(SH * 0.28, fast(420)),
       );
       rotate.value = withSequence(
-        withTiming(-10, dur(600)),
-        withTiming(5, dur(400)),
-        withTiming(0, { duration: 1200 }),
-        withTiming(10, dur(400)),
-        withTiming(-5, fast(600)),
+        withTiming(-10, dur(380)),
+        withTiming(5, dur(240)),
+        withTiming(0, { duration: 480 }),
+        withTiming(10, dur(220)),
+        withTiming(-5, fast(420)),
       );
     } else {
       // Full dramatic flight: ~6.5 seconds with dive-bomb and loop
@@ -317,16 +334,16 @@ export function BlackbirdAnimation({
       );
 
       translateY.value = withSequence(
-        withTiming(SH * 0.26, dur(1100)),
-        withTiming(SH * 0.10, dur(400)),
-        withTiming(SH * 0.2, dur(550)),
-        withTiming(SH * 0.02, dur(450)),
+        withTiming(SH * 0.36, dur(1100)),
+        withTiming(SH * 0.18, dur(400)),
+        withTiming(SH * 0.3, dur(550)),
+        withTiming(SH * 0.16, dur(450)),
         withTiming(SH * 0.45, dur(450)),
-        withTiming(SH * 0.28, dur(700)),
+        withTiming(SH * 0.34, dur(700)),
         withTiming(SH * 0.50, dur(550)),
-        withTiming(SH * 0.33, dur(280)),
+        withTiming(SH * 0.37, dur(280)),
         withTiming(SH * 0.4, dur(520)),
-        withTiming(SH * 0.22, fast(800)),
+        withTiming(SH * 0.3, fast(800)),
       );
 
       rotate.value = withSequence(
@@ -376,19 +393,19 @@ export function BlackbirdAnimation({
     );
 
     // Speech bubble timing
-    const speechDelay = isQuickEvent ? 800 : 1800;
-    const speechDuration = isQuickEvent ? 1800 : 2200;
+    const speechDelay = isQuickEvent ? 380 : 900;
+    const speechDuration = isQuickEvent ? 850 : 1200;
     const speechTimer = setTimeout(() => {
       setSpeechPos({
         x: isQuickEvent ? SW * 0.12 : SW * 0.14,
-        y: isQuickEvent ? SH * 0.06 : SH * 0.04,
+        y: isQuickEvent ? SH * 0.16 : SH * 0.14,
       });
       speechScale.value = withSpring(1, { damping: 12, stiffness: 200 });
       speechOpacity.value = withTiming(1, { duration: 200 });
 
       // Confetti burst for winner/loser
       if (evType === "winner" || evType === "loser") {
-        runOnJS(spawnConfetti)(SW * 0.4, SH * 0.15);
+        runOnJS(spawnConfetti)(SW * 0.4, SH * 0.26);
       }
 
       setTimeout(() => {
@@ -399,19 +416,19 @@ export function BlackbirdAnimation({
 
     // Trail particles
     const intervals: ReturnType<typeof setTimeout>[] = [speechTimer];
-    const trailCount = isQuickEvent ? 6 : 14;
-    const totalTime = isQuickEvent ? 3200 : 6500;
+    const trailCount = isQuickEvent ? 5 : 10;
+    const totalTime = isQuickEvent ? 1900 : 3600;
     for (let i = 0; i < trailCount; i++) {
       const t = (totalTime / trailCount) * (i + 0.5);
       const progress = t / totalTime;
       const x = SW * (0.05 + progress * 0.85);
-      const y = SH * (0.15 + Math.sin(progress * Math.PI * 3) * 0.15 + Math.random() * 0.08);
+      const y = SH * (0.28 + Math.sin(progress * Math.PI * 3) * 0.1 + Math.random() * 0.06);
       const timer = setTimeout(() => runOnJS(addTrailParticle)(x, y), t);
       intervals.push(timer);
     }
 
     return () => intervals.forEach(clearTimeout);
-  }, [visible]);
+  }, [visible, phraseFromServer]);
 
   const containerStyle = useAnimatedStyle(() => ({
     transform: [
@@ -465,12 +482,17 @@ export function BlackbirdAnimation({
 
   // Event-based colors
   const getColors = () => {
+    if (variant === "legendary") {
+      return { bubble: "rgba(35, 25, 0, 0.98)", border: "#FFD700", text: "#FFE066", tail: "#FFD700", glow: "#FFC700", body: "#3D3000" };
+    }
     switch (currentEvent) {
       case "winner": return { bubble: "rgba(5, 25, 5, 0.97)", border: "#22C55E", text: "#4ADE80", tail: "#22C55E", glow: "#00FF00", body: "#003300" };
       case "loser": return { bubble: "rgba(30, 5, 5, 0.97)", border: "#FF4444", text: "#FF6B6B", tail: "#FF4444", glow: "#FF0000", body: "#330000" };
       case "draw_chain": return { bubble: "rgba(30, 15, 0, 0.97)", border: "#FF8C00", text: "#FFB347", tail: "#FF8C00", glow: "#FF6600", body: "#331A00" };
+      case "seven_played": return { bubble: "rgba(20, 30, 0, 0.97)", border: "#F59E0B", text: "#FCD34D", tail: "#F59E0B", glow: "#F59E0B", body: "#2A2200" };
       case "ass": return { bubble: "rgba(20, 0, 30, 0.97)", border: "#A855F7", text: "#C084FC", tail: "#A855F7", glow: "#9333EA", body: "#1A0033" };
       case "unter": return { bubble: "rgba(0, 15, 25, 0.97)", border: "#06B6D4", text: "#67E8F9", tail: "#06B6D4", glow: "#0891B2", body: "#001A26" };
+      case "mvp": return { bubble: "rgba(35, 25, 0, 0.98)", border: "#FFD700", text: "#FFE066", tail: "#FFD700", glow: "#FFC700", body: "#3D3000" };
       default: return { bubble: "rgba(255, 255, 255, 0.97)", border: "#FFD700", text: "#111", tail: "#FFD700", glow: "#FFD700", body: "#332B00" };
     }
   };
@@ -541,6 +563,20 @@ export function BlackbirdAnimation({
         }}>
           {phrase}
         </Text>
+        {(spotlightPlayerName || statsText) && (
+          <Text style={{
+            color: "#E8E8E8",
+            fontWeight: "700",
+            fontSize: 12,
+            textAlign: "center",
+            marginTop: 6,
+            opacity: 0.9,
+          }}>
+            {[spotlightPlayerName ? `Spotlight: ${spotlightPlayerName}` : "", statsText || ""]
+              .filter(Boolean)
+              .join(" • ")}
+          </Text>
+        )}
         {/* Speech tail */}
         <View style={{
           position: "absolute",
@@ -705,7 +741,7 @@ export function BlackbirdAnimation({
               position: "absolute", top: 3, left: 6,
             }} />
             {/* Red eye reflection for loser/draw events */}
-            {(currentEvent === "loser" || currentEvent === "draw_chain") && (
+            {(currentEvent === "loser" || currentEvent === "draw_chain" || currentEvent === "seven_played") && (
               <View style={{
                 width: 2, height: 2,
                 backgroundColor: "#FF0000",

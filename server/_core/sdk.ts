@@ -239,7 +239,7 @@ class SDKServer {
     let token: string | undefined;
     if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
       token = authHeader.slice("Bearer ".length).trim();
-      console.log("[Auth] Extracted Bearer token:", token.substring(0, 20) + "...");
+      console.log("[Auth] Extracted Bearer token");
     }
 
     // Try JWT verification first (for email/password login)
@@ -248,7 +248,7 @@ class SDKServer {
       try {
         const { verifyToken } = await import("../auth-helpers");
         const jwtPayload = await verifyToken(token);
-        console.log("[Auth] JWT payload:", jwtPayload);
+        console.log("[Auth] JWT payload:", jwtPayload ? "valid" : "invalid");
         
         if (jwtPayload) {
           // Valid JWT token - load user by ID

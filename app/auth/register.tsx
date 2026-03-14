@@ -17,6 +17,15 @@ export default function RegisterScreen() {
   const [error, setError] = useState("");
 
   const registerMutation = trpc.auth.register.useMutation();
+  const isRateLimitLike = (message: string) => {
+    const normalized = (message || "").toLowerCase();
+    return (
+      normalized.includes("rate exceeded") ||
+      normalized.includes("too many") ||
+      normalized.includes("429") ||
+      (normalized.includes("json parse error") && normalized.includes("unexpected character: r"))
+    );
+  };
 
   const handleRegister = async () => {
     setError("");
@@ -95,6 +104,9 @@ export default function RegisterScreen() {
       } else if (error.message) {
         // Rohe JSON-Strings oder Zod-Fehlermeldungen abfangen
         const msg = error.message;
+        if (isRateLimitLike(msg)) {
+          errorMessage = "Zu viele Anfragen. Bitte 30-60 Sekunden warten und erneut versuchen.";
+        } else
         if (msg.startsWith('[') || msg.startsWith('{') || msg.includes('invalid_format')) {
           // Versuche spezifische Felder zu erkennen
           if (msg.includes('email')) {

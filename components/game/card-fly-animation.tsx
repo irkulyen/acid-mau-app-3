@@ -49,7 +49,7 @@ export function CardFlyAnimation({ card, visible, onDone }: CardFlyAnimationProp
     translateX.value = startX;
     translateY.value = startY;
     rotate.value = 0;
-    scale.value = 0.85;
+    scale.value = 0.9;
     opacity.value = 0;
 
     // Fade in immediately
@@ -57,21 +57,21 @@ export function CardFlyAnimation({ card, visible, onDone }: CardFlyAnimationProp
 
     // Scale up slightly during flight, then back to normal
     scale.value = withSequence(
-      withTiming(1.15, { duration: 200, easing: Easing.out(Easing.cubic) }),
-      withTiming(1.0, { duration: 200, easing: Easing.inOut(Easing.ease) }),
+      withTiming(1.08, { duration: 120, easing: Easing.out(Easing.cubic) }),
+      withTiming(1.0, { duration: 110, easing: Easing.inOut(Easing.ease) }),
     );
 
     // Fly to center with slight arc
     const midX = endX + (Math.random() - 0.5) * 30;
     translateX.value = withSequence(
-      withTiming(midX, { duration: 250, easing: Easing.out(Easing.cubic) }),
-      withTiming(endX, { duration: 150, easing: Easing.inOut(Easing.ease) }),
+      withTiming(midX, { duration: 130, easing: Easing.out(Easing.cubic) }),
+      withTiming(endX, { duration: 110, easing: Easing.inOut(Easing.ease) }),
     );
 
     translateY.value = withSequence(
-      withTiming(endY - 20, { duration: 250, easing: Easing.out(Easing.cubic) }),
+      withTiming(endY - 16, { duration: 130, easing: Easing.out(Easing.cubic) }),
       withTiming(endY, {
-        duration: 150,
+        duration: 110,
         easing: Easing.inOut(Easing.ease),
       }, (finished) => {
         if (finished && onDone) {
@@ -83,7 +83,7 @@ export function CardFlyAnimation({ card, visible, onDone }: CardFlyAnimationProp
 
     // Rotate during flight
     rotate.value = withTiming(randomRotation, {
-      duration: 400,
+      duration: 230,
       easing: Easing.out(Easing.cubic),
     });
   }, [visible, card?.id]);

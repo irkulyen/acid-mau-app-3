@@ -50,7 +50,7 @@ export type InsertPlayerProfile = typeof playerProfiles.$inferInsert;
 // Game rooms for multiplayer lobbies
 export const gameRooms = mysqlTable("game_rooms", {
   id: int("id").autoincrement().primaryKey(),
-  roomCode: varchar("roomCode", { length: 8 }).notNull().unique(),
+  roomCode: varchar("roomCode", { length: 6 }).notNull().unique(),
   hostUserId: int("hostUserId").notNull(),
   status: mysqlEnum("status", ["waiting", "playing", "finished"]).default("waiting").notNull(),
   isPrivate: int("isPrivate").default(0).notNull(),

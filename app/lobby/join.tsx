@@ -54,7 +54,7 @@ export default function JoinRoomScreen() {
             onChangeText={(text) => setRoomCode(text.toUpperCase())}
             placeholder="Raum-Code eingeben"
             placeholderTextColor="#8B7355"
-            maxLength={8}
+            maxLength={6}
             autoCapitalize="characters"
             className="bg-background border border-border rounded-xl px-4 py-4 text-foreground text-lg mb-4"
           />

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { View, Text, StyleSheet, Dimensions, Platform } from "react-native";
+import { useState, useEffect, useRef } from "react";
+import { View, Text, StyleSheet, Dimensions, Platform, Pressable } from "react-native";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -39,6 +39,13 @@ interface GamePreparationScreenProps {
   serverSeatDraws?: PreparationDrawData[];
   /** Server-provided dealer draws (for online mode) */
   serverDealerDraws?: PreparationDrawData[];
+  preparationPhase?: "seat_selection" | "dealer_selection";
+  seatPickOrderUserIds?: number[];
+  seatChoices?: Array<{ userId: number; seatPosition: number }>;
+  currentPickerUserId?: number | null;
+  myUserId?: number;
+  myUsername?: string;
+  onChooseSeat?: (seatPosition: number, pickerUserId?: number) => void;
 }
 
 interface DrawnCard {
@@ -137,7 +144,19 @@ function AnimatedCard({
   );
 }
 
-export function GamePreparationScreen({ players, onComplete, serverSeatDraws, serverDealerDraws }: GamePreparationScreenProps) {
+export function GamePreparationScreen({
+  players,
+  onComplete,
+  serverSeatDraws,
+  serverDealerDraws,
+  preparationPhase,
+  seatPickOrderUserIds,
+  seatChoices,
+  currentPickerUserId,
+  myUserId,
+  myUsername,
+  onChooseSeat,
+}: GamePreparationScreenProps) {
   const [phase, setPhase] = useState<"seat_selection" | "dealer_selection" | "done">("seat_selection");
   const [seatCards, setSeatCards] = useState<DrawnCard[]>([]);
   const [dealerCards, setDealerCards] = useState<DrawnCard[]>([]);
@@ -145,9 +164,16 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
   const [dealerWinner, setDealerWinner] = useState<number | null>(null);
   const [sortedPlayers, setSortedPlayers] = useState<Player[]>([]);
   const [showTitle, setShowTitle] = useState(true);
+  const autoSeatPickSentRef = useRef(false);
 
   const titleOpacity = useSharedValue(1);
   const phaseTextOpacity = useSharedValue(0);
+  const isServerDriven = !!preparationPhase;
+  const normalizeUserId = (value: number | string | null | undefined): number | null => {
+    if (value == null) return null;
+    const parsed = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
 
   // Helper: convert server draws to DrawnCard[]
   // IMPORTANT: Always use d.username from server draws as authoritative source,
@@ -170,6 +196,14 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
 
   // Phase 1: Seat Selection
   useEffect(() => {
+    if (isServerDriven) {
+      if (serverSeatDraws && serverSeatDraws.length > 0) {
+        const drawn = serverDrawsToDrawnCards(serverSeatDraws, players);
+        setSeatCards(drawn);
+      }
+      return;
+    }
+
     let drawn: DrawnCard[];
 
     if (serverSeatDraws && serverSeatDraws.length > 0) {
@@ -213,10 +247,30 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
       clearTimeout(timer);
       clearTimeout(nextTimer);
     };
-  }, []);
+  }, [isServerDriven, players, serverSeatDraws]);
 
   // Phase 2: Dealer Selection
   useEffect(() => {
+    if (isServerDriven) {
+      if (serverDealerDraws && serverDealerDraws.length > 0) {
+        const drawn = serverDealerDraws.map((d) => {
+          const existingPlayer = players.find((p) => p.id === d.playerId);
+          const player: Player = {
+            id: d.playerId,
+            userId: existingPlayer?.userId ?? 0,
+            username: d.username,
+            hand: existingPlayer?.hand ?? [],
+            lossPoints: existingPlayer?.lossPoints ?? 0,
+            isEliminated: existingPlayer?.isEliminated ?? false,
+            isReady: existingPlayer?.isReady ?? false,
+          };
+          return { player, card: d.card };
+        });
+        setDealerCards(drawn);
+      }
+      return;
+    }
+
     if (phase !== "dealer_selection") return;
 
     let drawn: DrawnCard[];
@@ -271,10 +325,114 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
       clearTimeout(timer);
       clearTimeout(completeTimer);
     };
-  }, [phase]);
+  }, [isServerDriven, phase, players, serverDealerDraws, sortedPlayers]);
 
-  const currentCards = phase === "seat_selection" ? seatCards : dealerCards;
-  const currentWinner = phase === "seat_selection" ? seatWinner : dealerWinner;
+  // In online mode the server has already finalized state; keep dealer reveal visible
+  // briefly, then notify parent that preparation can be closed.
+  useEffect(() => {
+    if (!isServerDriven) return;
+    if (preparationPhase !== "dealer_selection") return;
+    if (!serverDealerDraws || serverDealerDraws.length === 0) return;
+
+    const doneTimer = setTimeout(() => {
+      onComplete(players, 0);
+    }, 5200);
+
+    return () => clearTimeout(doneTimer);
+  }, [isServerDriven, onComplete, players, preparationPhase, serverDealerDraws]);
+
+  // Emergency fallback: if seat selection is stuck, request parent completion.
+  useEffect(() => {
+    if (!isServerDriven) return;
+    if (preparationPhase !== "seat_selection") return;
+
+    const stuckTimer = setTimeout(() => {
+      onComplete(players, 0);
+    }, 6500);
+
+    return () => clearTimeout(stuckTimer);
+  }, [isServerDriven, onComplete, players, preparationPhase]);
+
+  const displayPhase = isServerDriven ? (preparationPhase ?? "seat_selection") : phase;
+  const currentCards = displayPhase === "seat_selection" ? seatCards : dealerCards;
+  const currentWinner = (() => {
+    if (!isServerDriven) {
+      return displayPhase === "seat_selection" ? seatWinner : dealerWinner;
+    }
+    if (currentCards.length === 0) return null;
+    const cmpCards = currentCards.map((d) => d.card);
+    if (displayPhase === "seat_selection") {
+      const highest = getHighestCard(cmpCards);
+      return highest ? currentCards.findIndex((d) => d.card.id === highest.id) : null;
+    }
+    const lowest = getLowestCard(cmpCards);
+    return lowest ? currentCards.findIndex((d) => d.card.id === lowest.id) : null;
+  })();
+  const normalizedSeatChoices = seatChoices ?? [];
+  const normalizedMyUserId = normalizeUserId(myUserId as number | string | null | undefined);
+  const normalizedCurrentPickerUserId = normalizeUserId(currentPickerUserId as number | string | null | undefined);
+  const effectiveCurrentPickerUserId =
+    normalizedCurrentPickerUserId ??
+    normalizeUserId(seatPickOrderUserIds?.[normalizedSeatChoices.length] as number | string | null | undefined);
+  const currentPickerName =
+    effectiveCurrentPickerUserId != null
+      ? players.find((p) => normalizeUserId(p.userId as number | string | null | undefined) === effectiveCurrentPickerUserId)?.username
+      : undefined;
+  const isMyTurnById = normalizedMyUserId !== null && effectiveCurrentPickerUserId === normalizedMyUserId;
+  const isMyTurnByName =
+    !!myUsername &&
+    !!currentPickerName &&
+    currentPickerName.trim().toLowerCase() === myUsername.trim().toLowerCase();
+  const totalSeats = players.length;
+  const availableSeats = Array.from({ length: totalSeats }, (_, i) => i).filter(
+    (seat) => !normalizedSeatChoices.some((c) => c.seatPosition === seat),
+  );
+  const isMyTurnToPick = isMyTurnById || isMyTurnByName;
+  const alreadyPickedByMe =
+    normalizedMyUserId != null
+      ? normalizedSeatChoices.some((c) => normalizeUserId(c.userId as number | string | null | undefined) === normalizedMyUserId)
+      : false;
+
+  // Client fallback: auto-submit seat repeatedly until accepted to avoid deadlocks.
+  useEffect(() => {
+    if (!isServerDriven || displayPhase !== "seat_selection") return;
+    if (alreadyPickedByMe || availableSeats.length === 0) return;
+    const tryPick = () => {
+      const randomSeat = availableSeats[Math.floor(Math.random() * availableSeats.length)];
+      if (typeof randomSeat !== "number") return;
+      autoSeatPickSentRef.current = true;
+      onChooseSeat?.(
+        randomSeat,
+        (effectiveCurrentPickerUserId ?? normalizedMyUserId ?? undefined) as number | undefined,
+      );
+    };
+
+    const initialTimer = setTimeout(tryPick, 900);
+    const repeatTimer = setInterval(tryPick, 1600);
+
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(repeatTimer);
+    };
+  }, [
+    alreadyPickedByMe,
+    availableSeats,
+    displayPhase,
+    effectiveCurrentPickerUserId,
+    isServerDriven,
+    normalizedMyUserId,
+    onChooseSeat,
+  ]);
+
+  useEffect(() => {
+    if (displayPhase !== "seat_selection") {
+      autoSeatPickSentRef.current = false;
+      return;
+    }
+    if (!alreadyPickedByMe) {
+      autoSeatPickSentRef.current = false;
+    }
+  }, [alreadyPickedByMe, displayPhase, normalizedSeatChoices.length]);
 
   return (
     <View style={styles.container}>
@@ -284,12 +442,12 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
       {/* Phase Title */}
       <View style={styles.titleContainer}>
         <Text style={styles.phaseTitle}>
-          {phase === "seat_selection" ? "Platzwahl" : phase === "dealer_selection" ? "Dealerwahl" : ""}
+          {displayPhase === "seat_selection" ? "Platzwahl" : displayPhase === "dealer_selection" ? "Dealerwahl" : ""}
         </Text>
         <Text style={styles.phaseSubtitle}>
-          {phase === "seat_selection"
+          {displayPhase === "seat_selection"
             ? "Höchste Karte wählt zuerst den Platz"
-            : phase === "dealer_selection"
+            : displayPhase === "dealer_selection"
             ? "Niedrigste Karte gibt"
             : ""}
         </Text>
@@ -299,13 +457,13 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
       <View style={styles.cardsRow}>
         {currentCards.map((drawn, index) => (
           <AnimatedCard
-            key={`${phase}-${drawn.player.id}`}
+            key={`${displayPhase}-${drawn.player.id}`}
             card={drawn.card}
             index={index}
             totalCards={currentCards.length}
             delay={index * 300}
             isHighlighted={currentWinner === index}
-            highlightColor={phase === "seat_selection" ? "#FFD700" : "#00FF88"}
+            highlightColor={displayPhase === "seat_selection" ? "#FFD700" : "#00FF88"}
             label={drawn.player.username}
           />
         ))}
@@ -315,11 +473,11 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
       {currentWinner !== null && (
         <View style={styles.resultContainer}>
           <Text style={styles.resultText}>
-            {phase === "seat_selection"
+            {displayPhase === "seat_selection"
               ? `${currentCards[currentWinner]?.player.username} hat die höchste Karte!`
               : `${currentCards[currentWinner]?.player.username} gibt!`}
           </Text>
-          {phase === "seat_selection" && (
+          {displayPhase === "seat_selection" && (
             <View style={styles.seatOrderContainer}>
               <Text style={styles.seatOrderTitle}>Sitzreihenfolge:</Text>
               {[...seatCards]
@@ -335,6 +493,62 @@ export function GamePreparationScreen({ players, onComplete, serverSeatDraws, se
                   </Text>
                 ))}
             </View>
+          )}
+        </View>
+      )}
+
+      {isServerDriven && displayPhase === "seat_selection" && (
+        <View style={styles.serverSeatPicker}>
+          <Text style={styles.serverSeatPickerTitle}>
+            {alreadyPickedByMe
+              ? "Platz gewählt. Warte auf die anderen..."
+              : (isMyTurnToPick ? "Du bist dran: Wähle deinen Platz" : "Wähle deinen Platz")}
+          </Text>
+          <View style={styles.serverSeatGrid}>
+            {Array.from({ length: totalSeats }, (_, seatPosition) => {
+              const chosen = normalizedSeatChoices.find((c) => c.seatPosition === seatPosition);
+              const chooserName = chosen ? players.find((p) => p.userId === chosen.userId)?.username ?? `User ${chosen.userId}` : null;
+              return (
+                <Pressable
+                  key={`seat-${seatPosition}`}
+                  onPress={() => {
+                    autoSeatPickSentRef.current = true;
+                    console.log("[prep] seat press", {
+                      seatPosition,
+                      chosen: Boolean(chosen),
+                      isMyTurnToPick,
+                      alreadyPickedByMe,
+                      normalizedMyUserId,
+                      effectiveCurrentPickerUserId,
+                    });
+                    onChooseSeat?.(seatPosition, (effectiveCurrentPickerUserId ?? normalizedMyUserId ?? undefined) as number | undefined);
+                  }}
+                  disabled={alreadyPickedByMe || !!chosen}
+                  style={({ pressed }) => [
+                    styles.serverSeatButton,
+                    chosen ? styles.serverSeatChosen : null,
+                    alreadyPickedByMe && !chosen ? styles.serverSeatDisabled : null,
+                    pressed && !chosen && !alreadyPickedByMe ? styles.serverSeatPressed : null,
+                  ]}
+                >
+                  <Text style={styles.serverSeatButtonLabel}>Platz {seatPosition + 1}</Text>
+                  <Text style={styles.serverSeatButtonSub}>{chooserName ? chooserName : "Frei"}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {!!seatPickOrderUserIds?.length && (
+            <Text style={styles.serverSeatHint}>
+              Reihenfolge: {seatPickOrderUserIds.map((uid) => players.find((p) => p.userId === uid)?.username ?? `User ${uid}`).join(" -> ")}
+            </Text>
+          )}
+          {!isMyTurnToPick && effectiveCurrentPickerUserId != null && (
+            <Text style={styles.serverSeatHint}>
+              Aktuell wählt: {players.find((p) => p.userId === effectiveCurrentPickerUserId)?.username ?? `User ${effectiveCurrentPickerUserId}`}
+            </Text>
+          )}
+          {isMyTurnToPick && availableSeats.length === 1 && (
+            <Text style={styles.serverSeatHint}>Nur noch ein Platz frei.</Text>
           )}
         </View>
       )}
@@ -482,5 +696,60 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     color: "#ECEDEE",
     lineHeight: 20,
+  },
+  serverSeatPicker: {
+    marginTop: 20,
+    width: "100%",
+    maxWidth: 560,
+    paddingHorizontal: 16,
+  },
+  serverSeatPickerTitle: {
+    color: "#E8E8E8",
+    fontSize: 16,
+    fontWeight: "700",
+    textAlign: "center",
+    marginBottom: 10,
+  },
+  serverSeatGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 8,
+  },
+  serverSeatButton: {
+    minWidth: 120,
+    backgroundColor: "rgba(34, 139, 34, 0.18)",
+    borderColor: "rgba(50, 205, 50, 0.5)",
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  serverSeatChosen: {
+    backgroundColor: "rgba(255, 165, 0, 0.2)",
+    borderColor: "rgba(255, 165, 0, 0.6)",
+  },
+  serverSeatDisabled: {
+    opacity: 0.6,
+  },
+  serverSeatPressed: {
+    opacity: 0.8,
+  },
+  serverSeatButtonLabel: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  serverSeatButtonSub: {
+    color: "#B6BDC6",
+    fontSize: 12,
+    marginTop: 2,
+    textAlign: "center",
+  },
+  serverSeatHint: {
+    color: "#9BA1A6",
+    textAlign: "center",
+    marginTop: 8,
+    fontSize: 12,
   },
 });
