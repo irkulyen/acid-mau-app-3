@@ -26,9 +26,7 @@ services:
 
   # Backend API Server
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${API_IMAGE}
     container_name: acid-mau-api
     environment:
       NODE_ENV: production

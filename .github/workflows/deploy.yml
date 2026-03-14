@@ -89,6 +89,8 @@ jobs:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      IMAGE_REF: ${{ needs.build_and_push.outputs.image_ref }}
     steps:
       - name: Check deploy SSH secrets
         id: guard
@@ -106,16 +108,20 @@ jobs:
         env:
           GIT_SHA: ${{ github.sha }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DOCKER_USERNAME: ${{ env.DOCKER_USERNAME }}
+          IMAGE_REF: ${{ env.IMAGE_REF }}
         with:
           host: ${{ env.DEPLOY_HOST }}
           username: ${{ env.DEPLOY_USER }}
           key: ${{ env.DEPLOY_SSH_KEY }}
-          envs: GIT_SHA,DEPLOY_PATH
+          envs: GIT_SHA,DEPLOY_PATH,DOCKER_USERNAME,IMAGE_REF
           script_stop: true
           script: |
             set -euo pipefail
             APP_DIR="${DEPLOY_PATH:-/opt/acid-mau}"
             cd "$APP_DIR"
+
+            EFFECTIVE_IMAGE="${IMAGE_REF:-${DOCKER_USERNAME}/acid-mau:latest}"
 
             if [ -f ".env" ]; then
               if grep -q '^SERVER_BUILD_ID=' .env; then
@@ -123,8 +129,16 @@ jobs:
               else
                 echo "SERVER_BUILD_ID=${GIT_SHA}" >> .env
               fi
+              if grep -q '^API_IMAGE=' .env; then
+                sed -i "s|^API_IMAGE=.*|API_IMAGE=${EFFECTIVE_IMAGE}|" .env
+              else
+                echo "API_IMAGE=${EFFECTIVE_IMAGE}" >> .env
+              fi
             else
-              echo "SERVER_BUILD_ID=${GIT_SHA}" > .env
+              {
+                echo "SERVER_BUILD_ID=${GIT_SHA}"
+                echo "API_IMAGE=${EFFECTIVE_IMAGE}"
+              } > .env
             fi
 
             docker compose pull
