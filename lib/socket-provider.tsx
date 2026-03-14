@@ -76,6 +76,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const onDrawCardFxRef = useRef<((event: DrawCardFxEvent) => void) | null>(null);
   const onErrorRef = useRef<((error: string) => void) | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const gameStateRef = useRef<GameState | null>(null);
   const recoveringRef = useRef(false);
   const lastStateUpdateAtRef = useRef(0);
   const recoverStartedAtRef = useRef(0);
@@ -178,10 +179,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       let roomId = parsePositiveInt(map.get(STORAGE_KEYS.roomId));
       let playerId = parsePositiveInt(map.get(STORAGE_KEYS.playerId));
 
-      if (userId && gameState) {
-        const self = gameState.players.find((p) => p.userId === userId);
+      const currentGameState = gameStateRef.current;
+      if (userId && currentGameState) {
+        const self = currentGameState.players.find((p) => p.userId === userId);
         if (self) {
-          roomId = roomId ?? gameState.roomId;
+          roomId = roomId ?? currentGameState.roomId;
           playerId = playerId ?? self.id;
         }
       }
@@ -213,7 +215,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     } finally {
       recoveringRef.current = false;
     }
-  }, [gameState, normalizeRoomCode]);
+  }, [normalizeRoomCode]);
+
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   useEffect(() => {
     let socket: Socket | null = null;
