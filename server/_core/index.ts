@@ -70,10 +70,19 @@ async function startServer() {
   );
 
   const preferredPort = parseInt(process.env.PORT || "3000");
-  const port = await findAvailablePort(preferredPort);
+  const isProduction = process.env.NODE_ENV === "production";
+  let port = preferredPort;
 
-  if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+  if (isProduction) {
+    const available = await isPortAvailable(preferredPort);
+    if (!available) {
+      throw new Error(`Configured PORT ${preferredPort} is not available in production`);
+    }
+  } else {
+    port = await findAvailablePort(preferredPort);
+    if (port !== preferredPort) {
+      console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+    }
   }
 
   // Setup WebSocket server

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { GameState, GameAction, Card } from "@/shared/game-types";
+import { getApiBaseUrl } from "@/constants/oauth";
 
 export interface ChatMessage {
   id: number;
@@ -63,7 +64,7 @@ export function useGameSocket(options: UseGameSocketOptions = {}) {
 
   useEffect(() => {
     // Connect to WebSocket server
-    const backendUrl = process.env.EXPO_PUBLIC_API_URL || "https://crazyamsel.manus.space";
+    const backendUrl = getApiBaseUrl();
     console.log("[socket] Connecting to backend:", backendUrl);
     
     const socket = io(backendUrl, {
@@ -151,6 +152,10 @@ export function useGameSocket(options: UseGameSocketOptions = {}) {
       onRoomCreatedRef.current?.(data);
     });
 
+    socket.on("join-room-success", (data: { roomCode: string }) => {
+      AsyncStorage.setItem("currentRoomCode", data.roomCode);
+    });
+
     socket.on("error", async (data: { message: string }) => {
       // "No active session found" — try to rejoin via stored room data
       if (data.message === "No active session found") {
@@ -210,12 +215,13 @@ export function useGameSocket(options: UseGameSocketOptions = {}) {
 
   const joinRoom = useCallback((roomCode: string, userId: number, username: string) => {
     if (!socketRef.current) return;
+    const normalizedCode = roomCode.trim().toUpperCase();
     
-    console.log("[socket] Joining room:", roomCode);
-    socketRef.current.emit("join-room", { roomCode, userId, username });
+    console.log("[socket] Joining room:", normalizedCode);
+    socketRef.current.emit("join-room", { roomCode: normalizedCode, userId, username });
     
     // Store for reconnect
-    AsyncStorage.setItem("currentRoomCode", roomCode);
+    AsyncStorage.setItem("currentRoomCode", normalizedCode);
     AsyncStorage.setItem("currentUserId", userId.toString());
     AsyncStorage.setItem("currentUsername", username);
   }, []);
