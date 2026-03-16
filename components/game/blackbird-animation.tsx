@@ -12,37 +12,55 @@ import Animated, {
   runOnJS,
   interpolateColor,
 } from "react-native-reanimated";
+import { FALLBACK_CORE_TOKENS, FX_TOKENS, withAlpha } from "@/lib/design-tokens";
+import { AmselMascot } from "@/components/game/AmselMascot";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 
 const TRAIL_EMOJIS = ["⭐", "💫", "✨", "🌟", "💥", "🎵", "🎶", "❗", "❓", "🔥", "💀", "🃏"];
 
 const ROUND_START_PHRASES = [
-  "Na gut… neue Runde.",
-  "Mal sehen, wer diesmal abstürzt.",
-  "Konzentriert euch. Oder versucht es zumindest.",
-  "Auf geht’s.",
+  "Na gut. Neue Runde.",
+  "Weiter geht's.",
+  "Konzentriert euch.",
+  "Los.",
 ];
 
 const WINNER_PHRASES = [
+  (n: string) => `${n}: sauber.`,
   (n: string) => `${n} ist durch.`,
-  (n: string) => `${n} legt die letzte Karte.`,
-  (n: string) => "Und weg ist er.",
+  () => "Sauber.",
   () => "Nicht schlecht.",
-  () => "Sauber gespielt.",
 ];
 
 const LOSER_PHRASES = [
-  (n: string) => `Autsch, ${n}.`,
-  () => "Das tat weh.",
+  (n: string) => `${n}: das war nichts.`,
   () => "Das war wohl nichts.",
+  () => "Tja.",
 ];
 
 const DRAW_CHAIN_PHRASES = [
-  (count: number) => `Oh oh… das wird teuer (+${count}).`,
-  () => "Zieh mal schön Karten.",
-  () => "Das eskaliert gerade.",
-  () => "Ich glaube, das tut gleich weh.",
+  (count: number) => `Oh oh. (+${count})`,
+  () => "Das eskaliert.",
+  () => "Das wird teuer.",
+];
+
+const ELIMINATION_PHRASES = [
+  (n: string) => `${n}: raus.`,
+  () => "Raus.",
+  () => "Weg.",
+];
+
+const CHAOS_PHRASES = [
+  () => "Chaos.",
+  () => "Das wird wild.",
+  () => "Haltet euch fest.",
+];
+
+const GUIDE_PHRASES = [
+  () => "Hinweis: Top-Karte lesen.",
+  () => "Hinweis: spielbare Karten zuerst.",
+  () => "Hinweis: ruhig bleiben.",
 ];
 
 const SEVEN_PLAYED_PHRASES = [
@@ -69,7 +87,18 @@ const MVP_PHRASES = [
   (s: string) => `Starker Moment: ${s}`,
 ];
 
-type EventType = "round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "ass" | "unter" | "mvp";
+type EventType =
+  | "round_start"
+  | "winner"
+  | "loser"
+  | "draw_chain"
+  | "seven_played"
+  | "ass"
+  | "unter"
+  | "mvp"
+  | "elimination"
+  | "chaos"
+  | "guide";
 
 interface TrailParticle {
   id: number;
@@ -107,7 +136,18 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-const CONFETTI_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#FF8C00", "#00FF88", "#FF69B4", "#7B68EE"];
+const CONFETTI_COLORS = [
+  FALLBACK_CORE_TOKENS.STATE_DANGER,
+  FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+  FALLBACK_CORE_TOKENS.STATE_SUCCESS,
+  FALLBACK_CORE_TOKENS.STATE_WARNING,
+  FALLBACK_CORE_TOKENS.TEXT_MAIN,
+  FALLBACK_CORE_TOKENS.TEXT_MUTED,
+  withAlpha(FALLBACK_CORE_TOKENS.SECONDARY_NEON, 0.9),
+  withAlpha(FALLBACK_CORE_TOKENS.STATE_WARNING, 0.85),
+  withAlpha(FALLBACK_CORE_TOKENS.STATE_DANGER, 0.85),
+  withAlpha(FALLBACK_CORE_TOKENS.TEXT_MAIN, 0.9),
+];
 
 export function BlackbirdAnimation({
   visible, loserName, winnerName, eventType, drawChainCount, wishSuit, intensity = 3, spotlightPlayerName, statsText, variant, phrase: phraseFromServer, onDone, onStart,
@@ -117,7 +157,6 @@ export function BlackbirdAnimation({
   const rotate = useSharedValue(0);
   const scaleX = useSharedValue(1);
   const scaleY = useSharedValue(1);
-  const wingPhase = useSharedValue(0);
   const opacity = useSharedValue(0);
   const speechOpacity = useSharedValue(0);
   const speechScale = useSharedValue(0.3);
@@ -128,6 +167,7 @@ export function BlackbirdAnimation({
   const tailWag = useSharedValue(0);
   const bodyGlow = useSharedValue(0);
   const eyeGlow = useSharedValue(0);
+  const clawDrop = useSharedValue(0);
   const [trail, setTrail] = useState<TrailParticle[]>([]);
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([]);
   const [phrase, setPhrase] = useState("");
@@ -182,6 +222,12 @@ export function BlackbirdAnimation({
       selectedPhrase = pickRandom(UNTER_PHRASES)();
     } else if (eventType === "mvp" && statsText) {
       selectedPhrase = pickRandom(MVP_PHRASES)(statsText);
+    } else if (eventType === "elimination") {
+      selectedPhrase = pickRandom(ELIMINATION_PHRASES)(loserName || spotlightPlayerName || "...");
+    } else if (eventType === "chaos") {
+      selectedPhrase = pickRandom(CHAOS_PHRASES)();
+    } else if (eventType === "guide") {
+      selectedPhrase = pickRandom(GUIDE_PHRASES)();
     } else {
       selectedPhrase = pickRandom(ROUND_START_PHRASES);
     }
@@ -208,13 +254,20 @@ export function BlackbirdAnimation({
     tailWag.value = 0;
     bodyGlow.value = 0;
     eyeGlow.value = 0;
+    clawDrop.value = 0;
     setTrail([]);
     setConfetti([]);
 
     if (onStart) runOnJS(onStart)();
 
     // === DRAMATIC ENTRANCE: Screen flash ===
-    const isBigEvent = evType === "winner" || evType === "loser" || evType === "round_start" || evType === "mvp";
+    const isBigEvent =
+      evType === "winner" ||
+      evType === "loser" ||
+      evType === "round_start" ||
+      evType === "mvp" ||
+      evType === "elimination" ||
+      evType === "chaos";
     if (isBigEvent) {
       const power = Math.max(1, intensity);
       flashOpacity.value = withSequence(
@@ -281,10 +334,41 @@ export function BlackbirdAnimation({
       false,
     );
 
+    if (evType === "elimination") {
+      clawDrop.value = withRepeat(
+        withSequence(
+          withTiming(1, { duration: 140, easing: Easing.out(Easing.cubic) }),
+          withTiming(0, { duration: 180, easing: Easing.inOut(Easing.ease) }),
+        ),
+        6,
+        false,
+      );
+    }
+
     // Event-based flights
     const isQuickEvent = evType !== "mvp";
-    const dur = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.inOut(Easing.ease) });
-    const fast = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.out(Easing.cubic) });
+    // Event-specific quick-flight tuning for clearer personality per moment.
+    const quickSpeedByEvent: Partial<Record<EventType, number>> = {
+      round_start: 0.9,
+      draw_chain: 0.74,
+      seven_played: 0.72,
+      chaos: 0.68,
+      elimination: 0.7,
+      loser: 0.74,
+      winner: 0.82,
+      ass: 0.86,
+      unter: 0.86,
+      guide: 0.92,
+    };
+    const quickMultiplier = quickSpeedByEvent[evType] ?? 0.8;
+    const dur = (ms: number) => ({
+      duration: isQuickEvent ? ms * quickMultiplier : ms,
+      easing: Easing.inOut(Easing.ease),
+    });
+    const fast = (ms: number) => ({
+      duration: isQuickEvent ? ms * quickMultiplier : ms,
+      easing: Easing.out(Easing.cubic),
+    });
 
     if (isQuickEvent) {
       // Quick fly-by
@@ -382,16 +466,6 @@ export function BlackbirdAnimation({
       );
     }
 
-    // Wing flapping – faster for dramatic effect
-    wingPhase.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: 90, easing: Easing.linear }),
-        withTiming(0, { duration: 90, easing: Easing.linear }),
-      ),
-      isQuickEvent ? 18 : 36,
-      false,
-    );
-
     // Speech bubble timing
     const speechDelay = isQuickEvent ? 380 : 900;
     const speechDuration = isQuickEvent ? 850 : 1200;
@@ -441,10 +515,6 @@ export function BlackbirdAnimation({
     opacity: opacity.value,
   }));
 
-  const wingUpStyle = useAnimatedStyle(() => ({
-    transform: [{ scaleY: 1 - wingPhase.value * 0.8 }],
-  }));
-
   const glowStyle = useAnimatedStyle(() => ({
     opacity: 0.3 + glowPulse.value * 0.7,
   }));
@@ -455,7 +525,7 @@ export function BlackbirdAnimation({
   }));
 
   const flashStyle = useAnimatedStyle(() => ({
-    opacity: flashOpacity.value,
+    opacity: flashOpacity.value * 0.45,
   }));
 
   const shakeStyle = useAnimatedStyle(() => ({
@@ -480,20 +550,123 @@ export function BlackbirdAnimation({
     transform: [{ scale: 0.95 + eyeGlow.value * 0.1 }],
   }));
 
+  const clawStyle = useAnimatedStyle(() => ({
+    opacity: currentEvent === "elimination" ? 0.7 + clawDrop.value * 0.3 : 0,
+    transform: [{ translateY: 2 + clawDrop.value * 8 }],
+  }));
+
   // Event-based colors
   const getColors = () => {
     if (variant === "legendary") {
-      return { bubble: "rgba(35, 25, 0, 0.98)", border: "#FFD700", text: "#FFE066", tail: "#FFD700", glow: "#FFC700", body: "#3D3000" };
+      return {
+        bubble: "rgba(35, 25, 0, 0.98)",
+        border: FALLBACK_CORE_TOKENS.STATE_WARNING,
+        text: FALLBACK_CORE_TOKENS.STATE_WARNING,
+        tail: FALLBACK_CORE_TOKENS.STATE_WARNING,
+        glow: FALLBACK_CORE_TOKENS.STATE_WARNING,
+        body: withAlpha(FALLBACK_CORE_TOKENS.STATE_WARNING, 0.45),
+      };
     }
     switch (currentEvent) {
-      case "winner": return { bubble: "rgba(5, 25, 5, 0.97)", border: "#22C55E", text: "#4ADE80", tail: "#22C55E", glow: "#00FF00", body: "#003300" };
-      case "loser": return { bubble: "rgba(30, 5, 5, 0.97)", border: "#FF4444", text: "#FF6B6B", tail: "#FF4444", glow: "#FF0000", body: "#330000" };
-      case "draw_chain": return { bubble: "rgba(30, 15, 0, 0.97)", border: "#FF8C00", text: "#FFB347", tail: "#FF8C00", glow: "#FF6600", body: "#331A00" };
-      case "seven_played": return { bubble: "rgba(20, 30, 0, 0.97)", border: "#F59E0B", text: "#FCD34D", tail: "#F59E0B", glow: "#F59E0B", body: "#2A2200" };
-      case "ass": return { bubble: "rgba(20, 0, 30, 0.97)", border: "#A855F7", text: "#C084FC", tail: "#A855F7", glow: "#9333EA", body: "#1A0033" };
-      case "unter": return { bubble: "rgba(0, 15, 25, 0.97)", border: "#06B6D4", text: "#67E8F9", tail: "#06B6D4", glow: "#0891B2", body: "#001A26" };
-      case "mvp": return { bubble: "rgba(35, 25, 0, 0.98)", border: "#FFD700", text: "#FFE066", tail: "#FFD700", glow: "#FFC700", body: "#3D3000" };
-      default: return { bubble: "rgba(255, 255, 255, 0.97)", border: "#FFD700", text: "#111", tail: "#FFD700", glow: "#FFD700", body: "#332B00" };
+      case "winner":
+        return {
+          bubble: "rgba(5, 25, 5, 0.97)",
+          border: FALLBACK_CORE_TOKENS.STATE_SUCCESS,
+          text: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          tail: FALLBACK_CORE_TOKENS.STATE_SUCCESS,
+          glow: FALLBACK_CORE_TOKENS.STATE_SUCCESS,
+          body: withAlpha(FALLBACK_CORE_TOKENS.STATE_SUCCESS, 0.35),
+        };
+      case "loser":
+        return {
+          bubble: "rgba(30, 5, 5, 0.97)",
+          border: FALLBACK_CORE_TOKENS.STATE_DANGER,
+          text: FALLBACK_CORE_TOKENS.STATE_DANGER,
+          tail: FALLBACK_CORE_TOKENS.STATE_DANGER,
+          glow: FX_TOKENS.DRAW_CHAIN_SHADOW,
+          body: withAlpha(FALLBACK_CORE_TOKENS.STATE_DANGER, 0.35),
+        };
+      case "draw_chain":
+        return {
+          bubble: "rgba(30, 15, 0, 0.97)",
+          border: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          text: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          tail: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          glow: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          body: withAlpha(FALLBACK_CORE_TOKENS.STATE_WARNING, 0.35),
+        };
+      case "elimination":
+        return {
+          bubble: "rgba(28, 6, 6, 0.98)",
+          border: FALLBACK_CORE_TOKENS.STATE_DANGER,
+          text: FALLBACK_CORE_TOKENS.TEXT_MAIN,
+          tail: FALLBACK_CORE_TOKENS.STATE_DANGER,
+          glow: FALLBACK_CORE_TOKENS.STATE_DANGER,
+          body: withAlpha(FALLBACK_CORE_TOKENS.STATE_DANGER, 0.42),
+        };
+      case "chaos":
+        return {
+          bubble: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_1, 0.98),
+          border: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          text: FALLBACK_CORE_TOKENS.TEXT_MAIN,
+          tail: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          glow: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          body: withAlpha(FALLBACK_CORE_TOKENS.SECONDARY_NEON, 0.26),
+        };
+      case "guide":
+        return {
+          bubble: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_1, 0.97),
+          border: FALLBACK_CORE_TOKENS.TEXT_MUTED,
+          text: FALLBACK_CORE_TOKENS.TEXT_MAIN,
+          tail: FALLBACK_CORE_TOKENS.TEXT_MUTED,
+          glow: FALLBACK_CORE_TOKENS.TEXT_MUTED,
+          body: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_2, 0.75),
+        };
+      case "seven_played":
+        return {
+          bubble: "rgba(20, 30, 0, 0.97)",
+          border: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          text: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          tail: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          glow: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          body: withAlpha(FALLBACK_CORE_TOKENS.STATE_WARNING, 0.28),
+        };
+      case "ass":
+        return {
+          bubble: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_1, 0.97),
+          border: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          text: FALLBACK_CORE_TOKENS.TEXT_MAIN,
+          tail: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          glow: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          body: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_2, 0.7),
+        };
+      case "unter":
+        return {
+          bubble: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_1, 0.97),
+          border: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          text: FALLBACK_CORE_TOKENS.TEXT_MAIN,
+          tail: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          glow: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+          body: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_2, 0.7),
+        };
+      case "mvp":
+        return {
+          bubble: "rgba(35, 25, 0, 0.98)",
+          border: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          text: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          tail: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          glow: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          body: withAlpha(FALLBACK_CORE_TOKENS.STATE_WARNING, 0.45),
+        };
+      default:
+        return {
+          bubble: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_1, 0.97),
+          border: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          text: FALLBACK_CORE_TOKENS.TEXT_INVERSE,
+          tail: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          glow: FALLBACK_CORE_TOKENS.STATE_WARNING,
+          body: withAlpha(FALLBACK_CORE_TOKENS.STATE_WARNING, 0.35),
+        };
     }
   };
   const colors = getColors();
@@ -565,7 +738,7 @@ export function BlackbirdAnimation({
         </Text>
         {(spotlightPlayerName || statsText) && (
           <Text style={{
-            color: "#E8E8E8",
+            color: FALLBACK_CORE_TOKENS.TEXT_MAIN,
             fontWeight: "700",
             fontSize: 12,
             textAlign: "center",
@@ -606,234 +779,156 @@ export function BlackbirdAnimation({
         }} />
       </Animated.View>
 
-      {/* The Bird – larger (90x62) */}
+      {/* The Bird (animated mascot sprite, existing event + flight logic retained) */}
       {visible && (
-        <Animated.View style={[{ position: "absolute", width: 90, height: 62, zIndex: 105 }, containerStyle]}>
-          {/* Outer neon glow – bigger, more dramatic */}
+        <Animated.View style={[{ position: "absolute", width: 124, height: 114, zIndex: 105 }, containerStyle]}>
+          {/* Outer neon glow */}
           <Animated.View style={[{
             position: "absolute",
-            width: 80,
-            height: 52,
-            borderRadius: 26,
-            top: 5,
-            left: 5,
+            width: 96,
+            height: 84,
+            borderRadius: 999,
+            top: 9,
+            left: 11,
             backgroundColor: colors.glow,
             shadowColor: colors.glow,
-            shadowOpacity: 1,
-            shadowRadius: 30,
+            shadowOpacity: 0.95,
+            shadowRadius: 26,
             elevation: 20,
           }, glowStyle]} />
 
           {/* Event-colored body glow overlay */}
           <Animated.View style={[{
             position: "absolute",
-            width: 52,
-            height: 34,
-            borderRadius: 20,
-            top: 14,
-            left: 16,
+            width: 88,
+            height: 78,
+            borderRadius: 999,
+            top: 12,
+            left: 15,
             backgroundColor: colors.glow,
           }, bodyGlowStyle]} />
 
-          {/* Tail feathers – animated wag */}
+          {/* Sprite loop only here; the parent container keeps existing movement */}
+          <AmselMascot
+            visible={visible}
+            startPosition={{ x: 6, y: 6 }}
+            endPosition={{ x: 6, y: 6 }}
+            duration={
+              currentEvent === "chaos"
+                ? 760
+                : currentEvent === "draw_chain" || currentEvent === "seven_played"
+                  ? 820
+                  : currentEvent === "elimination" || currentEvent === "loser"
+                    ? 780
+                    : currentEvent === "winner"
+                      ? 980
+                      : currentEvent === "round_start"
+                        ? 1040
+                        : 900
+            }
+            animationType={
+              currentEvent === "chaos"
+                ? "chaos"
+                : currentEvent === "draw_chain" || currentEvent === "seven_played"
+                  ? "drawChain"
+                  : currentEvent === "elimination"
+                    ? "elimination"
+                    : currentEvent === "winner"
+                      ? "victory"
+                      : currentEvent === "loser"
+                        ? "elimination"
+                        : currentEvent === "round_start"
+                          ? "roundStart"
+                          : "flyBy"
+            }
+            wingFrameMs={
+              currentEvent === "draw_chain" || currentEvent === "seven_played"
+                ? 96
+                : currentEvent === "chaos"
+                  ? 92
+                  : currentEvent === "winner"
+                  ? 110
+                  : 120
+            }
+            trailStrength={
+              currentEvent === "chaos"
+                ? "strong"
+                : currentEvent === "draw_chain" || currentEvent === "seven_played"
+                  ? "normal"
+                  : currentEvent === "round_start"
+                  ? "subtle"
+                  : "normal"
+            }
+            size={{
+              width: currentEvent === "winner" || currentEvent === "chaos" ? 118 : 112,
+              height: currentEvent === "winner" || currentEvent === "chaos" ? 108 : 102,
+            }}
+            rotation={
+              currentEvent === "elimination" || currentEvent === "loser"
+                ? -8
+                : currentEvent === "winner"
+                  ? 6
+                  : currentEvent === "chaos"
+                    ? -4
+                    : 0
+            }
+            scale={
+              currentEvent === "winner"
+                ? 1.06
+                : currentEvent === "chaos"
+                  ? 1.04
+                  : 1
+            }
+            glowTrail={
+              currentEvent === "draw_chain" ||
+              currentEvent === "seven_played" ||
+              currentEvent === "chaos" ||
+              currentEvent === "winner"
+            }
+            motionEnabled={false}
+            zIndex={106}
+          />
+
+          {/* Subtle eye accent glow to preserve event readability */}
           <Animated.View style={[{
-            position: "absolute", width: 22, height: 14,
-            backgroundColor: "#1a1a2e", borderRadius: 7,
-            top: 28, left: 0,
-            transformOrigin: "right center",
-          }, tailStyle]}>
-            {/* Tail detail */}
-            <View style={{
-              position: "absolute", width: 18, height: 10,
-              backgroundColor: "#16213e", borderRadius: 5,
-              top: 2, left: 0,
-            }} />
-            {/* Tail tip accent */}
-            <Animated.View style={[{
-              position: "absolute", width: 8, height: 3,
-              backgroundColor: colors.glow, borderRadius: 2,
-              top: 5, left: 0,
-            }, glowStyle]} />
-          </Animated.View>
-
-          {/* Body – main shape */}
-          <View style={{
-            position: "absolute", width: 50, height: 34,
-            backgroundColor: "#0a0a1a", borderRadius: 18,
-            top: 14, left: 16,
-          }} />
-          {/* Body highlight – top */}
-          <View style={{
-            position: "absolute", width: 40, height: 18,
-            backgroundColor: "#1a1a3e", borderRadius: 12,
-            top: 16, left: 22,
-            opacity: 0.5,
-          }} />
-          {/* Shimmer streak across body */}
-          <Animated.View style={[{
-            position: "absolute", width: 14, height: 28,
-            backgroundColor: "#ffffff",
-            borderRadius: 7,
-            top: 17, left: 20,
-            overflow: "hidden",
-          }, shimmerStyle]} />
-          {/* Belly – lighter */}
-          <View style={{
-            position: "absolute", width: 26, height: 14,
-            backgroundColor: "#2a2a4e", borderRadius: 10,
-            top: 28, left: 26,
-            opacity: 0.45,
-          }} />
-
-          {/* Head – slightly larger */}
-          <View style={{
-            position: "absolute", width: 28, height: 25,
-            backgroundColor: "#0a0a1a", borderRadius: 14,
-            top: 6, left: 48,
-          }} />
-          {/* Head highlight */}
-          <View style={{
-            position: "absolute", width: 18, height: 12,
-            backgroundColor: "#1a1a3e", borderRadius: 8,
-            top: 8, left: 52,
-            opacity: 0.4,
-          }} />
-
-          {/* Beak – two-tone, larger */}
-          <View style={{
-            position: "absolute", width: 18, height: 7,
-            backgroundColor: "#FFD700", borderRadius: 4,
-            top: 18, left: 74,
-          }} />
-          <View style={{
-            position: "absolute", width: 16, height: 4,
-            backgroundColor: "#FFA500", borderRadius: 3,
-            top: 22, left: 74,
-          }} />
-          {/* Beak shine */}
-          <View style={{
-            position: "absolute", width: 6, height: 2,
-            backgroundColor: "#FFF8DC", borderRadius: 1,
-            top: 19, left: 76,
-            opacity: 0.6,
-          }} />
-
-          {/* Eye – glowing, animated */}
-          <Animated.View style={[{
-            position: "absolute", width: 13, height: 13,
-            backgroundColor: "#FFD700", borderRadius: 7,
-            top: 10, left: 60,
-            shadowColor: "#FFD700",
+            position: "absolute",
+            width: 18,
+            height: 18,
+            borderRadius: 999,
+            top: 20,
+            left: 70,
+            backgroundColor: colors.glow,
+            shadowColor: colors.glow,
             shadowOpacity: 1,
-            shadowRadius: 8,
+            shadowRadius: 10,
             elevation: 8,
-          }, eyeGlowStyle]}>
-            <View style={{
-              width: 7, height: 7,
-              backgroundColor: "#000",
-              borderRadius: 4,
-              position: "absolute", top: 3, left: 3,
-            }} />
-            <View style={{
-              width: 3, height: 3,
-              backgroundColor: "#FFF",
-              borderRadius: 2,
-              position: "absolute", top: 3, left: 6,
-            }} />
-            {/* Red eye reflection for loser/draw events */}
-            {(currentEvent === "loser" || currentEvent === "draw_chain" || currentEvent === "seven_played") && (
-              <View style={{
-                width: 2, height: 2,
-                backgroundColor: "#FF0000",
-                borderRadius: 1,
-                position: "absolute", top: 5, left: 4,
-              }} />
-            )}
-          </Animated.View>
+          }, eyeGlowStyle]} />
 
-          {/* Angry eyebrow – thicker */}
-          <View style={{
-            position: "absolute", width: 11, height: 3.5,
-            backgroundColor: "#FF3333", borderRadius: 2,
-            top: 6, left: 58,
-            transform: [{ rotate: "-35deg" }],
-          }} />
-
-          {/* Wings – primary */}
+          {/* Talons for elimination moments (kept from previous behavior) */}
           <Animated.View style={[{
-            position: "absolute", width: 38, height: 22,
-            backgroundColor: "#111133", borderRadius: 12,
-            top: 0, left: 16,
-            transformOrigin: "bottom center",
-            borderWidth: 1.5,
-            borderColor: "rgba(100, 100, 200, 0.3)",
-          }, wingUpStyle]} />
-          {/* Wing inner */}
+            position: "absolute",
+            top: 83,
+            left: 46,
+            width: 14,
+            height: 8,
+            borderBottomWidth: 3,
+            borderBottomColor: FALLBACK_CORE_TOKENS.STATE_WARNING,
+            borderLeftWidth: 2,
+            borderLeftColor: FALLBACK_CORE_TOKENS.STATE_WARNING,
+            borderRadius: 3,
+          }, clawStyle]} />
           <Animated.View style={[{
-            position: "absolute", width: 32, height: 18,
-            backgroundColor: "#0d0d28", borderRadius: 10,
-            top: 2, left: 22,
-            transformOrigin: "bottom center",
-          }, wingUpStyle]} />
-          {/* Wing feather detail */}
-          <Animated.View style={[{
-            position: "absolute", width: 26, height: 3,
-            backgroundColor: "rgba(100, 100, 200, 0.2)", borderRadius: 2,
-            top: 10, left: 22,
-            transformOrigin: "bottom center",
-          }, wingUpStyle]} />
-
-          {/* Neon accent stripes on wing */}
-          <Animated.View style={[{
-            position: "absolute", width: 28, height: 3,
-            backgroundColor: colors.glow,
-            borderRadius: 2,
-            top: 18, left: 20,
-          }, glowStyle]} />
-          <Animated.View style={[{
-            position: "absolute", width: 18, height: 2,
-            backgroundColor: colors.glow,
-            borderRadius: 1,
-            top: 22, left: 24,
-            opacity: 0.5,
-          }, glowStyle]} />
-
-          {/* Feet – slightly larger */}
-          <View style={{
-            position: "absolute", width: 8, height: 6,
-            backgroundColor: "#FFA500", borderRadius: 3,
-            top: 47, left: 30,
-          }} />
-          <View style={{
-            position: "absolute", width: 8, height: 6,
-            backgroundColor: "#FFA500", borderRadius: 3,
-            top: 47, left: 42,
-          }} />
-          {/* Toe details */}
-          <View style={{
-            position: "absolute", width: 4, height: 3,
-            backgroundColor: "#FF8C00", borderRadius: 2,
-            top: 52, left: 28,
-          }} />
-          <View style={{
-            position: "absolute", width: 4, height: 3,
-            backgroundColor: "#FF8C00", borderRadius: 2,
-            top: 52, left: 44,
-          }} />
-
-          {/* Crown/crest on head */}
-          <View style={{
-            position: "absolute", width: 8, height: 8,
-            backgroundColor: "#FFD700", borderRadius: 4,
-            top: 2, left: 58,
-            transform: [{ rotate: "45deg" }],
-          }} />
-          <View style={{
-            position: "absolute", width: 6, height: 6,
-            backgroundColor: "#FFA500", borderRadius: 3,
-            top: 1, left: 64,
-            transform: [{ rotate: "30deg" }],
-          }} />
+            position: "absolute",
+            top: 83,
+            left: 58,
+            width: 14,
+            height: 8,
+            borderBottomWidth: 3,
+            borderBottomColor: FALLBACK_CORE_TOKENS.STATE_WARNING,
+            borderRightWidth: 2,
+            borderRightColor: FALLBACK_CORE_TOKENS.STATE_WARNING,
+            borderRadius: 3,
+          }, clawStyle]} />
         </Animated.View>
       )}
     </Animated.View>

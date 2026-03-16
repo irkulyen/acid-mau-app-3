@@ -1,14 +1,16 @@
 import { useState } from "react";
-import { View, Text, TextInput, ActivityIndicator, Platform, Pressable } from "react-native";
+import { View, Text, TextInput, ActivityIndicator } from "react-native";
 import { useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { Touchable } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/lib/auth-provider";
+import { useCoreDesignTokens, withAlpha } from "@/lib/design-tokens";
 
 export default function LoginScreen() {
   const router = useRouter();
   const { refresh } = useAuth();
+  const TOKENS = useCoreDesignTokens();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -74,18 +76,27 @@ export default function LoginScreen() {
   };
 
   return (
-    <ScreenContainer>
+    <ScreenContainer className="p-6">
       <View style={{ flex: 1, padding: 24, justifyContent: 'center' }}>
-        <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#4CAF50', textAlign: 'center', marginBottom: 8 }}>
+        <Text style={{ fontSize: 32, fontWeight: 'bold', color: TOKENS.SECONDARY_NEON, textAlign: 'center', marginBottom: 8 }}>
           Acid-Mau
         </Text>
-        <Text style={{ fontSize: 16, color: '#999', textAlign: 'center', marginBottom: 32 }}>
+        <Text style={{ fontSize: 16, color: TOKENS.TEXT_MUTED, textAlign: 'center', marginBottom: 32 }}>
           Willkommen zurück!
         </Text>
 
         {error ? (
-          <View style={{ backgroundColor: 'rgba(220, 20, 60, 0.1)', borderWidth: 1, borderColor: '#DC143C', borderRadius: 12, padding: 16, marginBottom: 16 }}>
-            <Text style={{ color: '#DC143C', fontWeight: '600' }}>{error}</Text>
+          <View
+            style={{
+              backgroundColor: withAlpha(TOKENS.STATE_DANGER, 0.12),
+              borderWidth: 1,
+              borderColor: TOKENS.STATE_DANGER,
+              borderRadius: 16,
+              padding: 16,
+              marginBottom: 16,
+            }}
+          >
+            <Text style={{ color: TOKENS.STATE_DANGER, fontWeight: '600' }}>{error}</Text>
           </View>
         ) : null}
 
@@ -94,17 +105,17 @@ export default function LoginScreen() {
             value={email}
             onChangeText={setEmail}
             placeholder="E-Mail"
-            placeholderTextColor="#888"
+            placeholderTextColor={TOKENS.TEXT_MUTED}
             keyboardType="email-address"
             autoCapitalize="none"
             editable={!isLoading}
             style={{
-              backgroundColor: '#2A2A2A',
+              backgroundColor: TOKENS.SURFACE_2,
               borderWidth: 1,
-              borderColor: '#444',
-              borderRadius: 12,
+              borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.5),
+              borderRadius: 16,
               padding: 16,
-              color: '#FFF',
+              color: TOKENS.TEXT_MAIN,
               fontSize: 16,
             }}
           />
@@ -115,55 +126,55 @@ export default function LoginScreen() {
             value={password}
             onChangeText={setPassword}
             placeholder="Passwort"
-            placeholderTextColor="#888"
+            placeholderTextColor={TOKENS.TEXT_MUTED}
             secureTextEntry
             editable={!isLoading}
             style={{
-              backgroundColor: '#2A2A2A',
+              backgroundColor: TOKENS.SURFACE_2,
               borderWidth: 1,
-              borderColor: '#444',
-              borderRadius: 12,
+              borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.5),
+              borderRadius: 16,
               padding: 16,
-              color: '#FFF',
+              color: TOKENS.TEXT_MAIN,
               fontSize: 16,
             }}
           />
         </View>
 
-        <Pressable
+        <Touchable
           onPress={handleEmailLogin}
           disabled={isLoading}
-          style={({ pressed }) => [{
-            backgroundColor: isLoading ? '#999' : '#4CAF50',
-            borderRadius: 12,
+          style={({ pressed }) => ({
+            backgroundColor: isLoading ? withAlpha(TOKENS.TEXT_MUTED, 0.7) : TOKENS.SECONDARY_NEON,
+            borderRadius: 16,
             padding: 16,
-            opacity: isLoading ? 0.6 : pressed ? 0.8 : 1,
-          }]}
+            opacity: isLoading ? 0.6 : pressed ? 0.88 : 1,
+          })}
         >
           {isLoading ? (
-            <ActivityIndicator color="#FFF" />
+            <ActivityIndicator color={TOKENS.TEXT_INVERSE} />
           ) : (
-            <Text style={{ color: '#FFF', fontWeight: 'bold', fontSize: 18, textAlign: 'center' }}>
+            <Text style={{ color: TOKENS.TEXT_INVERSE, fontWeight: 'bold', fontSize: 18, textAlign: 'center' }}>
               Anmelden
             </Text>
           )}
-        </Pressable>
+        </Touchable>
 
         <View style={{ marginTop: 24, flexDirection: 'row', justifyContent: 'center' }}>
-          <Text style={{ color: '#999' }}>Noch kein Konto? </Text>
-          <Pressable
+          <Text style={{ color: TOKENS.TEXT_MUTED }}>Noch kein Konto? </Text>
+          <Touchable
             onPress={() => router.push("/auth/register" as any)}
-            style={({ pressed }) => [{
+            style={({ pressed }) => ({
               padding: 0,
               opacity: pressed ? 0.7 : 1,
-            }]}
+            })}
           >
-            <Text style={{ color: '#4CAF50', fontWeight: '600' }}>Registrieren</Text>
-          </Pressable>
+            <Text style={{ color: TOKENS.SECONDARY_NEON, fontWeight: '600' }}>Registrieren</Text>
+          </Touchable>
         </View>
 
         <View style={{ marginTop: 16, alignItems: 'center' }}>
-          <Text style={{ color: '#666', fontSize: 12 }}>
+          <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 12 }}>
             Test-Account: test@test.com / test123
           </Text>
         </View>

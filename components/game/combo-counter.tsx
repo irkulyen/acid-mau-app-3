@@ -8,6 +8,7 @@ import Animated, {
   withDelay,
   Easing,
 } from "react-native-reanimated";
+import { FALLBACK_CORE_TOKENS, FX_TOKENS, withAlpha } from "@/lib/design-tokens";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -17,11 +18,11 @@ interface ComboCounterProps {
 }
 
 const COMBO_COLORS = [
-  "#FFD700", // 2x - Gold
-  "#FF8C00", // 3x - Orange
-  "#FF4500", // 4x - Rot-Orange
-  "#FF0000", // 5x - Rot
-  "#FF00FF", // 6+ - Magenta
+  FALLBACK_CORE_TOKENS.STATE_WARNING, // 2x
+  withAlpha(FALLBACK_CORE_TOKENS.STATE_WARNING, 0.92), // 3x
+  withAlpha(FALLBACK_CORE_TOKENS.STATE_DANGER, 0.9), // 4x
+  FX_TOKENS.DRAW_CHAIN_SHADOW, // 5x
+  FALLBACK_CORE_TOKENS.SECONDARY_NEON, // 6+
 ];
 
 export function ComboCounter({ comboCount, playerName }: ComboCounterProps) {
@@ -31,7 +32,7 @@ export function ComboCounter({ comboCount, playerName }: ComboCounterProps) {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    if (comboCount >= 2) {
+    if (comboCount >= 3) {
       setVisible(true);
       scale.value = 0;
       opacity.value = 0;
@@ -63,7 +64,7 @@ export function ComboCounter({ comboCount, playerName }: ComboCounterProps) {
     opacity: opacity.value,
   }));
 
-  if (!visible || comboCount < 2) return null;
+  if (!visible || comboCount < 3) return null;
 
   const colorIndex = Math.min(comboCount - 2, COMBO_COLORS.length - 1);
   const color = COMBO_COLORS[colorIndex];
@@ -115,7 +116,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   name: {
-    color: "#9BA1A6",
+    color: FALLBACK_CORE_TOKENS.TEXT_MUTED,
     fontSize: 11,
     fontWeight: "600",
     marginTop: 4,

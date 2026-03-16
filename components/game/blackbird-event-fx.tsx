@@ -8,6 +8,7 @@ import Animated, {
   withTiming,
   runOnJS,
 } from "react-native-reanimated";
+import { FX_TOKENS, withAlpha } from "@/lib/design-tokens";
 
 type Intensity = 1 | 2 | 3 | 4 | 5;
 
@@ -73,7 +74,7 @@ export function DiscardImpactBurst({ visible, eventKey, intensity, onDone }: Dis
             height: 46,
             borderRadius: 23,
             borderWidth: 2,
-            borderColor: "rgba(255,180,0,0.9)",
+            borderColor: withAlpha(FX_TOKENS.DRAW_CHAIN_SHADOW, 0.9),
           },
           ringStyle,
         ]}
@@ -91,9 +92,11 @@ export function DiscardImpactBurst({ visible, eventKey, intensity, onDone }: Dis
                 width: p.isCard ? p.size + 5 : p.size + 1,
                 height: p.isCard ? p.size + 7 : p.size + 1,
                 borderRadius: p.isCard ? 2 : 99,
-                backgroundColor: p.isCard ? "rgba(220, 235, 255, 0.9)" : "rgba(46, 224, 128, 0.95)",
+                backgroundColor: p.isCard
+                  ? withAlpha(FX_TOKENS.DRAW_CHAIN_FLASH, 0.9)
+                  : withAlpha(FX_TOKENS.WISH_TEXT_SELECTED, 0.95),
                 borderWidth: p.isCard ? 1 : 0,
-                borderColor: p.isCard ? "rgba(20,40,80,0.7)" : "transparent",
+                borderColor: p.isCard ? withAlpha(FX_TOKENS.WISH_TEXT_DEFAULT, 0.7) : "transparent",
               }}
             />
           );
@@ -165,7 +168,14 @@ export function SuitWishBurst({ visible, eventKey, wishSuit, onDone }: SuitWishB
               borderColor: selected ? "rgba(46, 224, 128, 1)" : "rgba(120, 130, 140, 0.5)",
             }}
           >
-            <Text style={{ color: selected ? "#D8FFE8" : "#E6EDF3", fontSize: 11, fontWeight: "800", textAlign: "center" }}>
+            <Text
+              style={{
+                color: selected ? FX_TOKENS.WISH_TEXT_SELECTED : FX_TOKENS.WISH_TEXT_DEFAULT,
+                fontSize: 11,
+                fontWeight: "800",
+                textAlign: "center",
+              }}
+            >
               {suitLabel(suit)}
             </Text>
           </View>
@@ -210,7 +220,7 @@ export function RoundStartGlow({ visible, eventKey, onDone }: RoundStartGlowProp
           width: 230,
           height: 130,
           borderRadius: 999,
-          backgroundColor: "rgba(46, 224, 128, 0.22)",
+          backgroundColor: withAlpha(FX_TOKENS.WISH_TEXT_SELECTED, 0.22),
           zIndex: 65,
         },
         glowStyle,

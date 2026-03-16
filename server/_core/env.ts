@@ -36,6 +36,7 @@ export const ENV = {
   telemetryToken: process.env.TELEMETRY_TOKEN ?? "",
   roomReconcileIntervalMs: toPositiveInt(process.env.ROOM_RECONCILE_INTERVAL_MS, 60_000),
   adminUserIds: toIntSet(process.env.ADMIN_USER_IDS),
+  publicBaseUrl: process.env.PUBLIC_BASE_URL ?? "",
   serverBuildId:
     process.env.SERVER_BUILD_ID ??
     process.env.GIT_COMMIT_SHA ??

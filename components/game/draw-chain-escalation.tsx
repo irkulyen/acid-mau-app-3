@@ -10,6 +10,7 @@ import Animated, {
   withDelay,
   Easing,
 } from "react-native-reanimated";
+import { FX_TOKENS, withAlpha } from "@/lib/design-tokens";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -26,7 +27,7 @@ export function DrawChainEscalation({ drawChainCount }: DrawChainEscalationProps
   const [prevCount, setPrevCount] = useState(0);
 
   useEffect(() => {
-    if (drawChainCount <= 0) {
+    if (drawChainCount <= 1) {
       vignetteOpacity.value = withTiming(0, { duration: 300 });
       shakeX.value = 0;
       shakeY.value = 0;
@@ -48,7 +49,7 @@ export function DrawChainEscalation({ drawChainCount }: DrawChainEscalationProps
       }
 
       // Screen shake intensity scales with chain
-      const intensity = Math.min(drawChainCount * 1.5, 12);
+      const intensity = Math.min(drawChainCount * 1.0, 8);
       shakeX.value = withSequence(
         withTiming(intensity, { duration: 40 }),
         withTiming(-intensity, { duration: 40 }),
@@ -65,15 +66,15 @@ export function DrawChainEscalation({ drawChainCount }: DrawChainEscalationProps
       );
 
       // Red vignette: opacity scales with chain
-      const vignetteTarget = Math.min(0.1 + drawChainCount * 0.06, 0.5);
+      const vignetteTarget = Math.min(0.04 + drawChainCount * 0.025, 0.2);
       vignetteOpacity.value = withTiming(vignetteTarget, { duration: 300 });
 
-      // Lightning flash at 6+ cards
-      if (drawChainCount >= 6) {
+      // Lightning flash only in very high chain events
+      if (drawChainCount >= 7) {
         flashOpacity.value = withSequence(
-          withTiming(0.7, { duration: 50 }),
+          withTiming(0.3, { duration: 50 }),
           withTiming(0, { duration: 100 }),
-          withDelay(100, withTiming(0.5, { duration: 50 })),
+          withDelay(100, withTiming(0.18, { duration: 50 })),
           withTiming(0, { duration: 150 }),
         );
       }
@@ -131,7 +132,7 @@ export function DrawChainShakeWrapper({
   const [prevCount, setPrevCount] = useState(0);
 
   useEffect(() => {
-    if (drawChainCount <= 0) {
+    if (drawChainCount <= 1) {
       shakeX.value = 0;
       shakeY.value = 0;
       pulseScale.value = 1;
@@ -140,7 +141,7 @@ export function DrawChainShakeWrapper({
     }
 
     if (drawChainCount > prevCount) {
-      const intensity = Math.min(drawChainCount * 1.5, 12);
+      const intensity = Math.min(drawChainCount * 1.0, 8);
       shakeX.value = withSequence(
         withTiming(intensity, { duration: 40 }),
         withTiming(-intensity, { duration: 40 }),
@@ -187,17 +188,17 @@ const styles = StyleSheet.create({
   vignetteInner: {
     flex: 1,
     borderWidth: 40,
-    borderColor: "rgba(255, 0, 0, 0.6)",
+    borderColor: withAlpha(FX_TOKENS.DRAW_CHAIN_SHADOW, 0.6),
     borderRadius: 0,
     // Gradient effect via shadow
-    shadowColor: "#FF0000",
+    shadowColor: FX_TOKENS.DRAW_CHAIN_SHADOW,
     shadowOpacity: 1,
     shadowRadius: 60,
     shadowOffset: { width: 0, height: 0 },
   },
   flash: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: FX_TOKENS.DRAW_CHAIN_FLASH,
     zIndex: 96,
   },
 });

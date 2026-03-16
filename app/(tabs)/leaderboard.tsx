@@ -2,9 +2,11 @@ import { ScrollView, Text, View, ActivityIndicator } from "react-native";
 import { Image } from "expo-image";
 import { ScreenContainer } from "@/components/screen-container";
 import { trpc } from "@/lib/trpc";
+import { useState } from "react";
 
 export default function LeaderboardScreen() {
   const { data: topPlayers, isLoading } = trpc.profile.leaderboard.useQuery({ limit: 50 });
+  const [failedAvatarIds, setFailedAvatarIds] = useState<Record<number, boolean>>({});
 
   return (
     <ScreenContainer className="p-6">
@@ -38,11 +40,12 @@ export default function LeaderboardScreen() {
 
                 {/* Player Info */}
                 <View className="flex-1 ml-4 flex-row items-center">
-                  {player.avatarUrl ? (
+                  {player.avatarUrl && !failedAvatarIds[player.id] ? (
                     <Image
                       source={{ uri: player.avatarUrl }}
                       style={{ width: 36, height: 36, borderRadius: 18, marginRight: 10, borderWidth: 1, borderColor: "rgba(148, 163, 184, 0.7)" }}
                       contentFit="cover"
+                      onError={() => setFailedAvatarIds((prev) => ({ ...prev, [player.id]: true }))}
                     />
                   ) : (
                     <View

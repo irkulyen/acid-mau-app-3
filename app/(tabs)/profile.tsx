@@ -16,6 +16,7 @@ export default function ProfileScreen() {
   const [isEditing, setIsEditing] = useState(false);
   const [username, setUsername] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarPreviewFailed, setAvatarPreviewFailed] = useState(false);
 
   const updateProfileMutation = trpc.profile.update.useMutation();
   const uploadAvatarMutation = trpc.profile.uploadAvatar.useMutation();
@@ -24,22 +25,39 @@ export default function ProfileScreen() {
   const estimateBase64Bytes = (b64: string) => Math.floor((b64.length * 3) / 4);
 
   const buildDataUri = (base64: string, mimeType: string) => `data:${mimeType};base64,${base64}`;
+  const isExternalHttpUrl = (value: string) => {
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+      const host = parsed.hostname.toLowerCase();
+      if (host === "localhost" || host === "127.0.0.1" || host.endsWith(".local")) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   const handleEditProfile = () => {
     if (profile) {
       setUsername(profile.username);
       setAvatarUrl(profile.avatarUrl || "");
+      setAvatarPreviewFailed(false);
       setIsEditing(true);
     }
   };
 
   const handleSaveProfile = async () => {
     if (!username.trim()) return;
+    const trimmedAvatar = avatarUrl.trim();
+    if (trimmedAvatar && !isExternalHttpUrl(trimmedAvatar)) {
+      Alert.alert("Ungültige URL", "Bitte eine öffentlich erreichbare http(s)-URL verwenden.");
+      return;
+    }
 
     try {
       await updateProfileMutation.mutateAsync({
         username,
-        avatarUrl: avatarUrl.trim() ? avatarUrl.trim() : null,
+        avatarUrl: trimmedAvatar ? trimmedAvatar : null,
       });
       await utils.profile.me.invalidate();
       setIsEditing(false);
@@ -104,6 +122,7 @@ export default function ProfileScreen() {
           mimeType,
         });
         setAvatarUrl(upload.avatarUrl);
+        setAvatarPreviewFailed(false);
       } catch (uploadErr: any) {
         const message = String(uploadErr?.message || uploadErr || "");
         if (!/No procedure found on path "profile\.uploadAvatar"/i.test(message)) {
@@ -158,11 +177,12 @@ export default function ProfileScreen() {
         <View className="gap-6">
           {/* Header */}
           <View className="items-center gap-2 mt-4">
-            {(isEditing ? avatarUrl : profile.avatarUrl) ? (
+            {(isEditing ? avatarUrl : profile.avatarUrl) && !avatarPreviewFailed ? (
               <Image
                 source={{ uri: isEditing ? avatarUrl : (profile.avatarUrl || "") }}
                 style={{ width: 96, height: 96, borderRadius: 48, borderWidth: 2, borderColor: "#32CD32" }}
                 contentFit="cover"
+                onError={() => setAvatarPreviewFailed(true)}
               />
             ) : (
               <View className="w-24 h-24 rounded-full bg-primary items-center justify-center">
@@ -208,6 +228,7 @@ export default function ProfileScreen() {
                       setIsEditing(false);
                       setAvatarUrl(profile.avatarUrl || "");
                       setUsername(profile.username);
+                      setAvatarPreviewFailed(false);
                     }}
                     className="bg-surface border border-border px-6 py-2 rounded-lg active:opacity-80"
                   >
@@ -216,7 +237,10 @@ export default function ProfileScreen() {
                 </View>
                 {!!avatarUrl.trim() && (
                   <Touchable
-                    onPress={() => setAvatarUrl("")}
+                    onPress={() => {
+                      setAvatarUrl("");
+                      setAvatarPreviewFailed(false);
+                    }}
                     className="bg-surface border border-border px-4 py-2 rounded-lg active:opacity-80 mt-1"
                   >
                     <Text className="text-foreground font-semibold">Profilbild entfernen</Text>

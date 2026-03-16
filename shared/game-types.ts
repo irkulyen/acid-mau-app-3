@@ -17,11 +17,50 @@ export interface Card {
 
 export type GamePhase = "waiting" | "playing" | "round_end" | "game_end";
 export type Direction = "clockwise" | "counterclockwise";
+export type BlackbirdEventType =
+  | "ass"
+  | "unter"
+  | "draw_chain"
+  | "winner"
+  | "loser"
+  | "round_start"
+  | "seven_played"
+  | "mvp"
+  | "elimination"
+  | "chaos"
+  | "guide";
+
+export interface BlackbirdStateEvent {
+  id: string;
+  type: BlackbirdEventType;
+  playerName?: string;
+  drawChainCount?: number;
+  wishSuit?: string;
+  replay?: boolean;
+  sequenceId?: string;
+  sequenceStep?: number;
+  sequenceTotal?: number;
+  intensity?: 1 | 2 | 3 | 4 | 5;
+  startAt?: number;
+  spotlightUserId?: number;
+  spotlightPlayerName?: string;
+  variant?: string;
+  statsText?: string;
+  phrase?: string;
+  emittedAt: number;
+}
+
+export interface BlackbirdState {
+  recentEvents: BlackbirdStateEvent[];
+  lastEventId?: string;
+  updatedAt: number;
+}
 
 export interface Player {
   id: number;
   userId: number;
   username: string;
+  botId?: string;
   avatarUrl?: string;
   hand: Card[];
   lossPoints: number;
@@ -47,6 +86,8 @@ export interface GameState {
   hostUserId: number;
   hasRoundStarted: boolean; // Prevents isRoundOver check immediately after startNewRound
   openingFreePlay: boolean; // Schellen-8 als Startkarte: erster Spieler darf beliebige Karte legen
+  // Server-authoritative Blackbird event history for reconnect/state-resync.
+  blackbird?: BlackbirdState;
   // Server-computed hint for the currently connected player.
   // Client must not derive rules locally.
   playableCardIds?: string[];

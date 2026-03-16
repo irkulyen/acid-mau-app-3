@@ -1,10 +1,15 @@
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { Server as HTTPServer } from "http";
-import type { GameState, GameAction, Player } from "../shared/game-types";
+import type { GameState, GameAction, Player, BlackbirdEventType, BlackbirdStateEvent } from "../shared/game-types";
 import type { SeatDrawResult } from "../shared/game-preparation";
 import { applySeatChoices, drawCardsForPlayers, getSeatPickOrderPlayerIds, performDealerSelectionForPlayers } from "../shared/game-preparation";
 import { createGameState, processAction, startGame } from "../shared/game-engine";
 import { canPlayCard, getEffectiveTopCard, getPlayableCards } from "../shared/game-rules";
+import {
+  getCrazyAmselPhraseCandidates,
+  isCrazyAmselMultiplayerEvent,
+} from "../shared/crazy-amsel-brand";
+import { getBotProfileByUserId } from "../shared/bot-profiles";
 import * as db from "./db";
 import * as roomManager from "./room-manager";
 import { sdk } from "./_core/sdk";
@@ -29,6 +34,7 @@ const SEAT_SELECTION_FAILSAFE_MS = 12_000;
 // Turn timeout: roomId → timeout handle (auto-action if player doesn't act)
 const turnTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
 const eventRateLimits = new Map<string, { count: number; resetAt: number }>();
+const reconnectDebounceByUser = new Map<number, number>();
 const roomCleanupTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
 const blackbirdHistory = new Map<number, BlackbirdEventPayload[]>();
 type BlackbirdRuntimeState = {
@@ -52,112 +58,51 @@ function shuffleArray<T>(items: T[]): T[] {
   return copy;
 }
 
-type BlackbirdEventType = "ass" | "unter" | "draw_chain" | "winner" | "loser" | "round_start" | "seven_played" | "mvp";
-type BlackbirdEventPayload = {
-  id: string;
-  type: BlackbirdEventType;
-  playerName?: string;
-  drawChainCount?: number;
-  wishSuit?: string;
-  replay?: boolean;
-  sequenceId?: string;
-  sequenceStep?: number;
-  sequenceTotal?: number;
-  intensity?: 1 | 2 | 3 | 4 | 5;
-  startAt?: number;
-  spotlightUserId?: number;
-  spotlightPlayerName?: string;
-  variant?: string;
-  statsText?: string;
-  phrase?: string;
-  emittedAt: number;
-};
+type BlackbirdEventPayload = BlackbirdStateEvent;
 
 const BLACKBIRD_GLOBAL_COOLDOWN_MS = 6_000;
 const BLACKBIRD_TYPE_COOLDOWN_MS: Record<BlackbirdEventType, number> = {
-  round_start: 9_000,
+  round_start: 8_000,
   winner: 1_500,
   loser: 1_500,
-  draw_chain: 3_000,
-  seven_played: 2_200,
-  ass: 8_000,
-  unter: 8_000,
-  mvp: 6_000,
+  elimination: 1_800,
+  draw_chain: 2_600,
+  chaos: 5_500,
+  mvp: 7_000,
+  guide: 6_000,
+  seven_played: 9_000,
+  ass: 9_000,
+  unter: 9_000,
 };
 const BLACKBIRD_TYPE_PRIORITY: Record<BlackbirdEventType, number> = {
-  mvp: 100,
-  loser: 95,
+  elimination: 100,
+  mvp: 95,
+  loser: 92,
   winner: 90,
-  seven_played: 85,
-  draw_chain: 80,
-  round_start: 70,
-  ass: 60,
-  unter: 60,
+  chaos: 88,
+  draw_chain: 82,
+  round_start: 74,
+  guide: 70,
+  seven_played: 10,
+  ass: 10,
+  unter: 10,
 };
 const BLACKBIRD_SKIP_CHANCE: Record<BlackbirdEventType, number> = {
-  round_start: 0.7,
+  round_start: 0,
   winner: 0,
   loser: 0,
-  draw_chain: 0.55,
-  seven_played: 0,
-  ass: 0.7,
-  unter: 0.7,
-  mvp: 0.6,
+  elimination: 0,
+  draw_chain: 0.1,
+  chaos: 0,
+  mvp: 0.55,
+  guide: 0.2,
+  seven_played: 1,
+  ass: 1,
+  unter: 1,
 };
-const BLACKBIRD_RARE_CHANCE = 0.06;
 const BLACKBIRD_RECENT_PHRASE_WINDOW = 8;
-
-const BB_ROUND_START = [
-  "Neue Runde.",
-  "Konzentriert euch.",
-  "Los geht's.",
-  "Mal sehen, wer diesmal verliert.",
-];
-const BB_WINNER = [
-  (n?: string) => n ? `${n} ist durch.` : "Und weg bist du.",
-  (n?: string) => n ? `${n} spielt sauber.` : "Nicht schlecht.",
-  () => "Der Rest darf weiterspielen.",
-  () => "Sauber.",
-];
-const BB_LOSER = [
-  (n?: string) => n ? `Autsch, ${n}.` : "Autsch.",
-  () => "Das war schwach.",
-  () => "Das ging nach hinten los.",
-  () => "Vielleicht nächstes Mal.",
-];
-const BB_DRAW_CHAIN = [
-  (count?: number) => `Oh, das wird teuer${count ? ` (+${count})` : ""}.`,
-  () => "Zieh einfach.",
-  () => "Das eskaliert gerade.",
-  () => "Du kommst da nicht raus.",
-  () => "Das wird lang.",
-];
-const BB_SEVEN_PLAYED = [
-  () => "Boom.",
-  () => "Sieben. Viel Spaß beim Ziehen.",
-  () => "Das wird unangenehm.",
-  () => "Das tut jetzt weh.",
-  () => "Selber schuld.",
-  (count?: number) => count && count > 1 ? `Ziehkette bei ${count}.` : "Sieben gelegt.",
-];
-const BB_ASS = [
-  () => "Pause für dich.",
-  () => "Du darfst zuschauen.",
-  () => "Kurz still sein.",
-  () => "Nächster.",
-];
-const BB_UNTER = [
-  () => "Neue Farbe.",
-  () => "Mal sehen, ob das klug war.",
-  () => "Interessante Wahl.",
-  () => "Mutig.",
-];
-const BB_RARE = [
-  "Ich habe schon bessere Spiele gesehen.",
-  "Mutig. Oder einfach schlecht.",
-  "Das war... kreativ.",
-  "Ich würde das nicht so spielen.",
-];
+const BIG_DRAW_CHAIN_THRESHOLD = 4;
+const RARE_CHAOS_CHANCE = 0.12;
 
 type PendingPreparation = {
   phase: "seat_selection" | "dealer_selection";
@@ -180,6 +125,43 @@ async function getUserAvatarUrl(userId: number): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+function toHttpOrigin(value: string | undefined | null): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePublicBaseUrl(): string {
+  const direct =
+    toHttpOrigin(ENV.publicBaseUrl) ||
+    toHttpOrigin(process.env.EXPO_PUBLIC_API_URL) ||
+    toHttpOrigin(ENV.oAuthServerUrl) ||
+    toHttpOrigin(process.env.OAUTH_REDIRECT_URI);
+  if (direct) return direct;
+
+  const corsOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => /^https?:\/\//i.test(part) && !part.includes("*"));
+  for (const origin of corsOrigins) {
+    const parsed = toHttpOrigin(origin);
+    if (!parsed) continue;
+    if (ENV.isProduction && /localhost|127\.0\.0\.1/i.test(parsed)) continue;
+    return parsed;
+  }
+
+  return ENV.isProduction ? "https://crazyamsel.com" : "http://localhost:3000";
+}
+
+function buildBotAvatarUrl(avatarFile: string): string {
+  return `${resolvePublicBaseUrl()}/assets/bots/${avatarFile}`;
 }
 
 function toPreparationPayload(prep: PendingPreparation) {
@@ -329,11 +311,27 @@ async function isUserMappedToRoom(userId: number, roomId: number): Promise<boole
   return (await realtimeStore.getUserRoom(userId)) === roomId;
 }
 
-function isUserConnectedInRoom(roomId: number, userId: number): boolean {
+function isUserConnectedInRoom(io: SocketIOServer, roomId: number, userId: number): boolean {
   const sockets = roomSockets.get(roomId);
   if (!sockets) return false;
+  const staleSocketIds: string[] = [];
   for (const socketId of sockets) {
+    const liveSocket = io.sockets.sockets.get(socketId);
+    // Keep roomSockets consistent even when disconnect events are missed.
+    if (!liveSocket || !liveSocket.connected) {
+      staleSocketIds.push(socketId);
+      continue;
+    }
     if (socketUserMapping.get(socketId) === userId) return true;
+  }
+  if (staleSocketIds.length > 0) {
+    for (const staleSocketId of staleSocketIds) {
+      sockets.delete(staleSocketId);
+      socketUserMapping.delete(staleSocketId);
+    }
+    if (sockets.size === 0) {
+      roomSockets.delete(roomId);
+    }
   }
   return false;
 }
@@ -367,17 +365,22 @@ function clampIntensity(v: number): 1 | 2 | 3 | 4 | 5 {
 
 function deriveEventIntensity(event: Omit<BlackbirdEventPayload, "id" | "emittedAt">): 1 | 2 | 3 | 4 | 5 {
   switch (event.type) {
-    case "seven_played":
-      return clampIntensity(2 + Math.floor((event.drawChainCount || 0) / 2));
     case "draw_chain":
       return clampIntensity(2 + Math.floor((event.drawChainCount || 0) / 2));
+    case "chaos":
+      return 5;
+    case "elimination":
+      return 5;
     case "winner":
     case "loser":
       return 4;
     case "mvp":
       return 5;
+    case "guide":
+      return 2;
     case "round_start":
       return 3;
+    case "seven_played":
     case "ass":
     case "unter":
     default:
@@ -386,11 +389,14 @@ function deriveEventIntensity(event: Omit<BlackbirdEventPayload, "id" | "emitted
 }
 
 function deriveVariant(event: Omit<BlackbirdEventPayload, "id" | "emittedAt">): string {
-  if (event.type === "seven_played") return "impact";
   if (event.type === "draw_chain") return "voltage";
+  if (event.type === "chaos") return "chaos";
+  if (event.type === "elimination") return "elimination";
   if (event.type === "loser") return "drama";
   if (event.type === "winner") return "victory";
   if (event.type === "mvp") return "legendary";
+  if (event.type === "guide") return "guide";
+  if (event.type === "seven_played") return "impact";
   if (event.type === "unter") return "wild";
   if (event.type === "ass") return "skip";
   return "default";
@@ -413,6 +419,10 @@ function shouldEmitBlackbirdEvent(roomId: number, event: Omit<BlackbirdEventPayl
   const now = Date.now();
   const runtime = getBlackbirdRuntime(roomId);
   const type = event.type;
+  if (!isCrazyAmselMultiplayerEvent(type)) {
+    telemetry.inc("blackbird.filtered_not_brand_moment");
+    return false;
+  }
   const typePriority = BLACKBIRD_TYPE_PRIORITY[type];
 
   const sinceAny = now - runtime.lastAnyAt;
@@ -463,30 +473,12 @@ function pickNonRepeatingPhrase(roomId: number, candidates: string[]): string {
 }
 
 function buildBlackbirdPhrase(roomId: number, event: Omit<BlackbirdEventPayload, "id" | "emittedAt">): string {
-  if (Math.random() < BLACKBIRD_RARE_CHANCE) {
-    return pickNonRepeatingPhrase(roomId, BB_RARE);
-  }
-
-  const playerName = event.playerName || event.spotlightPlayerName;
-  switch (event.type) {
-    case "winner":
-      return pickNonRepeatingPhrase(roomId, BB_WINNER.map((f) => f(playerName)));
-    case "loser":
-      return pickNonRepeatingPhrase(roomId, BB_LOSER.map((f) => f(playerName)));
-    case "seven_played":
-      return pickNonRepeatingPhrase(roomId, BB_SEVEN_PLAYED.map((f) => f(event.drawChainCount)));
-    case "draw_chain":
-      return pickNonRepeatingPhrase(roomId, BB_DRAW_CHAIN.map((f) => f(event.drawChainCount)));
-    case "ass":
-      return pickNonRepeatingPhrase(roomId, BB_ASS.map((f) => f()));
-    case "unter":
-      return pickNonRepeatingPhrase(roomId, BB_UNTER.map((f) => f()));
-    case "mvp":
-      return pickNonRepeatingPhrase(roomId, [`Highlight: ${event.statsText || "Starker Moment."}`]);
-    case "round_start":
-    default:
-      return pickNonRepeatingPhrase(roomId, BB_ROUND_START);
-  }
+  const candidates = getCrazyAmselPhraseCandidates(event.type, {
+    playerName: event.playerName || event.spotlightPlayerName,
+    drawChainCount: event.drawChainCount,
+    statsText: event.statsText,
+  });
+  return pickNonRepeatingPhrase(roomId, candidates);
 }
 
 function pushBlackbirdHistory(roomId: number, events: BlackbirdEventPayload[]) {
@@ -498,11 +490,41 @@ function pushBlackbirdHistory(roomId: number, events: BlackbirdEventPayload[]) {
   blackbirdHistory.set(roomId, merged);
 }
 
-function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<Omit<BlackbirdEventPayload, "id" | "emittedAt">>) {
-  if (!ENV.enableBlackbirdEvents) return;
-  if (events.length === 0) return;
+function syncBlackbirdStateToGameState(state: GameState, emittedEvents: BlackbirdEventPayload[]) {
+  const now = Date.now();
+  const previous = state.blackbird?.recentEvents || [];
+  const dedup = new Map<string, BlackbirdEventPayload>();
+
+  for (const event of previous) {
+    if (!event?.id) continue;
+    dedup.set(event.id, event);
+  }
+  for (const event of emittedEvents) {
+    if (!event?.id) continue;
+    dedup.set(event.id, event);
+  }
+
+  const merged = Array.from(dedup.values())
+    .filter((event) => now - event.emittedAt <= 15_000)
+    .sort((a, b) => a.emittedAt - b.emittedAt)
+    .slice(-20);
+
+  state.blackbird = {
+    recentEvents: merged,
+    lastEventId: merged[merged.length - 1]?.id,
+    updatedAt: now,
+  };
+}
+
+function emitBlackbirdEvents(
+  io: SocketIOServer,
+  roomId: number,
+  events: Array<Omit<BlackbirdEventPayload, "id" | "emittedAt">>,
+): BlackbirdEventPayload[] {
+  if (!ENV.enableBlackbirdEvents) return [];
+  if (events.length === 0) return [];
   const accepted = events.filter((event) => shouldEmitBlackbirdEvent(roomId, event));
-  if (accepted.length === 0) return;
+  if (accepted.length === 0) return [];
   const now = Date.now();
   const hasSequence = accepted.length > 1;
   const sequenceId = hasSequence ? `seq-${roomId}-${++blackbirdSequenceCounter}` : undefined;
@@ -514,7 +536,7 @@ function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<O
       id: `bb-${roomId}-${now}-${index}-${Math.floor(Math.random() * 1000)}`,
       sequenceId,
       sequenceStep: hasSequence ? index + 1 : undefined,
-      sequenceTotal: hasSequence ? events.length : undefined,
+      sequenceTotal: hasSequence ? accepted.length : undefined,
       startAt,
       intensity: event.intensity ?? deriveEventIntensity(event),
       variant: event.variant ?? deriveVariant(event),
@@ -524,18 +546,48 @@ function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<O
   });
 
   pushBlackbirdHistory(roomId, normalized);
+  const roomName = `room-${roomId}`;
+  const joinedSockets = io.sockets.adapter.rooms.get(roomName) ?? new Set<string>();
+  const trackedSockets = roomSockets.get(roomId) ?? new Set<string>();
+  console.log(
+    `[blackbird] emit room=${roomId} attempted=${events.length} accepted=${accepted.length} joinedSockets=${joinedSockets.size} trackedSockets=${trackedSockets.size}`,
+  );
   for (const payload of normalized) {
-    io.to(`room-${roomId}`).emit("blackbird-event", payload);
+    io.to(roomName).emit("blackbird-event", payload);
+    // Fallback delivery: if a socket is tracked in roomSockets but missing from socket.io room,
+    // deliver directly to keep multiplayer visuals synchronized.
+    for (const sid of trackedSockets) {
+      if (joinedSockets.has(sid)) continue;
+      const targetSocket = io.sockets.sockets.get(sid);
+      if (!targetSocket) continue;
+      targetSocket.emit("blackbird-event", payload);
+      console.warn(`[blackbird] fallback direct emit room=${roomId} socket=${sid} type=${payload.type}`);
+      telemetry.inc("blackbird.fallback_direct_emit");
+    }
     telemetry.inc("blackbird.emitted");
   }
   if (hasSequence) telemetry.inc("blackbird.sequences");
+  return normalized;
 }
 
-function replayBlackbirdEventsForSocket(socket: Socket, roomId: number) {
+function replayBlackbirdEventsForSocket(socket: Socket, roomId: number, state?: GameState) {
   if (!ENV.enableBlackbirdEvents) return;
   const now = Date.now();
-  const replayable = (blackbirdHistory.get(roomId) || []).filter((e) => now - e.emittedAt <= 12_000);
+  const fromHistory = blackbirdHistory.get(roomId) || [];
+  const fromState = state?.blackbird?.recentEvents || [];
+  const mergedById = new Map<string, BlackbirdEventPayload>();
+  for (const event of [...fromHistory, ...fromState]) {
+    if (!event?.id) continue;
+    mergedById.set(event.id, event);
+  }
+  const replayable = Array.from(mergedById.values())
+    .filter((e) => now - e.emittedAt <= 12_000)
+    .sort((a, b) => a.emittedAt - b.emittedAt);
   if (replayable.length === 0) return;
+
+  console.log(
+    `[blackbird] replay socket=${socket.id} room=${roomId} count=${replayable.length} ageMs=${now - replayable[0].emittedAt} fromHistory=${fromHistory.length} fromState=${fromState.length}`,
+  );
 
   replayable.forEach((event, i) => {
     socket.emit("blackbird-event", {
@@ -694,7 +746,10 @@ async function executeBotTurn(io: SocketIOServer, roomId: number) {
 
     if (!result) return;
 
-    detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.newState);
+    const emittedBlackbirdEvents = detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.newState);
+    if (emittedBlackbirdEvents.length > 0) {
+      await realtimeStore.setGameState(roomId, result.newState);
+    }
     broadcastFilteredState(io, roomId, result.newState);
     checkAndScheduleBotTurn(io, roomId, result.newState);
 
@@ -737,7 +792,7 @@ function checkAndScheduleBotTurn(io: SocketIOServer, roomId: number, state: Game
  * If the current human player is disconnected, auto-draw after 8 seconds.
  */
 function scheduleDisconnectedPlayerTimeout(io: SocketIOServer, roomId: number, state: GameState, player: Player) {
-  if (!isUserConnectedInRoom(roomId, player.userId)) {
+  if (!isUserConnectedInRoom(io, roomId, player.userId)) {
     console.log(`[socket] Player ${player.username} (userId: ${player.userId}) is disconnected and it's their turn. Auto-draw in 8s.`);
     const timeout = setTimeout(() => {
       void (async () => {
@@ -749,7 +804,7 @@ function scheduleDisconnectedPlayerTimeout(io: SocketIOServer, roomId: number, s
 
           const currentTurnPlayer = currentState.players[currentState.currentPlayerIndex];
           if (!currentTurnPlayer || currentTurnPlayer.id !== player.id) return null;
-          if (isUserConnectedInRoom(roomId, player.userId)) return null;
+          if (isUserConnectedInRoom(io, roomId, player.userId)) return null;
 
           console.log(`[socket] Auto-drawing for disconnected player ${player.username}`);
           const newState = processAction(currentState, { type: "DRAW_CARD" }, player.id);
@@ -759,7 +814,10 @@ function scheduleDisconnectedPlayerTimeout(io: SocketIOServer, roomId: number, s
 
         if (!result) return;
 
-        detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.newState);
+        const emittedBlackbirdEvents = detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.newState);
+        if (emittedBlackbirdEvents.length > 0) {
+          await realtimeStore.setGameState(roomId, result.newState);
+        }
         broadcastFilteredState(io, roomId, result.newState);
         checkAndScheduleBotTurn(io, roomId, result.newState);
 
@@ -783,6 +841,16 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
   if (newState.phase !== "round_end") return;
 
   console.log(`[socket] Round ${newState.roundNumber} ended in room ${roomId}`);
+  const roundEndSnapshot = newState.players
+    .filter((p) => !p.isEliminated)
+    .map((p) => ({
+      id: p.id,
+      userId: p.userId,
+      ready: p.isReady,
+      connected: p.userId < 0 ? true : isUserConnectedInRoom(io, roomId, p.userId),
+      hand: p.hand.length,
+    }));
+  console.log(`[socket] round_end snapshot room=${roomId}: ${JSON.stringify(roundEndSnapshot)}`);
 
   // Bot-READY: Auto-READY für Bot-Spieler nach 300-800ms
   if (ENV.enableBots && ENV.enableAutoReadyOnRoundEnd) {
@@ -801,7 +869,10 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
             });
             if (!result) return;
             if (result.updatedState.phase === "playing" && result.previousState.phase === "round_end") {
-              detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
+              const emittedBlackbirdEvents = detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
+              if (emittedBlackbirdEvents.length > 0) {
+                await realtimeStore.setGameState(roomId, result.updatedState);
+              }
             }
             broadcastFilteredState(io, roomId, result.updatedState);
             console.log(`[socket] Bot ${bot.username} auto-READY in room ${roomId}`);
@@ -823,7 +894,7 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
           const result = await withRoomMutation(roomId, async () => {
             const currentState = await realtimeStore.getGameState(roomId);
             if (!currentState || currentState.phase !== "round_end") return null;
-            if (isUserConnectedInRoom(roomId, human.userId)) return null;
+            if (isUserConnectedInRoom(io, roomId, human.userId)) return null;
             const player = currentState.players.find(p => p.id === human.id);
             if (!player || player.isReady) return null;
             const updatedState = processAction(currentState, { type: "READY" }, human.id);
@@ -832,7 +903,10 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
           });
           if (!result) return;
           if (result.updatedState.phase === "playing" && result.previousState.phase === "round_end") {
-            detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
+            const emittedBlackbirdEvents = detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
+            if (emittedBlackbirdEvents.length > 0) {
+              await realtimeStore.setGameState(roomId, result.updatedState);
+            }
           }
           broadcastFilteredState(io, roomId, result.updatedState);
           console.log(`[socket] Auto-READY for disconnected player ${human.username} in room ${roomId}`);
@@ -853,14 +927,28 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
           const currentState = await realtimeStore.getGameState(roomId);
           if (!currentState || currentState.phase !== "round_end") return null;
           const nonEliminated = currentState.players.filter(p => !p.isEliminated);
-          const allReady = nonEliminated.every(p => p.isReady);
-          if (!allReady || nonEliminated.length === 0) return null;
-          const updatedState = processAction(currentState, { type: "NEXT_ROUND" }, nonEliminated[0].id);
+          if (nonEliminated.length === 0) return null;
+          let workingState = currentState;
+          const disconnectedNotReady = nonEliminated.filter(
+            (p) => p.userId >= 0 && !p.isReady && !isUserConnectedInRoom(io, roomId, p.userId),
+          );
+          if (disconnectedNotReady.length > 0) {
+            for (const offlinePlayer of disconnectedNotReady) {
+              workingState = processAction(workingState, { type: "READY" }, offlinePlayer.id);
+            }
+          }
+          const refreshedPlayers = workingState.players.filter((p) => !p.isEliminated);
+          const allReady = refreshedPlayers.every((p) => p.isReady);
+          if (!allReady || refreshedPlayers.length === 0) return null;
+          const updatedState = processAction(workingState, { type: "NEXT_ROUND" }, refreshedPlayers[0].id);
           await realtimeStore.setGameState(roomId, updatedState);
-          return { previousState: currentState, updatedState };
+          return { previousState: workingState, updatedState };
         });
         if (!result) return;
-        detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
+        const emittedBlackbirdEvents = detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
+        if (emittedBlackbirdEvents.length > 0) {
+          await realtimeStore.setGameState(roomId, result.updatedState);
+        }
         broadcastFilteredState(io, roomId, result.updatedState);
         checkAndScheduleBotTurn(io, roomId, result.updatedState);
         console.log(`[socket] Failsafe triggered NEXT_ROUND in room ${roomId}`);
@@ -928,8 +1016,11 @@ function detectAndBroadcastBlackbirdEvents(
   roomId: number,
   oldState: GameState,
   newState: GameState
-) {
-  if (!ENV.enableBlackbirdEvents) return;
+): BlackbirdEventPayload[] {
+  if (!ENV.enableBlackbirdEvents) return [];
+  console.log(
+    `[blackbird] detect room=${roomId} code=${newState.roomCode} phase=${oldState.phase}->${newState.phase} round=${oldState.roundNumber}->${newState.roundNumber} discard=${oldState.discardPile.length}->${newState.discardPile.length}`,
+  );
   const events: Array<Omit<BlackbirdEventPayload, "id" | "emittedAt">> = [];
 
   const oldDiscardLen = oldState.discardPile.length;
@@ -943,35 +1034,6 @@ function detectAndBroadcastBlackbirdEvents(
 
   // New card was played
   if (newDiscardLen > oldDiscardLen && newTopCard) {
-    // Detect seven played (client uses this for synchronized impact FX)
-    if (newTopCard.rank === "7") {
-      events.push({
-        type: "seven_played",
-        drawChainCount: newState.drawChainCount,
-        spotlightUserId: actor?.userId,
-        spotlightPlayerName: actor?.username,
-      });
-    }
-
-    // Detect Ass played
-    if (newTopCard.rank === "ass") {
-      events.push({
-        type: "ass",
-        spotlightUserId: actor?.userId,
-        spotlightPlayerName: actor?.username,
-      });
-    }
-
-    // Detect Unter (Bube) with wish suit
-    if (newTopCard.rank === "bube" && newState.currentWishSuit) {
-      events.push({
-        type: "unter",
-        wishSuit: newState.currentWishSuit,
-        spotlightUserId: actor?.userId,
-        spotlightPlayerName: actor?.username,
-      });
-    }
-
     // Detect player finished (hand empty, not eliminated, still playing phase)
     if (newState.phase === "playing" || newState.phase === "round_end") {
       const finishedPlayer = newState.players.find(
@@ -993,13 +1055,31 @@ function detectAndBroadcastBlackbirdEvents(
     }
   }
 
-  // Detect 7er-Kette escalation (4+ cards in chain)
-  if (newState.drawChainCount >= 4 && newState.drawChainCount > oldState.drawChainCount) {
+  // Detect big 7-chain escalation.
+  if (
+    newState.drawChainCount >= BIG_DRAW_CHAIN_THRESHOLD &&
+    newState.drawChainCount > oldState.drawChainCount
+  ) {
     events.push({
       type: "draw_chain",
       drawChainCount: newState.drawChainCount,
       spotlightUserId: actor?.userId,
       spotlightPlayerName: actor?.username,
+    });
+  }
+
+  // Detect elimination moments.
+  const newlyEliminated = newState.players.filter((player) => {
+    const oldPlayer = oldState.players.find((p) => p.id === player.id);
+    return Boolean(oldPlayer && !oldPlayer.isEliminated && player.isEliminated);
+  });
+  for (const eliminatedPlayer of newlyEliminated) {
+    events.push({
+      type: "elimination",
+      playerName: eliminatedPlayer.username,
+      spotlightUserId: eliminatedPlayer.userId,
+      spotlightPlayerName: eliminatedPlayer.username,
+      intensity: 5,
     });
   }
 
@@ -1030,19 +1110,53 @@ function detectAndBroadcastBlackbirdEvents(
         spotlightPlayerName: loserName,
         intensity: 4,
       });
-      events.push({
-        type: "mvp",
-        statsText: `Max Chain: ${Math.max(0, oldState.drawChainCount, newState.drawChainCount)} • Runde ${newState.roundNumber}`,
-        spotlightPlayerName: actor?.username || loserName,
-        intensity: 5,
-      });
+      const shouldEmitRewardMoment =
+        maxIncrease >= 2 ||
+        newlyEliminated.length > 0 ||
+        newState.roundNumber % 3 === 0;
+      if (shouldEmitRewardMoment) {
+        events.push({
+          type: "mvp",
+          statsText: `Runde ${newState.roundNumber} · Max Chain ${Math.max(
+            BIG_DRAW_CHAIN_THRESHOLD,
+            oldState.drawChainCount,
+            newState.drawChainCount,
+          )}`,
+          spotlightPlayerName: actor?.username || loserName,
+          intensity: 5,
+        });
+      }
     }
   }
 
-  emitBlackbirdEvents(io, roomId, events);
-  for (const event of events) {
-    console.log(`[socket] Blackbird event in room ${roomId}: ${event.type}${event.playerName ? ` (${event.playerName})` : ""}`);
+  // Rare chaos spike for exceptional moments.
+  const shouldTriggerChaos =
+    (newState.drawChainCount >= BIG_DRAW_CHAIN_THRESHOLD + 2 || newlyEliminated.length > 0) &&
+    Math.random() < RARE_CHAOS_CHANCE;
+  if (shouldTriggerChaos) {
+    events.push({
+      type: "chaos",
+      drawChainCount: newState.drawChainCount,
+      spotlightUserId: actor?.userId,
+      spotlightPlayerName: actor?.username || newlyEliminated[0]?.username,
+      statsText: `Chain ${newState.drawChainCount}`,
+      intensity: 5,
+    });
   }
+
+  const emittedEvents = emitBlackbirdEvents(io, roomId, events) ?? [];
+  if (emittedEvents.length > 0 || (newState.blackbird?.recentEvents.length ?? 0) > 0) {
+    syncBlackbirdStateToGameState(newState, emittedEvents);
+    console.log(
+      `[blackbird] state-updated room=${roomId} lastEventId=${newState.blackbird?.lastEventId ?? "none"} recent=${newState.blackbird?.recentEvents.length ?? 0}`,
+    );
+  }
+  for (const event of emittedEvents) {
+    console.log(
+      `[socket] Blackbird emitted room=${roomId} type=${event.type} id=${event.id} startAt=${event.startAt}${event.playerName ? ` player=${event.playerName}` : ""}`,
+    );
+  }
+  return emittedEvents;
 }
 
 /**
@@ -1138,9 +1252,11 @@ export function setupGameSocket(httpServer: HTTPServer) {
     }
   });
 
-  const emitJoinFailed = (socket: Socket, message: string, code?: string) => {
+  const emitJoinFailed = (socket: Socket, message: string, code?: string, mirrorAsError = false) => {
     socket.emit("join-failed", { message, code });
-    socket.emit("error", { message });
+    if (mirrorAsError) {
+      socket.emit("error", { message });
+    }
   };
 
   const emitPreparationForRoom = (roomId: number, prep: PendingPreparation) => {
@@ -1260,12 +1376,15 @@ export function setupGameSocket(httpServer: HTTPServer) {
       "reconnect-room",
       async (data: { userId?: number; roomCode?: string; roomId?: number; playerId?: number; username?: string }) => {
       try {
-        if (isRateLimited(socket.id, "reconnect-room", 10, 10_000)) {
-          socket.emit("error", { message: "Too many reconnect attempts" });
+        const userId = authenticatedUserId;
+        console.log(`[socket] reconnect-room received (userId=${userId}, socket=${socket.id})`);
+        const now = Date.now();
+        const lastReconnectAt = reconnectDebounceByUser.get(userId) ?? 0;
+        if (now - lastReconnectAt < 900) {
+          telemetry.inc("rooms.reconnect_debounced");
           return;
         }
-
-        const userId = authenticatedUserId;
+        reconnectDebounceByUser.set(userId, now);
         const requestedRoomId = parsePositiveInt(data.roomId);
         const requestedPlayerId = parsePositiveInt(data.playerId);
 
@@ -1333,6 +1452,17 @@ export function setupGameSocket(httpServer: HTTPServer) {
           socket.emit("error", { message: "Player not found in game" });
           return;
         }
+        const freshAvatarUrl = await getUserAvatarUrl(userId);
+        if (playerInState.avatarUrl !== freshAvatarUrl) {
+          gameState = {
+            ...gameState,
+            players: gameState.players.map((player) =>
+              player.userId === userId ? { ...player, avatarUrl: freshAvatarUrl } : player,
+            ),
+          };
+          await realtimeStore.setGameState(roomId, gameState);
+        }
+        console.log(`[socket] player already in room (userId=${userId}, roomId=${roomId})`);
 
         // Cancel disconnect timeout
         const timeout = disconnectTimeouts.get(userId);
@@ -1355,12 +1485,13 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
         // Send filtered game state to reconnected player
         socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+        console.log(`[socket] game-state sent (reconnect, userId=${userId}, roomId=${roomId})`);
         socket.emit("room-joined", {
           roomId,
           roomCode: gameState.roomCode,
           maxPlayers: (gameState as any).maxPlayers || 5,
         });
-        replayBlackbirdEventsForSocket(socket, roomId);
+        replayBlackbirdEventsForSocket(socket, roomId, gameState);
 
         // Send chat history
         try {
@@ -1494,10 +1625,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
     // Join a game room
     socket.on("join-room", async (data: { roomCode: string; userId?: number; username: string }) => {
       try {
-        if (isRateLimited(socket.id, "join-room", 12, 10_000)) {
-          emitJoinFailed(socket, "Too many join attempts", "RATE_LIMIT");
-          return;
-        }
+        console.log(
+          `[socket] join-room received (socket=${socket.id}, roomCode=${String(data?.roomCode || "").toUpperCase()}, userId=${authenticatedUserId})`,
+        );
 
         const userId = authenticatedUserId;
         const roomCode = normalizeRoomCode(data.roomCode);
@@ -1511,13 +1641,59 @@ export function setupGameSocket(httpServer: HTTPServer) {
           return;
         }
 
+        // Idempotent fast-path: if the user is already mapped to this room and
+        // still part of the room state, do not treat this as spam. Re-attach socket
+        // and send fresh snapshots instead of surfacing hard join errors.
         const existingRoomId = await realtimeStore.getUserRoom(userId);
-        if (existingRoomId && (await realtimeStore.getGameState(existingRoomId))) {
-          const existingState = await realtimeStore.getGameState(existingRoomId);
+        if (existingRoomId) {
+          const existingState = await getGameStateWithRetry(existingRoomId, 3, 100);
           if (existingState && existingState.roomCode !== roomCode) {
             emitJoinFailed(socket, "User already in another active room", "USER_IN_OTHER_ROOM");
             return;
           }
+          if (existingState?.roomCode === roomCode) {
+            const existingPlayer = existingState.players.find((p) => p.userId === userId);
+            if (existingPlayer) {
+              socketUserMapping.set(socket.id, userId);
+              attachSocketToTrackedRoom(socket, existingRoomId);
+              cancelRoomCleanup(existingRoomId);
+              await realtimeStore.setUserRoom(userId, existingRoomId);
+
+              const prepData = await realtimeStore.getPreparation(existingRoomId);
+              if (prepData) {
+                socket.emit("game-preparation", toPreparationPayload(prepData as PendingPreparation));
+              }
+
+              try {
+                const chatHistory = await db.getRoomChatMessages(existingRoomId);
+                socket.emit("chat:history", chatHistory);
+                socket.emit("chat-history", chatHistory);
+              } catch (e) {
+                console.error("[socket] Error sending chat history on idempotent join:", e);
+              }
+
+              socket.emit("game-state-update", filterStateForPlayer(existingState, userId));
+              socket.emit("room-joined", {
+                roomId: existingRoomId,
+                roomCode,
+                maxPlayers: (existingState as any).maxPlayers || 5,
+              });
+              if (existingState.phase === "playing") {
+                replayBlackbirdEventsForSocket(socket, existingRoomId, existingState);
+              }
+
+              console.log(
+                `[socket] join-room idempotent recovery accepted (userId=${userId}, roomId=${existingRoomId}, socket=${socket.id})`,
+              );
+              telemetry.inc("rooms.join_idempotent");
+              return;
+            }
+          }
+        }
+
+        if (isRateLimited(socket.id, "join-room", 12, 10_000)) {
+          emitJoinFailed(socket, "Too many join attempts", "RATE_LIMIT");
+          return;
         }
 
         // Track socket → user mapping
@@ -1527,7 +1703,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
         let room = await getRoomByCodeWithRetry(roomCode, 4, 140);
 
         if (!room) {
-          emitJoinFailed(socket, "Room not found", "ROOM_NOT_FOUND");
+          emitJoinFailed(socket, "Room not found", "ROOM_NOT_FOUND", false);
           return;
         }
 
@@ -1579,6 +1755,8 @@ export function setupGameSocket(httpServer: HTTPServer) {
             return currentState;
           }
 
+          console.log(`[socket] player already in room (userId=${userId}, roomId=${roomId})`);
+
           if ((existingPlayer.username !== username && username) || existingPlayer.avatarUrl !== avatarUrl) {
             currentState = {
               ...currentState,
@@ -1619,13 +1797,14 @@ export function setupGameSocket(httpServer: HTTPServer) {
         // Always send a direct state snapshot to the joining socket.
         // This avoids waiting-screen stalls if room broadcast delivery is delayed.
         socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+        console.log(`[socket] game-state sent (join, userId=${userId}, roomId=${roomId})`);
         socket.emit("room-joined", {
           roomId,
           roomCode,
           maxPlayers: (gameState as any).maxPlayers || room.maxPlayers || 5,
         });
         if (gameState.phase === "playing") {
-          replayBlackbirdEventsForSocket(socket, roomId);
+          replayBlackbirdEventsForSocket(socket, roomId, gameState);
         }
 
         console.log(`[socket] User ${username} (${userId}) joined room ${roomCode} (${roomId})`);
@@ -1677,13 +1856,16 @@ export function setupGameSocket(httpServer: HTTPServer) {
           }
 
           const botNumber = gameState.players.filter((p) => p.userId < 0).length + 1;
-          const botNames = ["Alf", "Gizmo", "Yoda", "Pumuckl", "Gollum"];
-          const botName = botNames[(botNumber - 1) % botNames.length];
+          const botUserId = -botNumber;
+          const botProfile = getBotProfileByUserId(botUserId);
+          const botName = botProfile?.name || `Bot ${botNumber}`;
 
           const bot: Player = {
             id: getNextPlayerId(gameState.players),
-            userId: -botNumber,
+            userId: botUserId,
             username: botName,
+            botId: botProfile?.botId,
+            avatarUrl: botProfile ? buildBotAvatarUrl(botProfile.avatarFile) : undefined,
             hand: [],
             lossPoints: 0,
             isEliminated: false,
@@ -1787,13 +1969,17 @@ export function setupGameSocket(httpServer: HTTPServer) {
         // Bei READY: nur wenn Phase gewechselt hat (letzter READY → intern NEXT_ROUND)
         // Bei NEXT_ROUND: immer (expliziter Rundenstart)
         // Bei Spielaktionen (PLAY_CARD, DRAW_CARD): immer
+        let emittedBlackbirdEvents: BlackbirdEventPayload[] = [];
         if (action.type === "READY") {
           // Nur loser-Event wenn Phase wirklich gewechselt hat
           if (newState.phase === "playing" && gameState.phase === "round_end") {
-            detectAndBroadcastBlackbirdEvents(io, roomId, gameState, newState);
+            emittedBlackbirdEvents = detectAndBroadcastBlackbirdEvents(io, roomId, gameState, newState);
           }
         } else {
-          detectAndBroadcastBlackbirdEvents(io, roomId, gameState, newState);
+          emittedBlackbirdEvents = detectAndBroadcastBlackbirdEvents(io, roomId, gameState, newState);
+        }
+        if (emittedBlackbirdEvents.length > 0) {
+          await realtimeStore.setGameState(roomId, newState);
         }
 
         // Broadcast filtered state to all players
@@ -2280,7 +2466,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
         }
 
         // If same user still has another connected socket, don't schedule a leave timeout.
-        if (isUserConnectedInRoom(roomId, disconnectedUserId)) {
+        if (isUserConnectedInRoom(io, roomId, disconnectedUserId)) {
           console.log(`[socket] User ${disconnectedUserId} still connected via another socket in room ${roomId}`);
           return;
         }
@@ -2297,7 +2483,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
           try {
             const result = await withRoomMutation(roomId, async () => {
-              if (isUserConnectedInRoom(roomId, disconnectedUserId)) {
+              if (isUserConnectedInRoom(io, roomId, disconnectedUserId)) {
                 return null;
               }
               const gameState = await realtimeStore.getGameState(roomId);
@@ -2341,6 +2527,8 @@ export function setupGameSocket(httpServer: HTTPServer) {
     });
   });
 
-  console.log("[socket] Game socket server initialized");
+  console.log(
+    `[socket] Game socket server initialized (bots=${ENV.enableBots}, blackbird=${ENV.enableBlackbirdEvents})`,
+  );
   return io;
 }

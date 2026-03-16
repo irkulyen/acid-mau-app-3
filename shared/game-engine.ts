@@ -42,6 +42,11 @@ export function createGameState(roomId: number, roomCode: string, players: Playe
     hostUserId,
     hasRoundStarted: false,
     openingFreePlay: false,
+    blackbird: {
+      recentEvents: [],
+      lastEventId: undefined,
+      updatedAt: Date.now(),
+    },
   };
 }
 
@@ -105,8 +110,9 @@ export function startNewRound(state: GameState): GameState {
     newState.dealerIndex = getNextActivePlayerIndex(players, newState.dealerIndex, 1, 1);
   }
   
-  // Starting player is the player after the dealer
-  newState.currentPlayerIndex = getNextActivePlayerIndex(players, newState.dealerIndex, 1, 1);
+  // Starting player is the player after the dealer (default)
+  const defaultStartPlayerIndex = getNextActivePlayerIndex(players, newState.dealerIndex, 1, 1);
+  newState.currentPlayerIndex = defaultStartPlayerIndex;
   
   newState.direction = "clockwise";
   newState.currentWishSuit = null;
@@ -117,8 +123,10 @@ export function startNewRound(state: GameState): GameState {
   const startCard = firstCard[0];
   if (startCard) {
     if (startCard.rank === "ass") {
-      // REGEL: Ass als Startkarte → erster Spieler setzt aus
-      newState.skipNextPlayer = true;
+      // REGEL (bestätigt): Ass als Startkarte → erster Spieler setzt SOFORT aus.
+      // Der Startzug geht direkt an den darauffolgenden aktiven Spieler.
+      newState.currentPlayerIndex = getNextActivePlayerIndex(players, defaultStartPlayerIndex, 1, 1);
+      newState.skipNextPlayer = false;
     } else if (startCard.rank === "bube") {
       // REGEL: Unter als Startkarte → freier Eröffnungszug (jede Karte erlaubt)
       // Wunschfarbe bleibt explizit leer.
@@ -130,8 +138,10 @@ export function startNewRound(state: GameState): GameState {
       newState.drawChainCount = 2;
       newState.skipNextPlayer = false;
     } else if (startCard.id === "schellen-8") {
-      // REGEL: Schellen-8 als Startkarte → Richtung umkehren + erster Spieler darf beliebige Karte legen
+      // REGEL (bestätigt): Schellen-8 als Startkarte → Dealer ist dran.
+      // Richtung wird auf gegen den Uhrzeigersinn gesetzt.
       newState.direction = "counterclockwise";
+      newState.currentPlayerIndex = newState.dealerIndex;
       newState.skipNextPlayer = false;
       newState.openingFreePlay = true;
     } else {
@@ -381,15 +391,9 @@ function handleDrawCard(state: GameState, playerId: number): GameState {
         deck = shuffleDeck(newState.discardPile.slice(0, -1));
         newState.discardPile = [topCard];
       } else {
-        // SONDERFALL: Nur eine Ablagekarte + Nachziehstapel leer
-        // → Runde SOFORT abgebrochen mit kollektiver Strafe (nur wenn mind. 2 Spieler mit Karten)
-        const playersWithCards = newState.players.filter(p => !p.isEliminated && p.hand.length > 0);
-        if (playersWithCards.length >= 2) {
-          // Runde abbrechen mit kollektiver Strafe
-          return abortRoundWithCollectivePenalty(newState);
-        }
-        // Sonst: Kann nicht mehr ziehen
-        break;
+        // REGEL (bestätigt): Nachziehstapel leer + nur 1 Ablagekarte
+        // → Runde beginnt neu (keine kollektive Strafe).
+        return startNewRound(newState);
       }
     }
 
@@ -420,46 +424,6 @@ function handleDrawCard(state: GameState, playerId: number): GameState {
   // Move to next player
   newState.currentPlayerIndex = getNextPlayerIndex(newState);
   newState.skipNextPlayer = false;
-
-  return newState;
-}
-
-/**
- * Aborts round with collective penalty (special case: only one discard card left)
- * REGEL: Wenn Nachziehstapel leer + nur 1 Ablagekarte + mind. 2 Spieler mit Karten
- * → Runde SOFORT abgebrochen, ALLE Spieler mit Karten erhalten +1 Verlustpunkt
- */
-function abortRoundWithCollectivePenalty(state: GameState): GameState {
-  const newState = { ...state };
-  newState.phase = "round_end";
-
-  // Kollektive Strafe: ALLE Spieler mit Karten bekommen +1 Verlustpunkt
-  const playersWithCards = newState.players.filter(p => !p.isEliminated && p.hand.length > 0);
-  const lossPoints: Record<number, number> = {};
-  playersWithCards.forEach(p => {
-    lossPoints[p.id] = 1;
-  });
-
-  // Update player loss points and check for elimination
-  const totalPlayerCount = newState.players.length;
-  const newPlayers = newState.players.map((player) => {
-    if (lossPoints[player.id]) {
-      const newLossPoints = player.lossPoints + lossPoints[player.id];
-      return {
-        ...player,
-        lossPoints: newLossPoints,
-        isEliminated: isPlayerEliminated(newLossPoints, totalPlayerCount),
-      };
-    }
-    return player;
-  });
-
-  newState.players = newPlayers;
-
-  // Check if game is over
-  if (isGameOver(newState.players)) {
-    return handleGameEnd(newState);
-  }
 
   return newState;
 }
@@ -551,6 +515,10 @@ function handleReady(state: GameState, playerId: number): GameState {
 function handleNextRound(state: GameState): GameState {
   if (state.phase !== "round_end") {
     throw new Error("Not in round end phase");
+  }
+  const allReady = state.players.filter((p) => !p.isEliminated).every((p) => p.isReady);
+  if (!allReady) {
+    throw new Error("Cannot start next round until all active players are READY");
   }
 
   const newState = { ...state };

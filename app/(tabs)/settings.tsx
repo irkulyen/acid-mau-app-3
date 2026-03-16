@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth-provider";
 import { trpc } from "@/lib/trpc";
 import { useRouter } from "expo-router";
 import { useSocket } from "@/lib/socket-provider";
+import { useCoreDesignTokens, withAlpha } from "@/lib/design-tokens";
 
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
@@ -13,6 +14,7 @@ export default function SettingsScreen() {
   const logoutMutation = trpc.auth.logout.useMutation();
   const { data: profile } = trpc.profile.me.useQuery(undefined, { enabled: !!user });
   const { closeAllRooms, closeEmptyRooms, isConnected, socket } = useSocket();
+  const TOKENS = useCoreDesignTokens();
   const [closingRooms, setClosingRooms] = useState(false);
   const [closingEmptyRooms, setClosingEmptyRooms] = useState(false);
   const normalizeAdminName = (value: string | null | undefined) =>
@@ -72,110 +74,238 @@ export default function SettingsScreen() {
   return (
     <ScreenContainer className="p-6">
       <View className="mb-6">
-        <Text className="text-3xl font-bold text-foreground">Einstellungen</Text>
+        <Text style={{ fontSize: 30, fontWeight: "700", color: TOKENS.TEXT_MAIN }}>Einstellungen</Text>
       </View>
 
       <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
         <View className="gap-6">
           {/* App Settings */}
-          <View className="bg-surface rounded-2xl border border-border overflow-hidden">
-            <Text className="text-foreground text-lg font-bold p-4 border-b border-border">
+          <View
+            style={{
+              backgroundColor: TOKENS.SURFACE_1,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.3),
+              overflow: "hidden",
+            }}
+          >
+            <Text
+              style={{
+                color: TOKENS.TEXT_MAIN,
+                fontSize: 18,
+                fontWeight: "700",
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+              }}
+            >
               App-Einstellungen
             </Text>
             
-            <Touchable className="p-4 border-b border-border active:opacity-80">
-              <Text className="text-foreground font-semibold">Benachrichtigungen</Text>
-              <Text className="text-muted text-sm mt-1">
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Benachrichtigungen</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>
                 Push-Benachrichtigungen verwalten
               </Text>
             </Touchable>
             
-            <Touchable className="p-4 border-b border-border active:opacity-80">
-              <Text className="text-foreground font-semibold">Sprache</Text>
-              <Text className="text-muted text-sm mt-1">Deutsch</Text>
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Sprache</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>Deutsch</Text>
             </Touchable>
             
-            <Touchable className="p-4 active:opacity-80">
-              <Text className="text-foreground font-semibold">Ton & Musik</Text>
-              <Text className="text-muted text-sm mt-1">
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Ton & Musik</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>
                 Soundeffekte und Hintergrundmusik
               </Text>
             </Touchable>
           </View>
 
           {/* Game Settings */}
-          <View className="bg-surface rounded-2xl border border-border overflow-hidden">
-            <Text className="text-foreground text-lg font-bold p-4 border-b border-border">
+          <View
+            style={{
+              backgroundColor: TOKENS.SURFACE_1,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.3),
+              overflow: "hidden",
+            }}
+          >
+            <Text
+              style={{
+                color: TOKENS.TEXT_MAIN,
+                fontSize: 18,
+                fontWeight: "700",
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+              }}
+            >
               Spiel-Einstellungen
             </Text>
             
-            <Touchable className="p-4 border-b border-border active:opacity-80">
-              <Text className="text-foreground font-semibold">Kartendesign</Text>
-              <Text className="text-muted text-sm mt-1">
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Kartendesign</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>
                 Wähle dein bevorzugtes Kartendesign
               </Text>
             </Touchable>
             
-            <Touchable className="p-4 active:opacity-80">
-              <Text className="text-foreground font-semibold">Tisch-Theme</Text>
-              <Text className="text-muted text-sm mt-1">
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Tisch-Theme</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>
                 Passe den Spieltisch an
               </Text>
             </Touchable>
           </View>
 
           {/* Premium */}
-          <View className="bg-warning rounded-2xl p-6 border border-warning">
-            <Text className="text-background text-xl font-bold mb-2">
+          <View
+            style={{
+              backgroundColor: TOKENS.STATE_WARNING,
+              borderRadius: 16,
+              padding: 24,
+              borderWidth: 1,
+              borderColor: TOKENS.STATE_WARNING,
+            }}
+          >
+            <Text style={{ color: TOKENS.TEXT_INVERSE, fontSize: 20, fontWeight: "700", marginBottom: 8 }}>
               ⭐ Premium werden
             </Text>
-            <Text className="text-background text-sm mb-4 opacity-90">
+            <Text style={{ color: TOKENS.TEXT_INVERSE, fontSize: 14, marginBottom: 16, opacity: 0.9 }}>
               Werbefrei spielen, erweiterte Statistiken, private Lobbys und mehr
             </Text>
-            <Touchable className="bg-background px-6 py-3 rounded-lg active:opacity-80">
-              <Text className="text-warning font-bold text-center">
+            <Touchable
+              style={({ pressed }) => ({
+                backgroundColor: TOKENS.TEXT_INVERSE,
+                paddingHorizontal: 24,
+                paddingVertical: 12,
+                borderRadius: 12,
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.STATE_WARNING, fontWeight: "700", textAlign: "center" }}>
                 Jetzt upgraden - 4,99€/Monat
               </Text>
             </Touchable>
           </View>
 
           {/* About */}
-          <View className="bg-surface rounded-2xl border border-border overflow-hidden">
-            <Text className="text-foreground text-lg font-bold p-4 border-b border-border">
+          <View
+            style={{
+              backgroundColor: TOKENS.SURFACE_1,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.3),
+              overflow: "hidden",
+            }}
+          >
+            <Text
+              style={{
+                color: TOKENS.TEXT_MAIN,
+                fontSize: 18,
+                fontWeight: "700",
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+              }}
+            >
               Über
             </Text>
             
-            <Touchable className="p-4 border-b border-border active:opacity-80">
-              <Text className="text-foreground font-semibold">Spielregeln</Text>
-              <Text className="text-muted text-sm mt-1">
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Spielregeln</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>
                 Lerne die Regeln von Acid-Mau
               </Text>
             </Touchable>
             
-            <Touchable className="p-4 border-b border-border active:opacity-80">
-              <Text className="text-foreground font-semibold">Datenschutz</Text>
-              <Text className="text-muted text-sm mt-1">
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Datenschutz</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>
                 Datenschutzerklärung lesen
               </Text>
             </Touchable>
             
-            <Touchable className="p-4 border-b border-border active:opacity-80">
-              <Text className="text-foreground font-semibold">Nutzungsbedingungen</Text>
-              <Text className="text-muted text-sm mt-1">
+            <Touchable
+              style={({ pressed }) => ({
+                padding: 16,
+                borderBottomWidth: 1,
+                borderBottomColor: withAlpha(TOKENS.TEXT_MUTED, 0.24),
+                opacity: pressed ? 0.8 : 1,
+              })}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Nutzungsbedingungen</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>
                 AGB lesen
               </Text>
             </Touchable>
             
             <View className="p-4">
-              <Text className="text-foreground font-semibold">Version</Text>
-              <Text className="text-muted text-sm mt-1">1.0.0</Text>
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>Version</Text>
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>1.0.0</Text>
             </View>
           </View>
 
           {/* Admin Section */}
           {isAdmin && (
-            <View className="bg-error rounded-2xl p-6 border border-error" style={{ opacity: 0.9 }}>
-              <Text className="text-background text-lg font-bold mb-2">
+            <View
+              style={{
+                backgroundColor: TOKENS.STATE_DANGER,
+                borderRadius: 16,
+                padding: 24,
+                borderWidth: 1,
+                borderColor: TOKENS.STATE_DANGER,
+                opacity: 0.9,
+              }}
+            >
+              <Text style={{ color: TOKENS.TEXT_INVERSE, fontSize: 18, fontWeight: "700", marginBottom: 8 }}>
                 Admin
               </Text>
               <Touchable
@@ -200,10 +330,17 @@ export default function SettingsScreen() {
                     ]
                   );
                 }}
-                className="bg-background px-6 py-3 rounded-xl mb-3"
+                style={({ pressed }) => ({
+                  backgroundColor: TOKENS.TEXT_INVERSE,
+                  paddingHorizontal: 24,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  marginBottom: 12,
+                  opacity: pressed ? 0.8 : 1,
+                })}
                 disabled={closingEmptyRooms}
               >
-                <Text className="text-error font-bold text-center">
+                <Text style={{ color: TOKENS.STATE_DANGER, fontWeight: "700", textAlign: "center" }}>
                   {closingEmptyRooms ? "Bereinige..." : "Leere Räume schließen"}
                 </Text>
               </Touchable>
@@ -229,10 +366,16 @@ export default function SettingsScreen() {
                     ]
                   );
                 }}
-                className="bg-background px-6 py-3 rounded-xl"
+                style={({ pressed }) => ({
+                  backgroundColor: TOKENS.TEXT_INVERSE,
+                  paddingHorizontal: 24,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  opacity: pressed ? 0.8 : 1,
+                })}
                 disabled={closingRooms}
               >
-                <Text className="text-error font-bold text-center">
+                <Text style={{ color: TOKENS.STATE_DANGER, fontWeight: "700", textAlign: "center" }}>
                   {closingRooms ? "Schließe Räume..." : "Alle Räume schließen"}
                 </Text>
               </Touchable>
@@ -247,9 +390,15 @@ export default function SettingsScreen() {
                   console.log("[DEBUG] Logout button PRESSED");
                   handleLogout();
                 }}
-                className="bg-error px-6 py-4 rounded-xl"
+                style={({ pressed }) => ({
+                  backgroundColor: TOKENS.STATE_DANGER,
+                  paddingHorizontal: 24,
+                  paddingVertical: 16,
+                  borderRadius: 12,
+                  opacity: pressed ? 0.85 : 1,
+                })}
               >
-                <Text className="text-background font-bold text-center text-lg">
+                <Text style={{ color: TOKENS.TEXT_INVERSE, fontWeight: "700", textAlign: "center", fontSize: 18 }}>
                   Abmelden
                 </Text>
               </Touchable>

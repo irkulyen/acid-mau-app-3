@@ -42,7 +42,18 @@ export interface ErrorPayload {
 
 export interface BlackbirdEvent {
   id?: string;
-  type: "ass" | "unter" | "draw_chain" | "winner" | "loser" | "round_start" | "seven_played" | "mvp";
+  type:
+    | "ass"
+    | "unter"
+    | "draw_chain"
+    | "winner"
+    | "loser"
+    | "round_start"
+    | "seven_played"
+    | "mvp"
+    | "elimination"
+    | "chaos"
+    | "guide";
   playerName?: string;
   drawChainCount?: number;
   wishSuit?: string;
@@ -57,6 +68,7 @@ export interface BlackbirdEvent {
   variant?: string;
   statsText?: string;
   phrase?: string;
+  emittedAt?: number;
 }
 
 export interface CardPlayFxEvent {

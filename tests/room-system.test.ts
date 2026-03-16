@@ -59,7 +59,7 @@ describe("Multiplayer Room System", () => {
         socket1.emit("create-room", {
           userId: 1,
           username: "Host",
-          maxPlayers: 5,
+          maxPlayers: 6,
         });
       });
 
@@ -67,7 +67,7 @@ describe("Multiplayer Room System", () => {
         try {
           expect(data.roomCode).toBeDefined();
           expect(data.roomCode.length).toBe(6);
-          expect(data.maxPlayers).toBe(5);
+          expect(data.maxPlayers).toBe(6);
           roomCode = data.roomCode;
           resolve();
         } catch (err) {
@@ -115,15 +115,108 @@ describe("Multiplayer Room System", () => {
     });
   });
 
-  it("should broadcast state to all players", async () => {
+  it("should keep join-room idempotent for repeated same-room attempts (no RATE_LIMIT)", async () => {
+    const token = await createTestToken(2, "guest@test.local");
     return new Promise<void>((resolve, reject) => {
-      socket1.on("game-state-update", (state) => {
+      const socketRepeat = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token },
+      });
+
+      let done = false;
+      let sawRateLimit = false;
+      let latestGuestCount = 0;
+
+      const finish = () => {
+        if (done) return;
+        done = true;
+        socketRepeat.disconnect();
+        if (sawRateLimit) {
+          reject(new Error("Unexpected RATE_LIMIT on idempotent join-room"));
+          return;
+        }
         try {
-          expect(state.players.length).toBe(2);
+          expect(latestGuestCount).toBe(1);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        finish();
+      }, 2500);
+
+      socketRepeat.on("connect", () => {
+        for (let i = 0; i < 20; i++) {
+          socketRepeat.emit("join-room", {
+            roomCode,
+            userId: 2,
+            username: "Guest",
+          });
+        }
+      });
+
+      socketRepeat.on("join-failed", (payload) => {
+        if (payload?.code === "RATE_LIMIT") {
+          sawRateLimit = true;
+        }
+      });
+
+      socketRepeat.on("game-state-update", (state) => {
+        latestGuestCount = state.players.filter((p: any) => p.userId === 2).length;
+      });
+
+      socketRepeat.on("error", (payload) => {
+        if (String(payload?.message || "").includes("Too many join attempts")) {
+          sawRateLimit = true;
+        }
+      });
+
+      socketRepeat.on("disconnect", () => {
+        clearTimeout(timeout);
+      });
+    });
+  });
+
+  it("should broadcast state to all players", async () => {
+    const token = await createTestToken(3, "broadcast@test.local");
+    return new Promise<void>((resolve, reject) => {
+      const socket3 = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token },
+      });
+
+      const timer = setTimeout(() => {
+        socket3.disconnect();
+        reject(new Error("Timeout waiting for broadcast state"));
+      }, 7000);
+
+      socket1.once("game-state-update", (state) => {
+        clearTimeout(timer);
+        socket3.disconnect();
+        try {
+          expect(state.players.length).toBeGreaterThanOrEqual(2);
           resolve();
         } catch (err) {
           reject(err);
         }
+      });
+
+      socket3.on("connect", () => {
+        socket3.emit("join-room", {
+          roomCode,
+          userId: 3,
+          username: "BroadcastGuest",
+        });
+      });
+
+      socket3.on("error", (data) => {
+        clearTimeout(timer);
+        socket3.disconnect();
+        reject(new Error(`Socket error: ${data?.message || "unknown"}`));
       });
     });
   });
@@ -145,9 +238,10 @@ describe("Multiplayer Room System", () => {
         });
       });
 
-      socket3.on("error", (data) => {
+      socket3.on("join-failed", (data) => {
         try {
-          expect(["Room not found", "Invalid room code"]).toContain(data.message);
+          expect(data.code).toBe("INVALID_ROOM_CODE");
+          expect(data.message).toBe("Invalid room code");
           socket3.disconnect();
           resolve();
         } catch (err) {
@@ -160,6 +254,57 @@ describe("Multiplayer Room System", () => {
         socket3.disconnect();
         reject(new Error("Timeout waiting for error"));
       }, 5000);
+    });
+  });
+
+  it("should emit ROOM_NOT_FOUND only via join-failed without mirrored error event", async () => {
+    const token = await createTestToken(9, "roomnotfound@test.local");
+    return new Promise<void>((resolve, reject) => {
+      const socket3 = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token },
+      });
+
+      let gotJoinFailed = false;
+      const timer = setTimeout(() => {
+        socket3.disconnect();
+        reject(new Error("Timeout waiting for ROOM_NOT_FOUND join-failed"));
+      }, 5000);
+
+      socket3.on("connect", () => {
+        socket3.emit("join-room", {
+          roomCode: "QWERTY",
+          userId: 9,
+          username: "RoomNotFoundUser",
+        });
+      });
+
+      socket3.on("join-failed", (data) => {
+        try {
+          expect(data.code).toBe("ROOM_NOT_FOUND");
+          expect(data.message).toBe("Room not found");
+          gotJoinFailed = true;
+          // Give mirrored error event a short chance to arrive; it should not.
+          setTimeout(() => {
+            clearTimeout(timer);
+            socket3.disconnect();
+            resolve();
+          }, 250);
+        } catch (err) {
+          clearTimeout(timer);
+          socket3.disconnect();
+          reject(err);
+        }
+      });
+
+      socket3.on("error", (data) => {
+        if (gotJoinFailed) {
+          clearTimeout(timer);
+          socket3.disconnect();
+          reject(new Error(`Unexpected mirrored error event: ${data?.message || "unknown"}`));
+        }
+      });
     });
   });
 

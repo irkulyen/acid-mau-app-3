@@ -8,11 +8,13 @@ import * as Clipboard from "expo-clipboard";
 import { ScreenContainer } from "@/components/screen-container";
 import { useAuth } from "@/lib/auth-provider";
 import { trpc } from "@/lib/trpc";
+import { useCoreDesignTokens, withAlpha } from "@/lib/design-tokens";
 
 export default function HomeScreen() {
   const router = useRouter();
   const { user } = useAuth();
   const { data: profile } = trpc.profile.me.useQuery(undefined, { enabled: !!user });
+  const TOKENS = useCoreDesignTokens();
 
   const handleQuickPlay = () => {
     // Quick play: join any available room
@@ -72,17 +74,27 @@ export default function HomeScreen() {
           {/* Hero Section */}
           <View className="items-center gap-3 mt-4">
             <Image
-              source={require("@/assets/images/icon.png")}
-              style={{ width: 120, height: 120, borderRadius: 20 }}
-              contentFit="cover"
+              source={require("@/assets/branding/crazy-amsel-logo.png")}
+              style={{ width: 132, height: 132 }}
+              contentFit="contain"
             />
             <Text className="text-4xl font-bold text-primary" style={{ marginTop: -4 }}>Acid-Mau</Text>
             <Text className="text-base text-muted text-center">
               Das verrückte Kartenspiel
             </Text>
             {profile && (
-              <View className="mt-2 px-4 py-2 bg-surface rounded-full">
-                <Text className="text-foreground font-semibold">
+              <View
+                style={{
+                  marginTop: 8,
+                  paddingHorizontal: 16,
+                  paddingVertical: 8,
+                  borderRadius: 999,
+                  backgroundColor: TOKENS.SURFACE_1,
+                  borderWidth: 1,
+                  borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.28),
+                }}
+              >
+                <Text style={{ color: TOKENS.TEXT_MAIN, fontWeight: "600" }}>
                   Willkommen, {profile.username}!
                 </Text>
               </View>
@@ -94,12 +106,18 @@ export default function HomeScreen() {
             {/* Quick Play */}
             <Touchable
               onPress={handleQuickPlay}
-              className="bg-primary px-8 py-6 rounded-2xl"
+              style={({ pressed }) => ({
+                backgroundColor: TOKENS.SECONDARY_NEON,
+                paddingHorizontal: 32,
+                paddingVertical: 24,
+                borderRadius: 16,
+                opacity: pressed ? 0.9 : 1,
+              })}
             >
-              <Text className="text-background text-2xl font-bold text-center">
+              <Text style={{ color: TOKENS.TEXT_INVERSE, fontSize: 24, fontWeight: "700", textAlign: "center" }}>
                 Schnellspiel
               </Text>
-              <Text className="text-background text-sm text-center mt-1 opacity-90">
+              <Text style={{ color: TOKENS.TEXT_INVERSE, fontSize: 14, textAlign: "center", marginTop: 4, opacity: 0.9 }}>
                 Finde sofort ein Spiel
               </Text>
             </Touchable>
@@ -107,12 +125,20 @@ export default function HomeScreen() {
             {/* Create Room */}
             <Touchable
               onPress={handleCreateRoom}
-              className="bg-surface px-8 py-5 rounded-2xl border border-border"
+              style={({ pressed }) => ({
+                backgroundColor: TOKENS.SURFACE_1,
+                paddingHorizontal: 32,
+                paddingVertical: 20,
+                borderRadius: 16,
+                borderWidth: 1,
+                borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.3),
+                opacity: pressed ? 0.9 : 1,
+              })}
             >
-              <Text className="text-foreground text-xl font-semibold text-center">
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontSize: 20, fontWeight: "600", textAlign: "center" }}>
                 Raum erstellen
               </Text>
-              <Text className="text-muted text-sm text-center mt-1">
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, textAlign: "center", marginTop: 4 }}>
                 Spiele mit Freunden
               </Text>
             </Touchable>
@@ -120,12 +146,20 @@ export default function HomeScreen() {
             {/* Join Room */}
             <Touchable
               onPress={handleJoinRoom}
-              className="bg-surface px-8 py-5 rounded-2xl border border-border"
+              style={({ pressed }) => ({
+                backgroundColor: TOKENS.SURFACE_1,
+                paddingHorizontal: 32,
+                paddingVertical: 20,
+                borderRadius: 16,
+                borderWidth: 1,
+                borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.3),
+                opacity: pressed ? 0.9 : 1,
+              })}
             >
-              <Text className="text-foreground text-xl font-semibold text-center">
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontSize: 20, fontWeight: "600", textAlign: "center" }}>
                 Raum beitreten
               </Text>
-              <Text className="text-muted text-sm text-center mt-1">
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, textAlign: "center", marginTop: 4 }}>
                 Mit Code beitreten
               </Text>
             </Touchable>
@@ -133,12 +167,20 @@ export default function HomeScreen() {
             {/* Practice Mode */}
             <Touchable
               onPress={handlePractice}
-              className="bg-surface px-8 py-5 rounded-2xl border border-border"
+              style={({ pressed }) => ({
+                backgroundColor: TOKENS.SURFACE_1,
+                paddingHorizontal: 32,
+                paddingVertical: 20,
+                borderRadius: 16,
+                borderWidth: 1,
+                borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.3),
+                opacity: pressed ? 0.9 : 1,
+              })}
             >
-              <Text className="text-foreground text-xl font-semibold text-center">
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontSize: 20, fontWeight: "600", textAlign: "center" }}>
                 Übungsmodus
               </Text>
-              <Text className="text-muted text-sm text-center mt-1">
+              <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, textAlign: "center", marginTop: 4 }}>
                 Spiele gegen KI
               </Text>
             </Touchable>
@@ -146,12 +188,18 @@ export default function HomeScreen() {
             {/* Invite Friends */}
             <Touchable
               onPress={handleInviteFriends}
-              className="bg-success px-8 py-5 rounded-2xl"
+              style={({ pressed }) => ({
+                backgroundColor: TOKENS.STATE_SUCCESS,
+                paddingHorizontal: 32,
+                paddingVertical: 20,
+                borderRadius: 16,
+                opacity: pressed ? 0.9 : 1,
+              })}
             >
-              <Text className="text-background text-xl font-semibold text-center">
+              <Text style={{ color: TOKENS.TEXT_INVERSE, fontSize: 20, fontWeight: "600", textAlign: "center" }}>
                 🎉 Freunde einladen
               </Text>
-              <Text className="text-background text-sm text-center mt-1 opacity-90">
+              <Text style={{ color: TOKENS.TEXT_INVERSE, fontSize: 14, textAlign: "center", marginTop: 4, opacity: 0.9 }}>
                 Link zum Teilen
               </Text>
             </Touchable>
@@ -159,28 +207,37 @@ export default function HomeScreen() {
 
           {/* Stats Preview */}
           {profile && (
-            <View className="mt-4 bg-surface rounded-2xl p-6 border border-border">
-              <Text className="text-foreground text-lg font-semibold mb-4">
+            <View
+              style={{
+                marginTop: 16,
+                backgroundColor: TOKENS.SURFACE_1,
+                borderRadius: 16,
+                padding: 24,
+                borderWidth: 1,
+                borderColor: withAlpha(TOKENS.TEXT_MUTED, 0.3),
+              }}
+            >
+              <Text style={{ color: TOKENS.TEXT_MAIN, fontSize: 18, fontWeight: "600", marginBottom: 16 }}>
                 Deine Statistiken
               </Text>
               <View className="flex-row justify-around">
                 <View className="items-center">
-                  <Text className="text-3xl font-bold text-primary">
+                  <Text style={{ color: TOKENS.SECONDARY_NEON, fontSize: 36, fontWeight: "700" }}>
                     {profile.totalGamesWon}
                   </Text>
-                  <Text className="text-muted text-sm mt-1">Siege</Text>
+                  <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>Siege</Text>
                 </View>
                 <View className="items-center">
-                  <Text className="text-3xl font-bold text-foreground">
+                  <Text style={{ color: TOKENS.TEXT_MAIN, fontSize: 36, fontWeight: "700" }}>
                     {profile.totalGamesPlayed}
                   </Text>
-                  <Text className="text-muted text-sm mt-1">Spiele</Text>
+                  <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>Spiele</Text>
                 </View>
                 <View className="items-center">
-                  <Text className="text-3xl font-bold text-warning">
+                  <Text style={{ color: TOKENS.STATE_WARNING, fontSize: 36, fontWeight: "700" }}>
                     {profile.currentWinStreak}
                   </Text>
-                  <Text className="text-muted text-sm mt-1">Serie</Text>
+                  <Text style={{ color: TOKENS.TEXT_MUTED, fontSize: 14, marginTop: 4 }}>Serie</Text>
                 </View>
               </View>
             </View>

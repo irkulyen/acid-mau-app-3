@@ -36,6 +36,7 @@ RUN pnpm install --prod --frozen-lockfile
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server ./server
 COPY --from=builder /app/shared ./shared
+COPY --from=builder /app/assets ./assets
 
 # Expose port
 EXPOSE 3000

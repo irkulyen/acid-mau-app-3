@@ -2,6 +2,7 @@ import { Text, View, StyleSheet, Pressable } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { Image } from "expo-image";
 import type { Card } from "@/shared/game-types";
+import { PLAYING_CARD_TOKENS, withAlpha } from "@/lib/design-tokens";
 
 interface PlayingCardProps {
   card: Card;
@@ -20,24 +21,24 @@ const SUIT_SYMBOLS: Record<string, string> = {
 };
 
 const SUIT_COLORS: Record<string, string> = {
-  eichel: "#6F4A1D",
-  gruen: "#2E7D32",
-  rot: "#B71C1C",
-  schellen: "#9C6B14",
+  eichel: PLAYING_CARD_TOKENS.SUIT_EICHEL,
+  gruen: PLAYING_CARD_TOKENS.SUIT_GRUEN,
+  rot: PLAYING_CARD_TOKENS.SUIT_ROT,
+  schellen: PLAYING_CARD_TOKENS.SUIT_SCHELLEN,
 };
 
 const SUIT_BG_COLORS: Record<string, string> = {
-  eichel: "rgba(111, 74, 29, 0.1)",
-  gruen: "rgba(46, 125, 50, 0.1)",
-  rot: "rgba(183, 28, 28, 0.1)",
-  schellen: "rgba(156, 107, 20, 0.1)",
+  eichel: withAlpha(PLAYING_CARD_TOKENS.SUIT_EICHEL, 0.1),
+  gruen: withAlpha(PLAYING_CARD_TOKENS.SUIT_GRUEN, 0.1),
+  rot: withAlpha(PLAYING_CARD_TOKENS.SUIT_ROT, 0.1),
+  schellen: withAlpha(PLAYING_CARD_TOKENS.SUIT_SCHELLEN, 0.1),
 };
 
 const SUIT_BORDER_GLOW: Record<string, string> = {
-  eichel: "rgba(111, 74, 29, 0.28)",
-  gruen: "rgba(46, 125, 50, 0.28)",
-  rot: "rgba(183, 28, 28, 0.28)",
-  schellen: "rgba(156, 107, 20, 0.28)",
+  eichel: withAlpha(PLAYING_CARD_TOKENS.SUIT_EICHEL, 0.28),
+  gruen: withAlpha(PLAYING_CARD_TOKENS.SUIT_GRUEN, 0.28),
+  rot: withAlpha(PLAYING_CARD_TOKENS.SUIT_ROT, 0.28),
+  schellen: withAlpha(PLAYING_CARD_TOKENS.SUIT_SCHELLEN, 0.28),
 };
 
 const RANK_DISPLAY: Record<string, string> = {
@@ -52,21 +53,33 @@ const RANK_DISPLAY: Record<string, string> = {
 };
 
 const SIZES = {
-  small: { width: 42, height: 63 },
+  small: { width: 52, height: 78 },
   medium: { width: 58, height: 85 },
   large: { width: 75, height: 110 },
 };
 
 const TEXT_SIZES = {
-  small: 10,
+  small: 11,
   medium: 14,
   large: 18,
 };
 
 const SYMBOL_SIZES = {
-  small: 10,
+  small: 12,
   medium: 16,
   large: 24,
+};
+
+const CORNER_RANK_SIZES = {
+  small: 13,
+  medium: 14,
+  large: 18,
+};
+
+const CENTER_SYMBOL_SIZES = {
+  small: 22,
+  medium: 26,
+  large: 34,
 };
 
 export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown, elevated }: PlayingCardProps) {
@@ -87,6 +100,8 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
   const cardSize = SIZES[size];
   const textSize = TEXT_SIZES[size];
   const symbolSize = SYMBOL_SIZES[size];
+  const cornerRankSize = CORNER_RANK_SIZES[size];
+  const centerSymbolSize = CENTER_SYMBOL_SIZES[size];
 
   if (faceDown) {
     return (
@@ -104,7 +119,7 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
           ]}
         >
           <Image
-            source={require("@/assets/cards/card-back.png")}
+            source={require("@/assets/cards/card-back-acid-mau.png")}
             style={styles.cardBackImage}
             contentFit="cover"
           />
@@ -134,10 +149,10 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
           cardSize,
           {
             borderColor: suitColor,
-            backgroundColor: "#F5F2E8",
-            shadowColor: isSpecial ? suitColor : "#000",
-            shadowOpacity: isSpecial ? 0.32 : 0.2,
-            shadowRadius: isSpecial ? 9 : 6,
+            backgroundColor: PLAYING_CARD_TOKENS.CARD_FACE_BG,
+            shadowColor: isSpecial ? suitColor : PLAYING_CARD_TOKENS.CARD_SHADOW,
+            shadowOpacity: isSpecial ? 0.36 : 0.24,
+            shadowRadius: isSpecial ? 10 : 7,
           },
           pressed && styles.pressed,
           disabled && styles.disabled,
@@ -165,23 +180,34 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
           ]}
         />
 
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            {
+              borderRadius: 10,
+              borderWidth: 1.1,
+              borderColor: "rgba(15, 23, 42, 0.26)",
+            },
+          ]}
+        />
+
         {/* Top-left corner: rank + suit mini */}
         <View style={styles.cornerTopLeft}>
-          <Text style={[styles.cornerRank, { color: suitColor, fontSize: textSize * 0.85, fontWeight: "900" }]}>
+          <Text style={[styles.cornerRank, { color: suitColor, fontSize: cornerRankSize, fontWeight: "900" }]}>
             {rankDisplay}
           </Text>
-          <Text style={{ fontSize: symbolSize, marginTop: -4 }}>{suitSymbol}</Text>
+          <Text style={{ fontSize: symbolSize, marginTop: -3 }}>{suitSymbol}</Text>
         </View>
 
         {/* Center: large suit symbol */}
         <View style={styles.cardCenter}>
-          <Text style={{ fontSize: textSize * 1.22 }}>{suitSymbol}</Text>
+          <Text style={{ fontSize: centerSymbolSize }}>{suitSymbol}</Text>
         </View>
 
         {/* Bottom-right corner: rank + suit mini (rotated) */}
         <View style={styles.cornerBottomRight}>
-          <Text style={{ fontSize: symbolSize, marginBottom: -4 }}>{suitSymbol}</Text>
-          <Text style={[styles.cornerRank, { color: suitColor, fontSize: textSize * 0.85, fontWeight: "900" }]}>
+          <Text style={{ fontSize: symbolSize, marginBottom: -3 }}>{suitSymbol}</Text>
+          <Text style={[styles.cornerRank, { color: suitColor, fontSize: cornerRankSize, fontWeight: "900" }]}>
             {rankDisplay}
           </Text>
         </View>
@@ -206,10 +232,10 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
 
 const styles = StyleSheet.create({
   cardBack: {
-    backgroundColor: "#1e2022",
+    backgroundColor: PLAYING_CARD_TOKENS.CARD_BACK_BG,
     borderRadius: 12,
     borderWidth: 2,
-    borderColor: "#334155",
+    borderColor: PLAYING_CARD_TOKENS.CARD_BACK_BORDER,
     alignItems: "center",
     justifyContent: "center",
     overflow: "hidden",
@@ -220,7 +246,7 @@ const styles = StyleSheet.create({
   },
   card: {
     borderRadius: 12,
-    borderWidth: 2.2,
+    borderWidth: 2.4,
     padding: 4,
     shadowOffset: { width: 0, height: 4 },
     elevation: 9,

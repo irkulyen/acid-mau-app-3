@@ -10,13 +10,17 @@ import { storagePut } from "./storage";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { realtimeStore } from "./realtime-store";
 
-const DATA_IMAGE_REGEX = /^data:image\/(jpeg|jpg|png|webp);base64,[a-z0-9+/=]+$/i;
-
 function isValidAvatarUrl(value: string): boolean {
-  if (DATA_IMAGE_REGEX.test(value)) return true;
   try {
     const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    const hostname = url.hostname.toLowerCase();
+    if (process.env.NODE_ENV === "production") {
+      if (hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".local")) {
+        return false;
+      }
+    }
+    return true;
   } catch {
     return false;
   }
@@ -26,7 +30,7 @@ const avatarUrlInputSchema = z
   .string()
   .trim()
   .refine((value) => isValidAvatarUrl(value), {
-    message: "avatarUrl must be an http(s) URL or data:image/*;base64",
+    message: "avatarUrl must be an externally reachable http(s) URL",
   })
   .nullish();
 

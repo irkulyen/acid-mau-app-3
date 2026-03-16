@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { View, Text, Pressable, ActivityIndicator, ScrollView, Alert } from "react-native";
 import { Image } from "expo-image";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/auth-provider";
 import { useSocket, type PreparationData } from "@/lib/socket-provider";
 import { getApiBaseUrl } from "@/constants/oauth";
 import { GamePreparationScreen, type PreparationDrawData } from "@/components/game/game-preparation-screen";
-import { getBotProfileByName } from "@/lib/bot-profiles";
+import { getBotAvatarSource } from "@/lib/bot-profiles";
 import { trpc } from "@/lib/trpc";
 
 export default function RoomScreen() {
@@ -18,7 +18,7 @@ export default function RoomScreen() {
 
   const [isJoining, setIsJoining] = useState(true);
   const [botsAdded, setBotsAdded] = useState(false);
-  const [joinAttempt, setJoinAttempt] = useState(0);
+  const [failedAvatars, setFailedAvatars] = useState<Record<string, boolean>>({});
   const normalizedCode = useMemo(() => (code || "").toUpperCase(), [code]);
   const joinUsername = useMemo(() => {
     const preferred = (profile?.username || "").trim();
@@ -37,6 +37,10 @@ export default function RoomScreen() {
   const [prepSeatOrder, setPrepSeatOrder] = useState<number[]>([]);
   const [prepSeatChoices, setPrepSeatChoices] = useState<Array<{ userId: number; seatPosition: number }>>([]);
   const [prepCurrentPicker, setPrepCurrentPicker] = useState<number | null>(null);
+  const joinRequestedRef = useRef(false);
+  const lastRoomJoinedRecoverAtRef = useRef(0);
+  const loadingStartedAtRef = useRef<number | null>(null);
+  const loadingEscalatedRef = useRef(false);
 
   const {
     isConnected,
@@ -66,9 +70,16 @@ export default function RoomScreen() {
   useEffect(() => {
     setOnRoomJoined((data) => {
       if (data.roomCode.toUpperCase() === normalizedCode) {
-        // If room-joined arrives before/without a state packet, force recovery.
-        void recoverSession();
-        setTimeout(() => void recoverSession(), 700);
+        // Mark join as fulfilled. Reconnect recovery is handled centrally by socket-provider.
+        // Only trigger a one-shot recovery if no matching state arrived yet.
+        setIsJoining(false);
+        const now = Date.now();
+        if (!activeGameState && now - lastRoomJoinedRecoverAtRef.current > 2500) {
+          lastRoomJoinedRecoverAtRef.current = now;
+          setTimeout(() => {
+            void recoverSession();
+          }, 650);
+        }
       }
     });
 
@@ -96,31 +107,20 @@ export default function RoomScreen() {
       setOnPreparation(null);
       setOnError(null);
     };
-  }, [isJoining, normalizedCode, recoverSession, router, setOnPreparation, setOnRoomJoined, setOnError]);
+  }, [activeGameState, isJoining, normalizedCode, recoverSession, router, setOnPreparation, setOnRoomJoined, setOnError]);
 
   // Join room when connected
   useEffect(() => {
-    if (!user || !code) return;
-    if (isConnected && isJoining) {
-      joinRoom(normalizedCode, user.id, joinUsername);
-      setJoinAttempt((prev) => prev + 1);
-    }
-  }, [isConnected, user, code, isJoining, joinRoom, joinUsername, normalizedCode]);
+    joinRequestedRef.current = false;
+  }, [normalizedCode, user?.id]);
 
   useEffect(() => {
-    if (!isConnected || !isJoining || activeGameState || !user || !code) return;
-    const timeout = setTimeout(() => {
-      if (joinAttempt >= 6) {
-        setIsJoining(false);
-        Alert.alert("Verbindung fehlgeschlagen", "Konnte dem Raum nicht beitreten. Bitte erneut versuchen.");
-        router.replace("/lobby/join" as any);
-        return;
-      }
+    if (!user || !code) return;
+    if (isConnected && isJoining && !joinRequestedRef.current) {
+      joinRequestedRef.current = true;
       joinRoom(normalizedCode, user.id, joinUsername);
-      setJoinAttempt((prev) => prev + 1);
-    }, 3500);
-    return () => clearTimeout(timeout);
-  }, [isConnected, isJoining, activeGameState, joinAttempt, user, code, joinRoom, joinUsername, router, normalizedCode]);
+    }
+  }, [isConnected, user, code, isJoining, joinRoom, joinUsername, normalizedCode]);
 
   // Auto-add bots after joining room
   useEffect(() => {
@@ -201,8 +201,44 @@ export default function RoomScreen() {
   useEffect(() => {
     if (gameState && gameState.roomCode.toUpperCase() === normalizedCode) {
       setIsJoining(false);
+      joinRequestedRef.current = false;
+      loadingStartedAtRef.current = null;
+      loadingEscalatedRef.current = false;
     }
   }, [gameState, normalizedCode]);
+
+  useEffect(() => {
+    const waitingForRoom = !isConnected || !activeGameState;
+    if (!waitingForRoom) {
+      loadingStartedAtRef.current = null;
+      loadingEscalatedRef.current = false;
+      return;
+    }
+
+    if (loadingStartedAtRef.current === null) {
+      loadingStartedAtRef.current = Date.now();
+      loadingEscalatedRef.current = false;
+    }
+
+    const interval = setInterval(() => {
+      if (!isConnected) {
+        void recoverSession();
+      }
+
+      const startedAt = loadingStartedAtRef.current ?? Date.now();
+      const elapsed = Date.now() - startedAt;
+      if (elapsed < 15_000 || loadingEscalatedRef.current) return;
+
+      loadingEscalatedRef.current = true;
+      Alert.alert(
+        "Verbindung fehlgeschlagen",
+        "Raum konnte nicht stabil verbunden werden. Bitte erneut beitreten.",
+        [{ text: "OK", onPress: () => router.replace("/lobby/join" as any) }],
+      );
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [activeGameState, isConnected, recoverSession, router]);
 
   // Navigate to game when it starts AND preparation is done
   useEffect(() => {
@@ -280,14 +316,26 @@ export default function RoomScreen() {
                 className="flex-row items-center p-3 bg-background rounded-xl"
               >
                 {(() => {
-                  const botImage = player.userId < 0 ? getBotProfileByName(player.username)?.imagePath : undefined;
-                  const avatarSource = player.avatarUrl ? { uri: player.avatarUrl } : botImage;
+                  const avatarKey = `${player.userId}:${player.botId || ""}:${player.avatarUrl || ""}`;
+                  const avatarSource =
+                    player.userId < 0
+                      ? getBotAvatarSource({
+                          botId: player.botId,
+                          botName: player.username,
+                          userId: player.userId,
+                          avatarUrl: failedAvatars[avatarKey] ? undefined : player.avatarUrl,
+                          preferLocalFallback: true,
+                        })
+                      : player.avatarUrl && !failedAvatars[avatarKey]
+                        ? { uri: player.avatarUrl }
+                        : undefined;
                   if (avatarSource) {
                     return (
                       <Image
                         source={avatarSource}
                         style={{ width: 40, height: 40, borderRadius: 20, marginRight: 12, borderWidth: 1, borderColor: "rgba(148, 163, 184, 0.7)" }}
                         contentFit="cover"
+                        onError={() => setFailedAvatars((prev) => ({ ...prev, [avatarKey]: true }))}
                       />
                     );
                   }

@@ -9,6 +9,7 @@ import Animated, {
   withDelay,
   Easing,
 } from "react-native-reanimated";
+import { FALLBACK_CORE_TOKENS, withAlpha } from "@/lib/design-tokens";
 
 const EMOTES = [
   { emoji: "👍", label: "GG" },
@@ -179,7 +180,7 @@ function FloatingBubble({
       ]}
     >
       <Text style={styles.bubbleEmoji}>{emoji}</Text>
-      <Text style={[styles.bubbleName, isBot && { color: "#9BA1A6" }]}>{playerName}</Text>
+      <Text style={[styles.bubbleName, isBot && { color: FALLBACK_CORE_TOKENS.TEXT_MUTED }]}>{playerName}</Text>
     </Animated.View>
   );
 }
@@ -198,7 +199,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    shadowColor: "#000",
+    shadowColor: FALLBACK_CORE_TOKENS.TEXT_INVERSE,
     shadowOpacity: 0.4,
     shadowRadius: 8,
     elevation: 10,
@@ -206,18 +207,18 @@ const styles = StyleSheet.create({
   bubblePlayer: {
     backgroundColor: "rgba(0, 50, 0, 0.95)",
     borderWidth: 1.5,
-    borderColor: "#32CD32",
+    borderColor: FALLBACK_CORE_TOKENS.STATE_SUCCESS,
   },
   bubbleBot: {
     backgroundColor: "rgba(30, 30, 30, 0.95)",
     borderWidth: 1,
-    borderColor: "#555",
+    borderColor: withAlpha(FALLBACK_CORE_TOKENS.TEXT_MUTED, 0.55),
   },
   bubbleEmoji: {
     fontSize: 22,
   },
   bubbleName: {
-    color: "#32CD32",
+    color: FALLBACK_CORE_TOKENS.STATE_SUCCESS,
     fontSize: 11,
     fontWeight: "700",
   },
@@ -235,7 +236,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 6,
     borderWidth: 1,
-    borderColor: "#333",
+    borderColor: withAlpha(FALLBACK_CORE_TOKENS.TEXT_MUTED, 0.45),
   },
   emoteButton: {
     width: 40,
@@ -263,7 +264,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   closeText: {
-    color: "#666",
+    color: withAlpha(FALLBACK_CORE_TOKENS.TEXT_MUTED, 0.66),
     fontSize: 16,
     fontWeight: "700",
   },
@@ -275,7 +276,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#333",
+    borderColor: withAlpha(FALLBACK_CORE_TOKENS.TEXT_MUTED, 0.45),
   },
   triggerText: {
     fontSize: 24,

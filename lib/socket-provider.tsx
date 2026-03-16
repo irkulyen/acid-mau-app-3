@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, ReactNode } from "react";
 import { io, Socket } from "socket.io-client";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import type { GameState, GameAction } from "@/shared/game-types";
+import type { GameState, GameAction, BlackbirdStateEvent } from "@/shared/game-types";
 import type {
   BlackbirdEvent,
   CardPlayFxEvent,
@@ -72,6 +72,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const onRoomJoinedRef = useRef<((data: RoomJoinedPayload) => void) | null>(null);
   const onPreparationRef = useRef<((data: PreparationData) => void) | null>(null);
   const onBlackbirdEventRef = useRef<((event: BlackbirdEvent) => void) | null>(null);
+  const pendingBlackbirdEventsRef = useRef<BlackbirdEvent[]>([]);
+  const seenBlackbirdEventIdsRef = useRef<Map<string, number>>(new Map());
   const onCardPlayFxRef = useRef<((event: CardPlayFxEvent) => void) | null>(null);
   const onDrawCardFxRef = useRef<((event: DrawCardFxEvent) => void) | null>(null);
   const onErrorRef = useRef<((error: string) => void) | null>(null);
@@ -83,6 +85,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const recoverAttemptRef = useRef(0);
   const recoverBlockedUntilRef = useRef(0);
   const recoverFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isJoiningRef = useRef(false);
+  const hasJoinedRef = useRef(false);
+  const joinInFlightRef = useRef<{ roomCode: string; userId: number; at: number } | null>(null);
+  const lastJoinEmitRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+  const isRejoiningRef = useRef(false);
+  const lastRecoverEmitAtRef = useRef(0);
+  const recoverHardFailedNotifiedRef = useRef(false);
   const lastMembershipRecoverAtRef = useRef(0);
   const lastNoStateRecoverAtRef = useRef(0);
   const lastServerErrorRef = useRef<{ message: string; at: number }>({ message: "", at: 0 });
@@ -133,6 +142,50 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     lastServerErrorRef.current = { message, at: now };
     onErrorRef.current?.(message);
   }, []);
+  const markBlackbirdEventSeen = useCallback((eventId?: string) => {
+    if (!eventId) return;
+    const now = Date.now();
+    const seen = seenBlackbirdEventIdsRef.current;
+    seen.set(eventId, now);
+    if (seen.size <= 300) return;
+    for (const [id, at] of seen.entries()) {
+      if (now - at > 180_000) {
+        seen.delete(id);
+      }
+    }
+    while (seen.size > 300) {
+      const oldestKey = seen.keys().next().value;
+      if (!oldestKey) break;
+      seen.delete(oldestKey);
+    }
+  }, []);
+  const hasSeenBlackbirdEvent = useCallback((eventId?: string) => {
+    if (!eventId) return false;
+    const seenAt = seenBlackbirdEventIdsRef.current.get(eventId);
+    if (!seenAt) return false;
+    if (Date.now() - seenAt > 180_000) {
+      seenBlackbirdEventIdsRef.current.delete(eventId);
+      return false;
+    }
+    return true;
+  }, []);
+  const deliverBlackbirdEvent = useCallback((event: BlackbirdEvent, source: "socket" | "state") => {
+    const cb = onBlackbirdEventRef.current;
+    if (cb) {
+      cb(event);
+      return;
+    }
+    pendingBlackbirdEventsRef.current.push(event);
+    if (pendingBlackbirdEventsRef.current.length > 20) {
+      pendingBlackbirdEventsRef.current = pendingBlackbirdEventsRef.current.slice(-20);
+    }
+    console.warn("[socket] blackbird-event buffered (no callback yet)", {
+      source,
+      buffered: pendingBlackbirdEventsRef.current.length,
+      type: event?.type,
+      id: event?.id,
+    });
+  }, []);
   const persistSessionHints = useCallback((data: {
     roomCode?: string | null;
     roomId?: number | null;
@@ -162,16 +215,70 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const emitJoinRoomGuarded = useCallback(
+    (
+      socket: Socket | null,
+      args: { roomCode: string; userId: number; username: string },
+      options?: { force?: boolean; cooldownMs?: number },
+    ) => {
+      if (!socket || !socket.connected) return false;
+      const normalizedRoomCode = normalizeRoomCode(args.roomCode);
+      const username = args.username?.trim();
+      if (!normalizedRoomCode || !Number.isInteger(args.userId) || args.userId <= 0 || !username) return false;
+
+      const currentState = gameStateRef.current;
+      const alreadyMember =
+        currentState?.roomCode?.toUpperCase() === normalizedRoomCode &&
+        currentState.players.some((p) => p.userId === args.userId);
+      if (alreadyMember) {
+        hasJoinedRef.current = true;
+        return false;
+      }
+
+      const now = Date.now();
+      const cooldownMs = options?.cooldownMs ?? 2500;
+      const key = `${normalizedRoomCode}:${args.userId}`;
+      const recent =
+        lastJoinEmitRef.current.key === key && now - lastJoinEmitRef.current.at < cooldownMs;
+      const inFlight =
+        joinInFlightRef.current?.roomCode === normalizedRoomCode &&
+        joinInFlightRef.current?.userId === args.userId &&
+        now - joinInFlightRef.current.at < 10_000;
+
+      if (!options?.force && (recent || inFlight || isJoiningRef.current)) {
+        return false;
+      }
+
+      isJoiningRef.current = true;
+      joinInFlightRef.current = { roomCode: normalizedRoomCode, userId: args.userId, at: now };
+      lastJoinEmitRef.current = { key, at: now };
+      console.log("[socket] join-room sent", { roomCode: normalizedRoomCode, userId: args.userId });
+      socket.emit("join-room", { roomCode: normalizedRoomCode, userId: args.userId, username });
+      return true;
+    },
+    [normalizeRoomCode],
+  );
+
   const recoverSessionOnSocket = useCallback(async (socket: Socket | null) => {
     if (!socket || recoveringRef.current) return;
+    if (isJoiningRef.current && !hasJoinedRef.current) return;
     const now = Date.now();
     if (recoverBlockedUntilRef.current > now) return;
     if (recoverStartedAtRef.current > 0 && now - recoverStartedAtRef.current > 30_000) {
       recoverAttemptRef.current = 0;
       recoverStartedAtRef.current = 0;
+      recoverHardFailedNotifiedRef.current = false;
     }
-    if (recoverAttemptRef.current >= 3) return;
+    if (recoverAttemptRef.current >= 3) {
+      if (!recoverHardFailedNotifiedRef.current) {
+        recoverHardFailedNotifiedRef.current = true;
+        recoverBlockedUntilRef.current = Date.now() + 30_000;
+        emitErrorDeduped("Reconnect fehlgeschlagen. Bitte Raum neu beitreten.");
+      }
+      return;
+    }
     recoveringRef.current = true;
+    let emittedRecover = false;
     try {
       const values = await AsyncStorage.multiGet([
         STORAGE_KEYS.roomCode,
@@ -186,9 +293,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       const username = (map.get(STORAGE_KEYS.username) || "").trim() || undefined;
       let roomId = parsePositiveInt(map.get(STORAGE_KEYS.roomId));
       let playerId = parsePositiveInt(map.get(STORAGE_KEYS.playerId));
+      if (!userId || !username) return;
 
       const currentGameState = gameStateRef.current;
-      if (userId && currentGameState) {
+      if (currentGameState) {
         const self = currentGameState.players.find((p) => p.userId === userId);
         if (self) {
           roomId = roomId ?? currentGameState.roomId;
@@ -196,11 +304,22 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const hasRecoverHint = Boolean(normalizedRoomCode || roomId || playerId);
-      if (userId && hasRecoverHint) {
+      const hasRecoverHint = Boolean(normalizedRoomCode || roomId);
+      if (hasRecoverHint) {
+        const sinceLastEmit = Date.now() - lastRecoverEmitAtRef.current;
+        if (sinceLastEmit < 1400 || isRejoiningRef.current) return;
+        lastRecoverEmitAtRef.current = Date.now();
+        isRejoiningRef.current = true;
+        emittedRecover = true;
         if (!recoverStartedAtRef.current) recoverStartedAtRef.current = Date.now();
         recoverAttemptRef.current += 1;
         const attempt = recoverAttemptRef.current;
+        console.log("[socket] reconnect-room sent", {
+          roomCode: normalizedRoomCode ?? null,
+          roomId: roomId ?? null,
+          playerId: playerId ?? null,
+          userId,
+        });
         socket.emit("reconnect-room", {
           userId,
           roomCode: normalizedRoomCode ?? undefined,
@@ -208,23 +327,27 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           playerId: playerId ?? undefined,
           username: username ?? undefined,
         });
-
-        // Fallback rejoin only if reconnect did not produce a fresh state update.
+        // Keep reconnect strictly separate from join-room.
+        // If reconnect cannot recover, UI should surface a clean fallback path.
         if (recoverFallbackTimerRef.current) clearTimeout(recoverFallbackTimerRef.current);
-        if (normalizedRoomCode && username) {
           recoverFallbackTimerRef.current = setTimeout(() => {
             const staleSinceRecover = lastStateUpdateAtRef.current < recoverStartedAtRef.current;
             if (attempt !== recoverAttemptRef.current) return;
             if (!socket.connected) return;
             if (!staleSinceRecover) return;
-            socket.emit("join-room", { roomCode: normalizedRoomCode, userId, username });
-          }, 1400);
+            isRejoiningRef.current = false;
+            recoverHardFailedNotifiedRef.current = true;
+            recoverBlockedUntilRef.current = Date.now() + 20_000;
+            emitErrorDeduped("Reconnect fehlgeschlagen. Bitte Raum neu beitreten.");
+          }, 1800);
         }
-      }
     } finally {
       recoveringRef.current = false;
+      if (!emittedRecover) {
+        isRejoiningRef.current = false;
+      }
     }
-  }, [normalizeRoomCode]);
+  }, [emitErrorDeduped, normalizeRoomCode]);
 
   useEffect(() => {
     gameStateRef.current = gameState;
@@ -264,9 +387,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket.on("disconnect", (reason) => {
         console.log("[socket] Disconnected:", reason);
         setIsConnected(false);
-        if (reason !== "io client disconnect") {
-          socket?.connect();
-        }
+        isRejoiningRef.current = false;
       });
 
       socket.on("connect_error", (err) => {
@@ -284,11 +405,44 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       });
 
       socket.on("game-state-update", (state: GameState) => {
+        console.log("[socket] game-state-update received", { roomCode: state.roomCode, roomId: state.roomId });
+        isRejoiningRef.current = false;
         lastStateUpdateAtRef.current = Date.now();
         recoverAttemptRef.current = 0;
         recoverStartedAtRef.current = 0;
         recoverBlockedUntilRef.current = 0;
+        recoverHardFailedNotifiedRef.current = false;
         setGameState(state);
+
+        const recentBlackbirdEvents = (state.blackbird?.recentEvents || [])
+          .filter((event): event is BlackbirdStateEvent => Boolean(event?.id))
+          .sort((a, b) => (a.startAt ?? a.emittedAt) - (b.startAt ?? b.emittedAt));
+        if (recentBlackbirdEvents.length > 0) {
+          console.log("[socket] blackbird state snapshot received", {
+            roomId: state.roomId,
+            roomCode: state.roomCode,
+            recent: recentBlackbirdEvents.length,
+            lastEventId: state.blackbird?.lastEventId,
+          });
+        }
+        for (const event of recentBlackbirdEvents) {
+          if (hasSeenBlackbirdEvent(event.id)) continue;
+          markBlackbirdEventSeen(event.id);
+          const replayEvent: BlackbirdEvent = {
+            ...event,
+            replay: true,
+            startAt: event.startAt ?? Date.now() + 120,
+          };
+          console.log("[socket] blackbird-event reconstructed from state", {
+            roomId: state.roomId,
+            roomCode: state.roomCode,
+            type: replayEvent.type,
+            id: replayEvent.id,
+            emittedAt: replayEvent.emittedAt,
+          });
+          deliverBlackbirdEvent(replayEvent, "state");
+        }
+
         // Self-heal: if local user is missing from room state, request a targeted rejoin.
         void (async () => {
           const now = Date.now();
@@ -317,9 +471,16 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           }
           if (state.roomCode.toUpperCase() !== normalizedRoomCode) return;
           const isMember = state.players.some((p) => p.userId === userId);
+          if (isMember) {
+            hasJoinedRef.current = true;
+            isJoiningRef.current = false;
+            joinInFlightRef.current = null;
+            return;
+          }
           if (!isMember && socket?.connected) {
             lastMembershipRecoverAtRef.current = now;
-            socket.emit("join-room", { roomCode: normalizedRoomCode, userId, username });
+            // Reconnect only; do not mix with join-room.
+            void recoverSessionOnSocket(socket);
           }
         })();
       });
@@ -329,15 +490,22 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         recoverAttemptRef.current = 0;
         recoverStartedAtRef.current = 0;
         recoverBlockedUntilRef.current = 0;
+        recoverHardFailedNotifiedRef.current = false;
         persistSessionHints({ roomCode: data.roomCode.toUpperCase(), roomId: data.roomId });
         onRoomCreatedRef.current?.(data);
       });
 
       socket.on("room-joined", (data: RoomJoinedPayload) => {
         console.log("[socket] Room joined:", data.roomCode);
+        console.log("[socket] room-joined received", { roomCode: data.roomCode, roomId: data.roomId });
+        isRejoiningRef.current = false;
+        hasJoinedRef.current = true;
+        isJoiningRef.current = false;
+        joinInFlightRef.current = null;
         recoverAttemptRef.current = 0;
         recoverStartedAtRef.current = 0;
         recoverBlockedUntilRef.current = 0;
+        recoverHardFailedNotifiedRef.current = false;
         persistSessionHints({ roomCode: data.roomCode.toUpperCase(), roomId: data.roomId });
         onRoomJoinedRef.current?.(data);
       });
@@ -345,6 +513,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket.on("join-failed", (data: { message: string; code?: string }) => {
         const message = data?.message || "Failed to join room";
         console.warn("[socket] join-failed:", data?.code || "UNKNOWN", message);
+        isRejoiningRef.current = false;
+        isJoiningRef.current = false;
+        joinInFlightRef.current = null;
         if (data?.code === "ROOM_NOT_FOUND") {
           // Stale local room hints can cause endless auto-rejoin loops after server restarts.
           // Clear them immediately when the server confirms the room no longer exists.
@@ -354,6 +525,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             STORAGE_KEYS.playerId,
           ]);
           setGameState(null);
+          hasJoinedRef.current = false;
           // Do not surface this as a user-facing error toast outside explicit join flow.
           return;
         }
@@ -365,7 +537,18 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       });
 
       socket.on("blackbird-event", (event: BlackbirdEvent) => {
-        onBlackbirdEventRef.current?.(event);
+        if (hasSeenBlackbirdEvent(event?.id)) {
+          return;
+        }
+        markBlackbirdEventSeen(event?.id);
+        console.log("[socket] blackbird-event received", {
+          socketId: socket?.id,
+          type: event?.type,
+          id: event?.id,
+          replay: event?.replay === true,
+          startAt: event?.startAt,
+        });
+        deliverBlackbirdEvent(event, "socket");
       });
       socket.on("card-play-fx", (event: CardPlayFxEvent) => {
         onCardPlayFxRef.current?.(event);
@@ -386,6 +569,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       });
 
       socket.on("error", async (data: { message: string }) => {
+        isRejoiningRef.current = false;
         const inRecoverWindow = Date.now() - recoverStartedAtRef.current < 5000;
         if (inRecoverWindow && data.message === "Game already in progress") {
           // Harmless during recovery fallback; keep silent to avoid false alarm popup.
@@ -397,41 +581,24 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (data.message === "No active session found" || data.message === "Player not found in game") {
-          try {
-            const roomCode = await AsyncStorage.getItem(STORAGE_KEYS.roomCode);
-            const userIdStr = await AsyncStorage.getItem(STORAGE_KEYS.userId);
-            const username = await AsyncStorage.getItem(STORAGE_KEYS.username);
-            const normalizedRoomCode = normalizeRoomCode(roomCode);
-            if (normalizedRoomCode && userIdStr && username) {
-              socket?.emit("join-room", { roomCode: normalizedRoomCode, userId: parseInt(userIdStr, 10), username });
-            }
-          } catch (e) {
-            console.error("[socket] Auto-rejoin error:", e);
-          }
+          hasJoinedRef.current = false;
+          isJoiningRef.current = false;
+          joinInFlightRef.current = null;
+          recoverAttemptRef.current = 0;
+          recoverStartedAtRef.current = 0;
+          recoverBlockedUntilRef.current = 0;
+          recoverHardFailedNotifiedRef.current = false;
+          setGameState(null);
+          void AsyncStorage.multiRemove([STORAGE_KEYS.roomCode, STORAGE_KEYS.roomId, STORAGE_KEYS.playerId]);
           return;
         }
         if (/temporarily unavailable/i.test(data.message)) {
-          try {
-            const roomCode = await AsyncStorage.getItem(STORAGE_KEYS.roomCode);
-            const userIdStr = await AsyncStorage.getItem(STORAGE_KEYS.userId);
-            const username = await AsyncStorage.getItem(STORAGE_KEYS.username);
-            const normalizedRoomCode = normalizeRoomCode(roomCode);
-            if (normalizedRoomCode && userIdStr && username) {
-              setTimeout(() => {
-                socket?.emit("join-room", {
-                  roomCode: normalizedRoomCode,
-                  userId: parseInt(userIdStr, 10),
-                  username,
-                });
-              }, 850);
-            }
-          } catch (e) {
-            console.error("[socket] Temporary-unavailable retry error:", e);
-          }
+          void recoverSessionOnSocket(socket ?? null);
           return;
         }
         if (/too many reconnect attempts/i.test(data.message)) {
           recoverBlockedUntilRef.current = Date.now() + 30_000;
+          recoverHardFailedNotifiedRef.current = true;
           return;
         }
         console.error("[socket] Error:", data.message);
@@ -465,6 +632,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   }, [
     classifyConnectError,
     emitErrorDeduped,
+    hasSeenBlackbirdEvent,
+    markBlackbirdEventSeen,
+    deliverBlackbirdEvent,
     normalizeRoomCode,
     persistSessionHints,
     recoverSessionOnSocket,
@@ -492,10 +662,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       if (gameState) return;
       const now = Date.now();
       if (recoverBlockedUntilRef.current > now) return;
-      if (now - lastNoStateRecoverAtRef.current < 2500) return;
+      if (now - lastNoStateRecoverAtRef.current < 5000) return;
       lastNoStateRecoverAtRef.current = now;
       void recoverSessionOnSocket(socket);
-    }, 2500);
+    }, 5000);
     return () => clearInterval(interval);
   }, [isConnected, gameState, recoverSessionOnSocket]);
 
@@ -509,17 +679,21 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       onErrorRef.current?.("Ungültiger Raum-Code");
       return;
     }
-    socketRef.current?.emit("join-room", { roomCode: normalizedRoomCode, userId, username });
+    hasJoinedRef.current = false;
+    emitJoinRoomGuarded(socketRef.current, { roomCode: normalizedRoomCode, userId, username }, { cooldownMs: 1800 });
     void AsyncStorage.multiSet([
       [STORAGE_KEYS.roomCode, normalizedRoomCode],
       [STORAGE_KEYS.userId, userId.toString()],
       [STORAGE_KEYS.username, username],
     ]);
     void AsyncStorage.multiRemove([STORAGE_KEYS.roomId, STORAGE_KEYS.playerId]);
-  }, [normalizeRoomCode]);
+  }, [emitJoinRoomGuarded, normalizeRoomCode]);
 
   const leaveRoom = useCallback((roomId: number, playerId: number) => {
     socketRef.current?.emit("leave-room", { roomId, playerId });
+    hasJoinedRef.current = false;
+    isJoiningRef.current = false;
+    joinInFlightRef.current = null;
     void AsyncStorage.multiRemove([
       STORAGE_KEYS.roomCode,
       STORAGE_KEYS.roomId,
@@ -593,6 +767,12 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const setOnBlackbirdEvent = useCallback((cb: ((event: BlackbirdEvent) => void) | null) => {
     onBlackbirdEventRef.current = cb;
+    if (!cb) return;
+    if (pendingBlackbirdEventsRef.current.length === 0) return;
+    const buffered = [...pendingBlackbirdEventsRef.current];
+    pendingBlackbirdEventsRef.current = [];
+    console.log("[socket] flushing buffered blackbird events", { count: buffered.length });
+    buffered.forEach((event) => cb(event));
   }, []);
 
   const setOnCardPlayFx = useCallback((cb: ((event: CardPlayFxEvent) => void) | null) => {

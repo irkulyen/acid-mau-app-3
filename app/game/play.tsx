@@ -17,7 +17,8 @@ import { GamePreparationScreen, type PreparationDrawData } from "@/components/ga
 import { useAuth } from "@/lib/auth-provider";
 import { useSocket, type PreparationData, type BlackbirdEvent, type CardPlayFxEvent, type DrawCardFxEvent } from "@/lib/socket-provider";
 import { useGameSounds } from "@/hooks/use-game-sounds";
-import { getBotProfileByName } from "@/lib/bot-profiles";
+import { getBotAvatarSource, getBotProfileById, getBotProfileByName } from "@/lib/bot-profiles";
+import { FALLBACK_CORE_TOKENS, GAME_UI_TOKENS, withAlpha } from "@/lib/design-tokens";
 import type { Card, CardSuit } from "@/shared/game-types";
 
 /** Mini card backs for opponent hand display */
@@ -35,10 +36,10 @@ function MiniCardFan({ count, maxShow = 6, compact = false }: { count: number; m
           style={{
             width: cardWidth,
             height: cardHeight,
-            backgroundColor: "#1a3a5c",
+            backgroundColor: GAME_UI_TOKENS.MINI_CARD_BG,
             borderRadius: 4,
             borderWidth: 1,
-            borderColor: "#2a5a8c",
+            borderColor: GAME_UI_TOKENS.MINI_CARD_BORDER,
             marginLeft: i === 0 ? 0 : overlap,
             transform: [{ rotate: `${(i - (shown - 1) / 2) * 5}deg` }],
           }}
@@ -49,8 +50,8 @@ function MiniCardFan({ count, maxShow = 6, compact = false }: { count: number; m
               margin: 2,
               borderRadius: 2,
               borderWidth: 0.5,
-              borderColor: "#3a6a9c",
-              backgroundColor: "#1e4a7a",
+              borderColor: GAME_UI_TOKENS.MINI_CARD_INNER_BORDER,
+              backgroundColor: GAME_UI_TOKENS.MINI_CARD_INNER_BG,
             }}
           />
         </View>
@@ -68,15 +69,31 @@ function MiniCardFan({ count, maxShow = 6, compact = false }: { count: number; m
             paddingVertical: 1,
           }}
         >
-          <Text style={{ color: "#E2EAF1", fontSize: fontSize + 1, fontWeight: "800" }}>+{count - maxShow}</Text>
+          <Text style={{ color: GAME_UI_TOKENS.MINI_CARD_TEXT, fontSize: fontSize + 1, fontWeight: "800" }}>+{count - maxShow}</Text>
         </View>
       )}
     </View>
   );
 }
 
-function PlayerAvatar({ name, avatarUrl, active, isBot = false, size = 56 }: { name: string; avatarUrl?: string; active?: boolean; isBot?: boolean; size?: number }) {
-  const botProfile = isBot ? getBotProfileByName(name) : undefined;
+function PlayerAvatar({
+  name,
+  avatarUrl,
+  botId,
+  userId,
+  active,
+  isBot = false,
+  size = 56,
+}: {
+  name: string;
+  avatarUrl?: string;
+  botId?: string;
+  userId?: number;
+  active?: boolean;
+  isBot?: boolean;
+  size?: number;
+}) {
+  const botProfile = isBot ? getBotProfileById(botId) ?? getBotProfileByName(name) : undefined;
   const initial = (botProfile?.fallbackInitial || (name || "?").charAt(0)).toUpperCase();
   const [remoteAvatarFailed, setRemoteAvatarFailed] = useState(false);
   const frameSize = Math.max(44, Math.min(64, size));
@@ -92,8 +109,14 @@ function PlayerAvatar({ name, avatarUrl, active, isBot = false, size = 56 }: { n
   }, []);
 
   const source =
-    avatarUrl && !remoteAvatarFailed
-      ? { uri: avatarUrl }
+    !remoteAvatarFailed
+      ? getBotAvatarSource({
+          botId,
+          botName: name,
+          userId,
+          avatarUrl,
+          preferLocalFallback: isBot,
+        })
       : botProfile?.imagePath;
 
   return (
@@ -108,7 +131,7 @@ function PlayerAvatar({ name, avatarUrl, active, isBot = false, size = 56 }: { n
         backgroundColor: "rgba(10, 20, 18, 0.95)",
         alignItems: "center",
         justifyContent: "center",
-        shadowColor: active ? "#3ED47A" : "#000",
+        shadowColor: active ? FALLBACK_CORE_TOKENS.SECONDARY_NEON : PLAY_COLORS.BLACK,
         shadowOpacity: active ? 0.36 : 0.14,
         shadowRadius: active ? 10 : 5,
         shadowOffset: { width: 0, height: 3 },
@@ -122,25 +145,50 @@ function PlayerAvatar({ name, avatarUrl, active, isBot = false, size = 56 }: { n
           onError={handleAvatarError}
         />
       ) : (
-        <Text style={{ color: "#E8E8E8", fontSize: Math.floor(frameSize * 0.38), fontWeight: "800" }}>{initial}</Text>
+        <Text style={{ color: GAME_UI_TOKENS.PLAYER_AVATAR_TEXT, fontSize: Math.floor(frameSize * 0.38), fontWeight: "800" }}>{initial}</Text>
       )}
     </View>
   );
 }
 
+const PLAY_COLORS = {
+  BLACK: GAME_UI_TOKENS.BLACK,
+  PURE_WHITE: GAME_UI_TOKENS.PURE_WHITE,
+  TABLE_DARK: GAME_UI_TOKENS.TABLE_DARK,
+  TABLE_LIGHT: GAME_UI_TOKENS.TABLE_LIGHT,
+  BG_TINT: "rgba(6, 24, 18, 0.22)",
+  LINE_SOFT: "rgba(109, 142, 173, 0.35)",
+  LINE_STRONG: "rgba(46, 224, 128, 0.65)",
+  FIELD_TINT: "rgba(80,200,120,0.12)",
+  FIELD_MARK: GAME_UI_TOKENS.FIELD_MARK,
+  TURN_CHIP_GLOW: GAME_UI_TOKENS.TURN_CHIP_GLOW,
+  CLUTCH_BORDER: "rgba(255, 200, 80, 0.8)",
+  RIVALRY_BORDER: "rgba(255, 95, 95, 0.7)",
+} as const;
+
 const DESIGN = {
-  tableBase: "#0B3D2E",
-  tableDark: "#072E22",
-  tableLight: "#14533C",
-  bgTint: "rgba(6, 24, 18, 0.22)",
-  hudGlass: "#1A1F25",
-  panelGlass: "rgba(17, 24, 32, 0.94)",
-  accentPrimary: "#FF9D1A",
-  accentSecondary: "#3ED47A",
-  textMain: "#F3F7FB",
-  textMuted: "#AFC0CF",
-  lineSoft: "rgba(109, 142, 173, 0.35)",
-  lineStrong: "rgba(46, 224, 128, 0.65)",
+  PRIMARY_TABLE: FALLBACK_CORE_TOKENS.PRIMARY_TABLE,
+  SECONDARY_NEON: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+  SURFACE_1: FALLBACK_CORE_TOKENS.SURFACE_1,
+  SURFACE_2: FALLBACK_CORE_TOKENS.SURFACE_2,
+  TEXT_MAIN: FALLBACK_CORE_TOKENS.TEXT_MAIN,
+  TEXT_MUTED: FALLBACK_CORE_TOKENS.TEXT_MUTED,
+  TEXT_INVERSE: FALLBACK_CORE_TOKENS.TEXT_INVERSE,
+  STATE_SUCCESS: FALLBACK_CORE_TOKENS.STATE_SUCCESS,
+  STATE_WARNING: FALLBACK_CORE_TOKENS.STATE_WARNING,
+  STATE_DANGER: FALLBACK_CORE_TOKENS.STATE_DANGER,
+  tableBase: FALLBACK_CORE_TOKENS.PRIMARY_TABLE,
+  tableDark: PLAY_COLORS.TABLE_DARK,
+  tableLight: PLAY_COLORS.TABLE_LIGHT,
+  bgTint: PLAY_COLORS.BG_TINT,
+  hudGlass: FALLBACK_CORE_TOKENS.SURFACE_1,
+  panelGlass: withAlpha(FALLBACK_CORE_TOKENS.SURFACE_2, 0.94),
+  accentPrimary: FALLBACK_CORE_TOKENS.STATE_WARNING,
+  accentSecondary: FALLBACK_CORE_TOKENS.SECONDARY_NEON,
+  textMain: FALLBACK_CORE_TOKENS.TEXT_MAIN,
+  textMuted: FALLBACK_CORE_TOKENS.TEXT_MUTED,
+  lineSoft: PLAY_COLORS.LINE_SOFT,
+  lineStrong: PLAY_COLORS.LINE_STRONG,
 };
 
 export default function GamePlayScreen() {
@@ -158,7 +206,20 @@ export default function GamePlayScreen() {
   const [showBlackbird, setShowBlackbird] = useState(false);
   const [blackbirdLoser, setBlackbirdLoser] = useState<string | undefined>(undefined);
   const [blackbirdWinner, setBlackbirdWinner] = useState<string | undefined>(undefined);
-  const [blackbirdEvent, setBlackbirdEvent] = useState<"round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "ass" | "unter" | "mvp" | undefined>(undefined);
+  const [blackbirdEvent, setBlackbirdEvent] = useState<
+    | "round_start"
+    | "winner"
+    | "loser"
+    | "draw_chain"
+    | "seven_played"
+    | "ass"
+    | "unter"
+    | "mvp"
+    | "elimination"
+    | "chaos"
+    | "guide"
+    | undefined
+  >(undefined);
   const [blackbirdDrawChain, setBlackbirdDrawChain] = useState<number | undefined>(undefined);
   const [blackbirdWishSuit, setBlackbirdWishSuit] = useState<string | undefined>(undefined);
   const [blackbirdIntensity, setBlackbirdIntensity] = useState<1 | 2 | 3 | 4 | 5 | undefined>(undefined);
@@ -213,40 +274,21 @@ export default function GamePlayScreen() {
   const [loaderMessage, setLoaderMessage] = useState("Lade Spiel...");
 
   // Pulsing glow animation for active player
-  const glowOpacity = useSharedValue(0.4);
   const turnProgress = useSharedValue(0);
   const dangerPulse = useSharedValue(0.55);
-  const turnChipPulse = useSharedValue(0);
   useEffect(() => {
-    glowOpacity.value = withRepeat(
-      withTiming(1, { duration: 1200, easing: Easing.inOut(Easing.ease) }),
-      -1,
-      true
-    );
     dangerPulse.value = withRepeat(
       withTiming(1, { duration: 900, easing: Easing.inOut(Easing.ease) }),
       -1,
       true
     );
-    turnChipPulse.value = withRepeat(
-      withTiming(1, { duration: 1100, easing: Easing.inOut(Easing.ease) }),
-      -1,
-      true
-    );
   }, []);
-  const pulseStyle = useAnimatedStyle(() => ({
-    opacity: glowOpacity.value,
-  }));
   const dangerPulseStyle = useAnimatedStyle(() => ({
     opacity: dangerPulse.value,
     transform: [{ scale: 0.98 + dangerPulse.value * 0.04 }],
   }));
   const turnBarStyle = useAnimatedStyle(() => ({
     transform: [{ scaleX: turnProgress.value }],
-  }));
-  const turnChipPulseStyle = useAnimatedStyle(() => ({
-    shadowOpacity: 0.25 + turnChipPulse.value * 0.35,
-    transform: [{ scale: 0.99 + turnChipPulse.value * 0.02 }],
   }));
   const discardPop = useSharedValue(0);
   const discardPopStyle = useAnimatedStyle(() => ({
@@ -306,6 +348,16 @@ export default function GamePlayScreen() {
       Vibration.vibrate([160, 70, 170, 70, 260]);
       return;
     }
+    if (event.type === "chaos") {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      Vibration.vibrate([120, 60, 160, 60, 220]);
+      return;
+    }
+    if (event.type === "elimination") {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      Vibration.vibrate([180, 80, 220]);
+      return;
+    }
     if (event.type === "winner") {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       return;
@@ -348,6 +400,23 @@ export default function GamePlayScreen() {
     if (event.type === "round_start") {
       setRoundGlowKey((k) => k + 1);
       setShowRoundGlow(true);
+      return;
+    }
+
+    if (event.type === "chaos") {
+      setRoundGlowKey((k) => k + 1);
+      setShowRoundGlow(true);
+      setShowDiscardImpact(true);
+      return;
+    }
+
+    if (event.type === "elimination" && event.playerName) {
+      if (loserPulseTimerRef.current) clearTimeout(loserPulseTimerRef.current);
+      setLoserPulseName(event.playerName);
+      loserPulseTimerRef.current = setTimeout(() => {
+        setLoserPulseName(undefined);
+        loserPulseTimerRef.current = null;
+      }, 1700);
       return;
     }
 
@@ -559,6 +628,12 @@ export default function GamePlayScreen() {
       setShowPreparation(true);
     });
     setOnBlackbirdEvent((event: BlackbirdEvent) => {
+      console.log("[blackbird][client] enqueue", {
+        type: event.type,
+        id: event.id,
+        replay: event.replay === true,
+        startAt: event.startAt,
+      });
       blackbirdQueueRef.current.push(event);
       if (!showBlackbirdRef.current) {
         processNextBlackbird();
@@ -711,6 +786,13 @@ export default function GamePlayScreen() {
     : null;
   const isSchellenEightOnTop = Boolean(displayCard?.id === "schellen-8" && underneathDiscardCard);
   const effectiveDiscardCard = isSchellenEightOnTop ? underneathDiscardCard : displayCard;
+  const isEventPhase =
+    showBlackbird ||
+    showDiscardImpact ||
+    showWishFx ||
+    showRoundGlow ||
+    assFlash ||
+    (gameState?.drawChainCount ?? 0) > 0;
 
   useEffect(() => {
     if (!isMyTurn) {
@@ -949,6 +1031,36 @@ export default function GamePlayScreen() {
   const wishSuitLabel = gameState.currentWishSuit
     ? `${gameState.currentWishSuit === "eichel" ? "🌰 Eichel" : gameState.currentWishSuit === "gruen" ? "🍀 Grün" : gameState.currentWishSuit === "rot" ? "❤️ Rot" : "🔔 Schellen"} oder Unter`
     : "";
+  const stateChips: Array<{ key: string; text: string; tone: "warning" | "success" | "danger" }> = [];
+  if (gameState.drawChainCount > 0) {
+    stateChips.push({
+      key: "draw-chain",
+      text: `⚠️ Ziehkette +${gameState.drawChainCount}`,
+      tone: "warning",
+    });
+  }
+  if (gameState.currentWishSuit) {
+    stateChips.push({
+      key: "wish-suit",
+      text: `🎯 Wunsch: ${wishSuitLabel}`,
+      tone: "success",
+    });
+  }
+  if (gameState.skipNextPlayer) {
+    stateChips.push({
+      key: "skip-next",
+      text: "⏭️ Nächster Spieler setzt aus",
+      tone: "danger",
+    });
+  }
+  const stateToneColor: Record<"warning" | "success" | "danger", string> = {
+    warning: DESIGN.STATE_WARNING,
+    success: DESIGN.STATE_SUCCESS,
+    danger: DESIGN.STATE_DANGER,
+  };
+  const playableCount = isMyTurn
+    ? currentPlayer.hand.filter((card) => playableCardIds.has(card.id)).length
+    : 0;
   const suitIcon: Record<CardSuit, string> = {
     eichel: "🌰",
     gruen: "🍀",
@@ -997,7 +1109,7 @@ export default function GamePlayScreen() {
           right: 0,
           bottom: 0,
         }}
-        imageStyle={{ opacity: 0.03, tintColor: "#DDEBDF" }}
+        imageStyle={{ opacity: 0.03, tintColor: PLAY_COLORS.FIELD_MARK }}
       />
       <View
         style={{
@@ -1015,7 +1127,7 @@ export default function GamePlayScreen() {
           top: tableLogoTop,
           width: tableLogoSize,
           height: tableLogoSize,
-          opacity: 0.11,
+          opacity: isEventPhase ? 0.09 : 0.07,
         }}
       >
         <Image
@@ -1032,11 +1144,11 @@ export default function GamePlayScreen() {
           height: centerSpotSize,
           alignSelf: "center",
           top: centerSpotTop,
-          backgroundColor: "rgba(80,200,120,0.12)",
+          backgroundColor: isEventPhase ? "rgba(80,200,120,0.16)" : "rgba(80,200,120,0.07)",
           borderRadius: 9999,
-          shadowColor: "#66D092",
-          shadowOpacity: 0.12,
-          shadowRadius: 92,
+          shadowColor: PLAY_COLORS.TURN_CHIP_GLOW,
+          shadowOpacity: isEventPhase ? 0.12 : 0.05,
+          shadowRadius: isEventPhase ? 92 : 56,
         }}
       />
 
@@ -1062,7 +1174,7 @@ export default function GamePlayScreen() {
                 style={[
                   {
                     alignSelf: "flex-start",
-                    backgroundColor: DESIGN.accentPrimary,
+                    backgroundColor: isMyTurn ? DESIGN.accentSecondary : DESIGN.accentPrimary,
                     borderRadius: 999,
                     paddingHorizontal: 14,
                     paddingVertical: 8,
@@ -1071,16 +1183,16 @@ export default function GamePlayScreen() {
                     gap: 10,
                     marginTop: 7,
                     marginLeft: 8,
-                    shadowColor: "#ff9d1a",
-                    shadowRadius: 16,
+                    shadowColor: isMyTurn ? DESIGN.accentSecondary : DESIGN.accentPrimary,
+                    shadowOpacity: 0.25,
+                    shadowRadius: 10,
                   },
-                  isMyTurn ? turnChipPulseStyle : null,
                 ]}
               >
-                <Text style={{ color: "#fff", fontWeight: "800", fontSize: 16 }}>
+                <Text style={{ color: DESIGN.TEXT_INVERSE, fontWeight: "800", fontSize: 16 }}>
                   {isMyTurn ? "Dein Zug" : `Am Zug: ${currentTurnPlayer?.username}`}
                 </Text>
-                <Text style={{ color: "rgba(255,255,255,0.82)", fontWeight: "700", fontSize: 13 }}>
+                <Text style={{ color: withAlpha(DESIGN.TEXT_INVERSE, 0.84), fontWeight: "700", fontSize: 13 }}>
                   R{gameState.roundNumber} · {gameState.players.length}/{(gameState as any).maxPlayers || gameState.players.length}
                 </Text>
               </Animated.View>
@@ -1152,23 +1264,38 @@ export default function GamePlayScreen() {
               </View>
             </View>
 
-            {(gameState.currentWishSuit || gameState.drawChainCount > 0) && (
+            {stateChips.length > 0 && (
               <View
                 style={{
                   marginTop: 24,
                   marginBottom: 12,
                   alignSelf: "center",
-                  backgroundColor: "rgba(7, 15, 14, 0.74)",
-                  borderRadius: 14,
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderWidth: 1,
-                  borderColor: gameState.drawChainCount > 0 ? "rgba(255, 157, 26, 0.72)" : "rgba(46, 224, 128, 0.5)",
+                  flexDirection: "row",
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                  gap: 8,
+                  zIndex: 240,
                 }}
               >
-                <Text style={{ color: DESIGN.textMain, fontSize: 12, fontWeight: "700" }}>
-                  {gameState.drawChainCount > 0 ? `⚠️ Ziehkette +${gameState.drawChainCount}` : `Wunschfarbe: ${wishSuitLabel}`}
-                </Text>
+                {stateChips.map((chip) => (
+                  <View
+                    key={chip.key}
+                    style={{
+                      backgroundColor: withAlpha(DESIGN.SURFACE_1, 0.86),
+                      borderRadius: 999,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderWidth: 1.2,
+                      borderColor: withAlpha(stateToneColor[chip.tone], 0.85),
+                      shadowColor: stateToneColor[chip.tone],
+                      shadowOpacity: 0.2,
+                      shadowRadius: 6,
+                      shadowOffset: { width: 0, height: 2 },
+                    }}
+                  >
+                    <Text style={{ color: DESIGN.TEXT_MAIN, fontSize: 12, fontWeight: "800" }}>{chip.text}</Text>
+                  </View>
+                ))}
               </View>
             )}
             {(clutchBanner || rivalryBanner) && (
@@ -1184,7 +1311,7 @@ export default function GamePlayScreen() {
                       paddingVertical: 7,
                     }}
                   >
-                    <Text style={{ color: "#FFD89A", fontWeight: "800", fontSize: 12 }}>{clutchBanner}</Text>
+                    <Text style={{ color: GAME_UI_TOKENS.CLUTCH_TEXT, fontWeight: "800", fontSize: 12 }}>{clutchBanner}</Text>
                   </View>
                 )}
                 {rivalryBanner && (
@@ -1198,7 +1325,7 @@ export default function GamePlayScreen() {
                       paddingVertical: 7,
                     }}
                   >
-                    <Text style={{ color: "#FFB3B3", fontWeight: "800", fontSize: 12 }}>{rivalryBanner}</Text>
+                    <Text style={{ color: GAME_UI_TOKENS.RIVALRY_TEXT, fontWeight: "800", fontSize: 12 }}>{rivalryBanner}</Text>
                   </View>
                 )}
               </View>
@@ -1248,9 +1375,9 @@ export default function GamePlayScreen() {
                       alignItems: "center",
                       justifyContent: "space-between",
                       overflow: "hidden",
-                      shadowColor: isActive ? "#FFD200" : "#000",
-                      shadowOpacity: isActive ? 0.32 : 0.15,
-                      shadowRadius: isActive ? 10 : 7,
+                      shadowColor: PLAY_COLORS.BLACK,
+                      shadowOpacity: 0.16,
+                      shadowRadius: 7,
                       shadowOffset: { width: 0, height: 8 },
                       elevation: 7,
                       opacity: player.hand.length === 0 ? 0.7 : 1,
@@ -1269,29 +1396,10 @@ export default function GamePlayScreen() {
                         paddingVertical: 2,
                       }}
                     >
-                      <Text style={{ color: "#D9FBE7", fontSize: 10, fontWeight: "800" }}>
+                      <Text style={{ color: GAME_UI_TOKENS.HUD_TEXT_LIGHT, fontSize: 10, fontWeight: "800" }}>
                         S {getRoundStartCards(player.lossPoints)}
                       </Text>
                     </View>
-                    {isActive && (
-                      <Animated.View
-                        pointerEvents="none"
-                        style={[
-                          {
-                            position: "absolute",
-                            top: -1,
-                            left: -1,
-                            right: -1,
-                            bottom: -1,
-                            borderRadius: 14,
-                            shadowColor: "#FFD200",
-                            shadowOpacity: 0.45,
-                            shadowRadius: 12,
-                          },
-                          pulseStyle,
-                        ]}
-                      />
-                    )}
                     {player.hand.length === 1 && (
                       <Animated.View
                         pointerEvents="none"
@@ -1328,7 +1436,15 @@ export default function GamePlayScreen() {
                         ]}
                       />
                     )}
-                    <PlayerAvatar name={player.username} avatarUrl={player.avatarUrl} active={isActive} isBot={Boolean(player.userId != null && player.userId < 0)} size={48} />
+                    <PlayerAvatar
+                      name={player.username}
+                      avatarUrl={player.avatarUrl}
+                      botId={player.botId}
+                      userId={player.userId}
+                      active={isActive}
+                      isBot={Boolean(player.userId != null && player.userId < 0)}
+                      size={48}
+                    />
                     <Text
                       style={{
                         color: isActive ? DESIGN.accentSecondary : DESIGN.textMain,
@@ -1354,20 +1470,12 @@ export default function GamePlayScreen() {
                   position: "absolute",
                   alignSelf: "center",
                   top: isCompactHeight ? "45%" : "46%",
-                  zIndex: 10,
+                  zIndex: 280,
                   flexDirection: "row",
                   alignItems: "center",
                   gap: isCompactHeight ? 24 : 28,
-                  backgroundColor: "transparent",
-                  borderWidth: 0,
-                  borderColor: "transparent",
-                  borderRadius: 14,
-                  paddingHorizontal: isCompactHeight ? 8 : 10,
-                  paddingVertical: isCompactHeight ? 6 : 8,
-                  shadowColor: "transparent",
-                  shadowOpacity: 0,
-                  shadowRadius: 0,
-                  elevation: 0,
+                  paddingHorizontal: isCompactHeight ? 4 : 6,
+                  paddingVertical: isCompactHeight ? 2 : 4,
                 }}
               >
                 <View className="items-center">
@@ -1379,7 +1487,7 @@ export default function GamePlayScreen() {
                       style={{
                         width: 58,
                         height: 85,
-                        shadowColor: "#000",
+                        shadowColor: PLAY_COLORS.BLACK,
                         shadowOffset: { width: 0, height: 6 },
                         shadowOpacity: 0.28,
                         shadowRadius: 14,
@@ -1403,28 +1511,28 @@ export default function GamePlayScreen() {
                       </View>
                     </View>
                   </Touchable>
-                  {isMyTurn && (
-                    <Text style={{ color: DESIGN.accentSecondary, fontSize: 11, fontWeight: "800", marginTop: 5 }}>
-                      Ziehen
-                    </Text>
-                  )}
+                  <Text style={{ color: isMyTurn ? DESIGN.accentSecondary : DESIGN.textMuted, fontSize: 11, fontWeight: "800", marginTop: 5 }}>
+                    Ziehen
+                  </Text>
                 </View>
 
                 <View className="items-center">
                   <View
                     style={{
+                      zIndex: 300,
                       shadowColor: effectiveDiscardCard?.rank === "7" && gameState.drawChainCount > 0
                         ? DESIGN.accentPrimary
-                        : "#000",
+                        : PLAY_COLORS.BLACK,
                       shadowOffset: effectiveDiscardCard?.rank === "7" && gameState.drawChainCount > 0
                         ? { width: 0, height: 0 }
                         : { width: 0, height: 6 },
                       shadowOpacity: effectiveDiscardCard?.rank === "7" && gameState.drawChainCount > 0
-                        ? Math.min(0.5 + (gameState.drawChainCount * 0.2), 1.0)
-                        : 0.25,
+                        ? Math.min(0.34 + (gameState.drawChainCount * 0.08), 0.78)
+                        : 0.18,
                       shadowRadius: effectiveDiscardCard?.rank === "7" && gameState.drawChainCount > 0
-                        ? 30 + (gameState.drawChainCount * 10)
-                        : 16,
+                        ? 18 + (gameState.drawChainCount * 6)
+                        : 12,
+                      borderRadius: 12,
                       elevation: 8,
                     }}
                   >
@@ -1475,7 +1583,7 @@ export default function GamePlayScreen() {
                       />
                     </View>
                   </View>
-                  <Text style={{ color: DESIGN.textMain, fontSize: 11, fontWeight: "700", marginTop: 5 }}>Ablagestapel</Text>
+                  <Text style={{ color: DESIGN.textMain, fontSize: 11, fontWeight: "700", marginTop: 5 }}>Ablage</Text>
                   {isSchellenEightOnTop && (
                     <Text style={{ color: "rgba(255,255,255,0.82)", fontSize: 10, fontWeight: "700", marginTop: 1 }}>
                       Gilt: {effectiveDiscardLabel}
@@ -1492,13 +1600,14 @@ export default function GamePlayScreen() {
                 left: 0,
                 right: 0,
                 bottom: -4,
+                zIndex: 290,
                 backgroundColor: DESIGN.panelGlass,
                 borderColor: isCurrentPlayerLoserPulse ? "rgba(255,88,88,0.95)" : (isMyTurn ? DESIGN.lineStrong : DESIGN.lineSoft),
                 borderWidth: isMyTurn ? 1.8 : 1,
                 borderRadius: 18,
                 padding: 10,
                 paddingBottom: isCompactHeight ? 6 : 8,
-                shadowColor: isMyTurn ? DESIGN.accentSecondary : "#03070a",
+                shadowColor: isMyTurn ? DESIGN.accentSecondary : withAlpha(PLAY_COLORS.BLACK, 0.98),
                 shadowOffset: { width: 0, height: -4 },
                 shadowOpacity: isMyTurn ? 0.45 : 0.28,
                 shadowRadius: isMyTurn ? 18 : 9,
@@ -1526,18 +1635,28 @@ export default function GamePlayScreen() {
               )}
               <View className="flex-row justify-between items-center mb-2">
                 <View className="flex-row items-center gap-2">
-                  <PlayerAvatar name={currentPlayer.username} avatarUrl={currentPlayer.avatarUrl} active={isMyTurn} isBot={Boolean(currentPlayer.userId != null && currentPlayer.userId < 0)} size={48} />
-                  {isMyTurn && (
-                    <Animated.View style={[{ width: 8, height: 8, borderRadius: 4, backgroundColor: DESIGN.accentSecondary }, pulseStyle]} />
-                  )}
+                  <PlayerAvatar
+                    name={currentPlayer.username}
+                    avatarUrl={currentPlayer.avatarUrl}
+                    botId={currentPlayer.botId}
+                    userId={currentPlayer.userId}
+                    active={isMyTurn}
+                    isBot={Boolean(currentPlayer.userId != null && currentPlayer.userId < 0)}
+                    size={48}
+                  />
                   <Text style={{ color: isMyTurn ? DESIGN.accentSecondary : DESIGN.textMain, fontWeight: "800", fontSize: 14 }}>
                     {isMyTurn ? "DEIN ZUG" : "Deine Hand"}
                   </Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
-                  <Text style={{ color: "#D9FBE7", fontSize: 11, fontWeight: "800" }}>
+                  <Text style={{ color: GAME_UI_TOKENS.HUD_TEXT_LIGHT, fontSize: 11, fontWeight: "800" }}>
                     🂠 {currentPlayer.hand.length} Karten
                   </Text>
+                  {isMyTurn && (
+                    <Text style={{ color: DESIGN.SECONDARY_NEON, fontSize: 11, fontWeight: "800" }}>
+                      Spielbar: {playableCount}/{currentPlayer.hand.length}
+                    </Text>
+                  )}
                   <Text style={{ color: DESIGN.textMuted, fontSize: 11 }}>
                     Verluste: {currentPlayer.lossPoints} / 7
                   </Text>
@@ -1548,43 +1667,101 @@ export default function GamePlayScreen() {
                   Warte auf deinen Zug
                 </Text>
               )}
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ minHeight: isMyTurn ? (isCompactHeight ? 72 : 84) : 58 }}>
-                <View style={{ flexDirection: "row", gap: 5, alignItems: "flex-end", paddingBottom: 4 }}>
+              <View
+                style={{
+                  borderRadius: 14,
+                  borderWidth: 1.2,
+                  borderColor: withAlpha(DESIGN.TEXT_MUTED, 0.34),
+                  backgroundColor: withAlpha(DESIGN.SURFACE_1, 0.1),
+                  paddingVertical: 6,
+                  paddingHorizontal: 6,
+                }}
+              >
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ minHeight: isMyTurn ? (isCompactHeight ? 84 : 94) : 68 }}>
+                <View style={{ flexDirection: "row", gap: 7, alignItems: "flex-end", paddingBottom: 4, paddingHorizontal: 2 }}>
                   {currentPlayer.hand.map((card, index) => {
                     const disabledByServerHint = isMyTurn && Boolean(gameState.playableCardIds) && !playableCardIds.has(card.id);
                     const centerIndex = (currentPlayer.hand.length - 1) / 2;
                     const offset = index - centerIndex;
-                    const fanSpread = currentPlayer.hand.length <= 5 ? 10 : 7;
+                    const fanSpread = currentPlayer.hand.length <= 5 ? 7 : 4;
                     const isPlayable = !disabledByServerHint && isMyTurn;
-                    const arcLift = Math.max(0, 10 - Math.abs(offset) * 2.2);
+                    const isDimmed = isMyTurn && disabledByServerHint;
+                    const arcLift = Math.max(0, 9 - Math.abs(offset) * 1.6);
                     return (
                       <View
                         key={card.id}
                         style={{
                           transform: [
                             { rotate: `${offset * fanSpread}deg` },
-                            { translateY: 8 - arcLift + (isPlayable ? -8 : 0) },
+                            { translateY: 8 - arcLift + (isPlayable ? -12 : isDimmed ? 2 : 0) },
+                            { scale: isPlayable ? 1.06 : isDimmed ? 0.94 : 1 },
                           ],
-                          marginHorizontal: -1,
+                          marginHorizontal: 0,
                           zIndex: 1000 - Math.abs(offset) * 10,
-                          shadowColor: isPlayable ? DESIGN.accentSecondary : "#000",
-                          shadowOpacity: isPlayable ? 0.38 : 0,
-                          shadowRadius: isPlayable ? 10 : 0,
-                          elevation: isPlayable ? 6 : 0,
-                          opacity: disabledByServerHint ? 0.43 : (isMyTurn ? 1 : 0.92),
+                          padding: 2,
+                          borderRadius: 14,
+                          borderWidth: isPlayable ? 2 : 1,
+                          borderColor: isPlayable
+                            ? withAlpha(DESIGN.SECONDARY_NEON, 0.92)
+                            : withAlpha(DESIGN.TEXT_MUTED, 0.2),
+                          shadowColor: isPlayable ? DESIGN.accentSecondary : PLAY_COLORS.BLACK,
+                          shadowOpacity: isPlayable ? 0.52 : isDimmed ? 0.08 : 0.18,
+                          shadowRadius: isPlayable ? 12 : 4,
+                          elevation: isPlayable ? 9 : 2,
+                          opacity: isDimmed ? 0.45 : (isMyTurn ? 1 : 0.92),
+                          backgroundColor: isPlayable
+                            ? withAlpha(DESIGN.SECONDARY_NEON, 0.08)
+                            : "transparent",
                         }}
                       >
+                        {isPlayable && (
+                          <View
+                            pointerEvents="none"
+                            style={{
+                              position: "absolute",
+                              top: -5,
+                              right: -2,
+                              width: 8,
+                              height: 8,
+                              borderRadius: 4,
+                              backgroundColor: DESIGN.accentSecondary,
+                              shadowColor: DESIGN.accentSecondary,
+                              shadowOpacity: 0.7,
+                              shadowRadius: 6,
+                              shadowOffset: { width: 0, height: 0 },
+                              elevation: 5,
+                              zIndex: 2,
+                            }}
+                          />
+                        )}
                         <PlayingCard
                           card={card}
                           onPress={() => handlePlayCard(card)}
                           disabled={!isMyTurn || disabledByServerHint}
                           size="small"
                         />
+                        {disabledByServerHint && (
+                          <View
+                            pointerEvents="none"
+                            style={{
+                              position: "absolute",
+                              top: 2,
+                              left: 2,
+                              right: 2,
+                              bottom: 2,
+                              borderRadius: 12,
+                              backgroundColor: withAlpha(DESIGN.TEXT_INVERSE, 0.2),
+                              borderWidth: 1,
+                              borderColor: withAlpha(DESIGN.TEXT_MUTED, 0.24),
+                            }}
+                          />
+                        )}
                       </View>
                     );
                   })}
                 </View>
               </ScrollView>
+              </View>
             </View>
           </View>
         </DrawChainShakeWrapper>
@@ -1599,17 +1776,27 @@ export default function GamePlayScreen() {
         onRequestClose={() => setShowSuitPicker(false)}
       >
         <View className="flex-1 bg-black/60 items-center justify-center p-6" pointerEvents="box-none">
-          <View style={{ borderRadius: 20, padding: 24, width: "100%", maxWidth: 320, backgroundColor: "rgba(20, 20, 20, 0.97)", borderWidth: 1, borderColor: "#334155" }}>
-            <Text style={{ color: "#E8E8E8", fontSize: 20, fontWeight: "800", marginBottom: 16, textAlign: "center" }}>
+          <View
+            style={{
+              borderRadius: 20,
+              padding: 24,
+              width: "100%",
+              maxWidth: 320,
+              backgroundColor: withAlpha(DESIGN.SURFACE_1, 0.97),
+              borderWidth: 1,
+              borderColor: GAME_UI_TOKENS.CHAT_SURFACE_BORDER,
+            }}
+          >
+            <Text style={{ color: DESIGN.TEXT_MAIN, fontSize: 20, fontWeight: "800", marginBottom: 16, textAlign: "center" }}>
               Wähle eine Farbe
             </Text>
             <View style={{ gap: 10 }}>
               {(["eichel", "gruen", "rot", "schellen"] as CardSuit[]).map((suit) => {
                 const colors: Record<string, string> = {
-                  eichel: "#8B4513",
-                  gruen: "#228B22",
-                  rot: "#DC143C",
-                  schellen: "#DAA520",
+                  eichel: GAME_UI_TOKENS.SUIT_EICHEL,
+                  gruen: GAME_UI_TOKENS.SUIT_GRUEN,
+                  rot: GAME_UI_TOKENS.SUIT_ROT,
+                  schellen: GAME_UI_TOKENS.SUIT_SCHELLEN,
                 };
                 const labels: Record<string, string> = {
                   eichel: "🌰 Eichel",
@@ -1630,7 +1817,7 @@ export default function GamePlayScreen() {
                       opacity: pressed ? 0.9 : 1,
                     })}
                   >
-                    <Text style={{ color: "#E8E8E8", fontSize: 18, fontWeight: "700", textAlign: "center" }}>
+                    <Text style={{ color: DESIGN.TEXT_MAIN, fontSize: 18, fontWeight: "700", textAlign: "center" }}>
                       {labels[suit]}
                     </Text>
                   </Pressable>
@@ -1648,7 +1835,7 @@ export default function GamePlayScreen() {
                 opacity: pressed ? 0.6 : 1,
               })}
             >
-              <Text style={{ color: "#9BA1A6", textAlign: "center", fontSize: 14 }}>Abbrechen</Text>
+              <Text style={{ color: DESIGN.TEXT_MUTED, textAlign: "center", fontSize: 14 }}>Abbrechen</Text>
             </Pressable>
           </View>
         </View>
@@ -1661,20 +1848,30 @@ export default function GamePlayScreen() {
         animationType="fade"
       >
         <View className="flex-1 bg-black/70 items-center justify-center p-6">
-          <View style={{ borderRadius: 20, padding: 24, width: "100%", maxWidth: 380, backgroundColor: "rgba(20, 20, 20, 0.97)", borderWidth: 2, borderColor: "#4A4A4A" }}>
-            <Text style={{ color: "#E8E8E8", fontSize: 22, fontWeight: "800", textAlign: "center", marginBottom: 16 }}>
+          <View
+            style={{
+              borderRadius: 20,
+              padding: 24,
+              width: "100%",
+              maxWidth: 380,
+              backgroundColor: withAlpha(DESIGN.SURFACE_1, 0.97),
+              borderWidth: 2,
+              borderColor: withAlpha(DESIGN.TEXT_MUTED, 0.45),
+            }}
+          >
+            <Text style={{ color: DESIGN.TEXT_MAIN, fontSize: 22, fontWeight: "800", textAlign: "center", marginBottom: 16 }}>
               🏁 Runde {gameState.roundNumber} beendet!
             </Text>
 
             {/* Loss points */}
             <View style={{ backgroundColor: "rgba(0, 0, 0, 0.3)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
-              <Text style={{ color: "#9BA1A6", fontSize: 12, marginBottom: 8 }}>Verlustpunkte:</Text>
+              <Text style={{ color: DESIGN.TEXT_MUTED, fontSize: 12, marginBottom: 8 }}>Verlustpunkte:</Text>
               {gameState.players.map((player) => (
                 <View key={player.id} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 }}>
-                  <Text style={{ color: player.isEliminated ? "#666" : "#E8E8E8", textDecorationLine: player.isEliminated ? "line-through" : "none" }}>
+                  <Text style={{ color: player.isEliminated ? GAME_UI_TOKENS.STATE_DISABLED : DESIGN.TEXT_MAIN, textDecorationLine: player.isEliminated ? "line-through" : "none" }}>
                     {player.username}
                   </Text>
-                  <Text style={{ fontWeight: "700", color: player.isEliminated ? "#666" : "#FF6B6B" }}>
+                  <Text style={{ fontWeight: "700", color: player.isEliminated ? GAME_UI_TOKENS.STATE_DISABLED : DESIGN.STATE_DANGER }}>
                     {player.isEliminated ? "❌ RAUS" : `${player.lossPoints} ❌`}
                   </Text>
                 </View>
@@ -1683,11 +1880,11 @@ export default function GamePlayScreen() {
 
             {/* Ready status */}
             <View style={{ backgroundColor: "rgba(0, 0, 0, 0.3)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
-              <Text style={{ color: "#9BA1A6", fontSize: 12, marginBottom: 8 }}>Spieler-Status:</Text>
+              <Text style={{ color: DESIGN.TEXT_MUTED, fontSize: 12, marginBottom: 8 }}>Spieler-Status:</Text>
               {gameState.players.filter(p => !p.isEliminated).map((player) => (
                 <View key={player.id} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 }}>
-                  <Text style={{ color: "#E8E8E8" }}>{player.username}</Text>
-                  <Text style={{ fontWeight: "600", color: player.isReady ? "#32CD32" : "#FFA500" }}>
+                  <Text style={{ color: DESIGN.TEXT_MAIN }}>{player.username}</Text>
+                  <Text style={{ fontWeight: "600", color: player.isReady ? DESIGN.STATE_SUCCESS : DESIGN.STATE_WARNING }}>
                     {player.isReady ? "✅ READY" : "⏳ Wartet..."}
                   </Text>
                 </View>
@@ -1699,13 +1896,13 @@ export default function GamePlayScreen() {
               <Pressable
                 onPress={() => sendAction(gameState.roomId, currentPlayer.id, { type: "READY" })}
                 style={({ pressed }) => ({
-                  backgroundColor: "#228B22",
+                  backgroundColor: DESIGN.STATE_SUCCESS,
                   borderRadius: 14,
                   padding: 16,
                   opacity: pressed ? 0.8 : 1,
                 })}
               >
-                <Text style={{ color: "#fff", textAlign: "center", fontWeight: "800", fontSize: 16 }}>
+                <Text style={{ color: DESIGN.TEXT_INVERSE, textAlign: "center", fontWeight: "800", fontSize: 16 }}>
                   ✅ READY für nächste Runde
                 </Text>
               </Pressable>
@@ -1713,8 +1910,8 @@ export default function GamePlayScreen() {
 
             {/* Waiting status */}
             {currentPlayer.isReady && (
-              <View style={{ backgroundColor: "rgba(255, 165, 0, 0.15)", borderWidth: 1, borderColor: "#FFA500", borderRadius: 14, padding: 14 }}>
-                <Text style={{ color: "#E8E8E8", textAlign: "center", fontWeight: "600" }}>
+              <View style={{ backgroundColor: withAlpha(DESIGN.STATE_WARNING, 0.15), borderWidth: 1, borderColor: DESIGN.STATE_WARNING, borderRadius: 14, padding: 14 }}>
+                <Text style={{ color: DESIGN.TEXT_MAIN, textAlign: "center", fontWeight: "600" }}>
                   ⏳ Warte auf andere Spieler...
                 </Text>
               </View>
@@ -1753,9 +1950,9 @@ export default function GamePlayScreen() {
             }}>
               {/* Header */}
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1, borderBottomColor: "rgba(51, 65, 85, 0.5)" }}>
-                <Text style={{ color: "#E8E8E8", fontWeight: "700", fontSize: 16 }}>💬 Chat</Text>
+                <Text style={{ color: DESIGN.TEXT_MAIN, fontWeight: "700", fontSize: 16 }}>💬 Chat</Text>
                 <Pressable onPress={handleCloseChat} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1, padding: 4 })}>
-                  <Text style={{ color: "#9BA1A6", fontSize: 18 }}>✕</Text>
+                  <Text style={{ color: DESIGN.TEXT_MUTED, fontSize: 18 }}>✕</Text>
                 </Pressable>
               </View>
 
@@ -1768,7 +1965,7 @@ export default function GamePlayScreen() {
                 contentContainerStyle={{ paddingVertical: 8, gap: 6 }}
                 onContentSizeChange={() => chatListRef.current?.scrollToEnd({ animated: true })}
                 ListEmptyComponent={
-                  <Text style={{ color: "#9BA1A6", textAlign: "center", marginTop: 20, fontSize: 13 }}>
+                  <Text style={{ color: DESIGN.TEXT_MUTED, textAlign: "center", marginTop: 20, fontSize: 13 }}>
                     Noch keine Nachrichten.
                   </Text>
                 }
@@ -1788,12 +1985,12 @@ export default function GamePlayScreen() {
                       borderColor: isMe ? "rgba(50, 205, 50, 0.3)" : "rgba(51, 65, 85, 0.6)",
                     }}>
                       {!isMe && (
-                        <Text style={{ color: "#32CD32", fontSize: 10, fontWeight: "700", marginBottom: 2 }}>
+                        <Text style={{ color: DESIGN.STATE_SUCCESS, fontSize: 10, fontWeight: "700", marginBottom: 2 }}>
                           {item.username}
                         </Text>
                       )}
-                      <Text style={{ color: "#E8E8E8", fontSize: 14 }}>{item.message}</Text>
-                      <Text style={{ color: "#9BA1A6", fontSize: 9, marginTop: 2, alignSelf: "flex-end" }}>
+                      <Text style={{ color: DESIGN.TEXT_MAIN, fontSize: 14 }}>{item.message}</Text>
+                      <Text style={{ color: DESIGN.TEXT_MUTED, fontSize: 9, marginTop: 2, alignSelf: "flex-end" }}>
                         {new Date(item.createdAt).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}
                       </Text>
                     </View>
@@ -1817,14 +2014,14 @@ export default function GamePlayScreen() {
                   value={chatInput}
                   onChangeText={setChatInput}
                   placeholder="Nachricht..."
-                  placeholderTextColor="#687076"
+                  placeholderTextColor={GAME_UI_TOKENS.CHAT_PLACEHOLDER}
                   style={{
                     flex: 1,
                     backgroundColor: "rgba(30, 32, 34, 0.9)",
                     borderRadius: 20,
                     paddingHorizontal: 16,
                     paddingVertical: 10,
-                    color: "#E8E8E8",
+                    color: DESIGN.TEXT_MAIN,
                     fontSize: 14,
                     borderWidth: 1,
                     borderColor: "rgba(51, 65, 85, 0.6)",
@@ -1839,7 +2036,7 @@ export default function GamePlayScreen() {
                     width: 40,
                     height: 40,
                     borderRadius: 20,
-                    backgroundColor: chatInput.trim() ? (pressed ? "#228B22" : "#32CD32") : "rgba(51, 65, 85, 0.4)",
+                    backgroundColor: chatInput.trim() ? (pressed ? DESIGN.STATE_SUCCESS : DESIGN.SECONDARY_NEON) : withAlpha(GAME_UI_TOKENS.CHAT_SURFACE_BORDER, 0.4),
                     alignItems: "center",
                     justifyContent: "center",
                   })}
@@ -1859,8 +2056,8 @@ export default function GamePlayScreen() {
         animationType="fade"
       >
         <View className="flex-1 bg-black/70 items-center justify-center">
-          <View style={{ borderRadius: 20, padding: 32, borderWidth: 3, borderColor: "#32CD32", backgroundColor: "rgba(20, 20, 20, 0.97)" }}>
-            <Text style={{ color: "#E8E8E8", fontSize: 28, fontWeight: "800", textAlign: "center" }}>
+          <View style={{ borderRadius: 20, padding: 32, borderWidth: 3, borderColor: DESIGN.SECONDARY_NEON, backgroundColor: withAlpha(DESIGN.SURFACE_1, 0.97) }}>
+            <Text style={{ color: DESIGN.TEXT_MAIN, fontSize: 28, fontWeight: "800", textAlign: "center" }}>
               🎮 Runde {gameState?.roundNumber}
             </Text>
           </View>
@@ -1885,6 +2082,10 @@ export default function GamePlayScreen() {
         variant={blackbirdVariant}
         phrase={blackbirdPhrase}
         onDone={() => {
+          console.log("[blackbird][client] done", {
+            type: blackbirdEvent,
+            queueRemaining: blackbirdQueueRef.current.length,
+          });
           setShowBlackbird(false);
           setBlackbirdLoser(undefined);
           setBlackbirdWinner(undefined);
@@ -1903,7 +2104,14 @@ export default function GamePlayScreen() {
             }
           }, 300);
         }}
-        onStart={playBlackbird}
+        onStart={() => {
+          console.log("[blackbird][client] render-start", {
+            type: blackbirdEvent,
+            winner: blackbirdWinner,
+            loser: blackbirdLoser,
+          });
+          playBlackbird();
+        }}
       />
       <CardFlyAnimation
         card={flyingCard}

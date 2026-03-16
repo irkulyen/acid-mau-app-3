@@ -14,6 +14,7 @@ import * as Haptics from "expo-haptics";
 import type { Card, Player } from "@/shared/game-types";
 import { createDeck, shuffleDeck, getSuitSymbol } from "@/shared/deck-utils";
 import { getHighestCard, getLowestCard, compareCards } from "@/shared/card-comparison";
+import { PREPARATION_TOKENS, withAlpha } from "@/lib/design-tokens";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 
@@ -23,7 +24,10 @@ const RANK_DISPLAY: Record<string, string> = {
 };
 
 const SUIT_COLORS: Record<string, string> = {
-  eichel: "#8B4513", gruen: "#228B22", rot: "#DC143C", schellen: "#DAA520",
+  eichel: PREPARATION_TOKENS.SUIT_EICHEL,
+  gruen: PREPARATION_TOKENS.SUIT_GRUEN,
+  rot: PREPARATION_TOKENS.SUIT_ROT,
+  schellen: PREPARATION_TOKENS.SUIT_SCHELLEN,
 };
 
 export interface PreparationDrawData {
@@ -463,7 +467,11 @@ export function GamePreparationScreen({
             totalCards={currentCards.length}
             delay={index * 300}
             isHighlighted={currentWinner === index}
-            highlightColor={displayPhase === "seat_selection" ? "#FFD700" : "#00FF88"}
+            highlightColor={
+              displayPhase === "seat_selection"
+                ? PREPARATION_TOKENS.HIGHLIGHT_SEAT
+                : PREPARATION_TOKENS.HIGHLIGHT_DEALER
+            }
             label={drawn.player.username}
           />
         ))}
@@ -574,7 +582,7 @@ const styles = StyleSheet.create({
   phaseTitle: {
     fontSize: 32,
     fontWeight: "800",
-    color: "#FFFFFF",
+    color: PREPARATION_TOKENS.TEXT_WHITE,
     textShadowColor: "rgba(0, 255, 136, 0.5)",
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 20,
@@ -582,7 +590,7 @@ const styles = StyleSheet.create({
   },
   phaseSubtitle: {
     fontSize: 14,
-    color: "#9BA1A6",
+    color: PREPARATION_TOKENS.TEXT_MUTED,
     marginTop: 8,
     letterSpacing: 1,
   },
@@ -612,30 +620,30 @@ const styles = StyleSheet.create({
     backfaceVisibility: "hidden",
   },
   cardBack: {
-    backgroundColor: "#1a3a5c",
+    backgroundColor: PREPARATION_TOKENS.CARD_BACK_BG,
     borderWidth: 2,
-    borderColor: "#2a5a8c",
+    borderColor: PREPARATION_TOKENS.CARD_BACK_BORDER,
   },
   cardBackInner: {
     width: 48,
     height: 76,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: "#3a6a9c",
-    backgroundColor: "#1e4a7a",
+    borderColor: PREPARATION_TOKENS.CARD_BACK_INNER_BORDER,
+    backgroundColor: PREPARATION_TOKENS.CARD_BACK_INNER_BG,
     justifyContent: "center",
     alignItems: "center",
   },
   cardBackText: {
     fontSize: 24,
     fontWeight: "700",
-    color: "#4a8abc",
+    color: PREPARATION_TOKENS.CARD_BACK_TEXT,
   },
   cardFront: {
-    backgroundColor: "#FFFEF5",
+    backgroundColor: PREPARATION_TOKENS.CARD_FRONT_BG,
     borderWidth: 2,
-    borderColor: "#D4D0C0",
-    shadowColor: "#000",
+    borderColor: PREPARATION_TOKENS.CARD_FRONT_BORDER,
+    shadowColor: PREPARATION_TOKENS.CARD_SHADOW,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.3,
     shadowRadius: 4,
@@ -661,7 +669,7 @@ const styles = StyleSheet.create({
   cardLabel: {
     marginTop: 8,
     fontSize: 11,
-    color: "#CCCCCC",
+    color: PREPARATION_TOKENS.TEXT_SOFT,
     fontWeight: "500",
     textAlign: "center",
   },
@@ -669,15 +677,15 @@ const styles = StyleSheet.create({
     marginTop: 40,
     paddingHorizontal: 24,
     paddingVertical: 12,
-    backgroundColor: "rgba(0, 255, 136, 0.15)",
+    backgroundColor: withAlpha(PREPARATION_TOKENS.HIGHLIGHT_DEALER, 0.15),
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(0, 255, 136, 0.3)",
+    borderColor: withAlpha(PREPARATION_TOKENS.HIGHLIGHT_DEALER, 0.3),
   },
   resultText: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#00FF88",
+    color: PREPARATION_TOKENS.HIGHLIGHT_DEALER,
     textAlign: "center",
     letterSpacing: 0.5,
   },
@@ -688,13 +696,13 @@ const styles = StyleSheet.create({
   seatOrderTitle: {
     fontSize: 13,
     fontWeight: "600",
-    color: "#9BA1A6",
+    color: PREPARATION_TOKENS.TEXT_MUTED,
     marginBottom: 4,
   },
   seatOrderItem: {
     fontSize: 14,
     fontWeight: "500",
-    color: "#ECEDEE",
+    color: PREPARATION_TOKENS.TEXT_LIGHT,
     lineHeight: 20,
   },
   serverSeatPicker: {
@@ -704,7 +712,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   serverSeatPickerTitle: {
-    color: "#E8E8E8",
+    color: PREPARATION_TOKENS.TEXT_MAIN,
     fontSize: 16,
     fontWeight: "700",
     textAlign: "center",
@@ -718,16 +726,16 @@ const styles = StyleSheet.create({
   },
   serverSeatButton: {
     minWidth: 120,
-    backgroundColor: "rgba(34, 139, 34, 0.18)",
-    borderColor: "rgba(50, 205, 50, 0.5)",
+    backgroundColor: withAlpha(PREPARATION_TOKENS.SUIT_GRUEN, 0.18),
+    borderColor: withAlpha(PREPARATION_TOKENS.HIGHLIGHT_DEALER, 0.5),
     borderWidth: 1,
     borderRadius: 12,
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
   serverSeatChosen: {
-    backgroundColor: "rgba(255, 165, 0, 0.2)",
-    borderColor: "rgba(255, 165, 0, 0.6)",
+    backgroundColor: withAlpha(PREPARATION_TOKENS.HIGHLIGHT_SEAT, 0.2),
+    borderColor: withAlpha(PREPARATION_TOKENS.HIGHLIGHT_SEAT, 0.6),
   },
   serverSeatDisabled: {
     opacity: 0.6,
@@ -736,18 +744,18 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
   serverSeatButtonLabel: {
-    color: "#FFFFFF",
+    color: PREPARATION_TOKENS.TEXT_WHITE,
     fontWeight: "700",
     textAlign: "center",
   },
   serverSeatButtonSub: {
-    color: "#B6BDC6",
+    color: PREPARATION_TOKENS.TEXT_SUB,
     fontSize: 12,
     marginTop: 2,
     textAlign: "center",
   },
   serverSeatHint: {
-    color: "#9BA1A6",
+    color: PREPARATION_TOKENS.TEXT_MUTED,
     textAlign: "center",
     marginTop: 8,
     fontSize: 12,

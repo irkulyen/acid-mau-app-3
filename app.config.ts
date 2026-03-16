@@ -107,12 +107,12 @@ const config: ExpoConfig = {
     [
       "expo-splash-screen",
       {
-        image: "./assets/images/splash-icon.png",
-        imageWidth: 200,
+        image: "./assets/branding/crazy-amsel-logo.png",
+        imageWidth: 240,
         resizeMode: "contain",
-        backgroundColor: "#ffffff",
+        backgroundColor: "#0B3D2E",
         dark: {
-          backgroundColor: "#000000",
+          backgroundColor: "#072E22",
         },
       },
     ],
