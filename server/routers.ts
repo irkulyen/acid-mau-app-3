@@ -91,16 +91,41 @@ export const appRouter = router({
       )
       .mutation(async ({ input, ctx }) => {
         const { verifyPassword, createToken } = await import("./auth-helpers");
+        const forwardedFor = ctx.req.headers["x-forwarded-for"];
+        const clientIp =
+          (Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor)?.split(",")[0]?.trim() ||
+          ctx.req.socket.remoteAddress ||
+          null;
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[auth.login] Request received", {
+            email: input.email,
+            ip: clientIp,
+            origin: ctx.req.headers.origin ?? null,
+            userAgent: ctx.req.headers["user-agent"] ?? null,
+          });
+        }
         
         // Find user by email
         const user = await db.getUserByEmail(input.email);
         if (!user || !user.passwordHash) {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[auth.login] Invalid credentials (user not found/password missing)", {
+              email: input.email,
+              ip: clientIp,
+            });
+          }
           throw new Error("Ungültige Anmeldedaten");
         }
         
         // Verify password
         const isValid = await verifyPassword(input.password, user.passwordHash);
         if (!isValid) {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[auth.login] Invalid credentials (password mismatch)", {
+              email: input.email,
+              ip: clientIp,
+            });
+          }
           throw new Error("Ungültige Anmeldedaten");
         }
         
@@ -116,6 +141,9 @@ export const appRouter = router({
           ...cookieOptions,
           maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         });
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[auth.login] Success", { userId: user.id, email: input.email, ip: clientIp });
+        }
         
         return { token, userId: user.id };
       }),

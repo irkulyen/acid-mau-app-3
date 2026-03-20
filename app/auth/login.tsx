@@ -5,6 +5,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { Touchable } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/lib/auth-provider";
+import { getApiBaseUrl } from "@/constants/oauth";
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -15,8 +16,11 @@ export default function LoginScreen() {
   const [error, setError] = useState("");
 
   const loginMutation = trpc.auth.login.useMutation();
-  const toFriendlyAuthError = (err: any): string => {
-    const raw = String(err?.message || "");
+  const toFriendlyAuthError = (err: unknown): string => {
+    const raw =
+      err && typeof err === "object" && "message" in err
+        ? String((err as { message?: unknown }).message ?? "")
+        : String(err ?? "");
     const normalized = raw.toLowerCase();
     if (
       normalized.includes("rate exceeded") ||
@@ -30,7 +34,9 @@ export default function LoginScreen() {
   };
 
   const handleEmailLogin = async () => {
-    console.log("[Login] Button clicked - START");
+    if (__DEV__) {
+      console.log("[Login] Button clicked - START");
+    }
     setError("");
     
     if (!email.trim() || !password.trim()) {
@@ -39,7 +45,16 @@ export default function LoginScreen() {
     }
 
     setIsLoading(true);
-    console.log("[Login] Sending request...");
+    const apiBaseUrl = getApiBaseUrl();
+    const loginEndpoint = `${apiBaseUrl}/api/trpc/auth.login?batch=1`;
+    if (__DEV__) {
+      console.log("[Login] API target", {
+        platform: Platform.OS,
+        apiBaseUrl,
+        loginEndpoint,
+      });
+      console.log("[Login] Sending request...");
+    }
     
     try {
       const result = await loginMutation.mutateAsync({
@@ -47,25 +62,35 @@ export default function LoginScreen() {
         password,
       });
       
-      console.log("[Login] Success!");
+      if (__DEV__) {
+        console.log("[Login] Success!");
+      }
       
       // Store token in frontend (LocalStorage for web, SecureStore for native)
       const { setSessionToken } = await import("@/lib/_core/auth");
       await setSessionToken(result.token);
-      console.log("[Login] Token stored successfully");
+      if (__DEV__) {
+        console.log("[Login] Token stored successfully");
+      }
       
       // Refresh auth state to load user data
-      console.log("[Login] Refreshing auth state...");
+      if (__DEV__) {
+        console.log("[Login] Refreshing auth state...");
+      }
       await refresh();
-      console.log("[Login] Auth state refreshed");
+      if (__DEV__) {
+        console.log("[Login] Auth state refreshed");
+      }
       
       // Small delay to ensure AuthGuard picks up the change
       await new Promise(resolve => setTimeout(resolve, 200));
       
-      console.log("[Login] Navigation will be handled by AuthGuard");
+      if (__DEV__) {
+        console.log("[Login] Navigation will be handled by AuthGuard");
+      }
       // AuthGuard will automatically redirect to home or onboarding
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("[Login] Error:", error);
       setError("Login fehlgeschlagen: " + toFriendlyAuthError(error));
     } finally {
@@ -164,7 +189,7 @@ export default function LoginScreen() {
 
         <View style={{ marginTop: 16, alignItems: 'center' }}>
           <Text style={{ color: '#666', fontSize: 12 }}>
-            Test-Account: test@test.com / test123
+            Test-Account (nur lokale Dev-Umgebung): test@test.com / test123
           </Text>
         </View>
       </View>

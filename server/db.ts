@@ -23,6 +23,8 @@ import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _pool: Pool | null = null;
+let _databaseName: string | null = null;
+let _usersAuthSchemaEnsurePromise: Promise<void> | null = null;
 
 const DEV_TEST_USER = {
   id: 1,
@@ -47,6 +49,66 @@ function getDevTestUserById(id: number) {
   return id === DEV_TEST_USER.id ? { ...DEV_TEST_USER } : null;
 }
 
+function normalizeErrorMessage(error: unknown): string {
+  if (!error) return "";
+  if (error instanceof Error) {
+    const cause = (error as Error & { cause?: unknown }).cause;
+    return `${error.message} ${normalizeErrorMessage(cause)}`.trim();
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+async function ensureUsersAuthSchema(pool: Pool, databaseName: string): Promise<void> {
+  const [rows] = await pool.query(
+    `
+      SELECT COLUMN_NAME, IS_NULLABLE
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = ?
+        AND TABLE_NAME = 'users'
+        AND COLUMN_NAME IN ('openId', 'passwordHash')
+    `,
+    [databaseName],
+  );
+
+  const columns = new Map<string, string>();
+  for (const row of rows as Array<{ COLUMN_NAME: string; IS_NULLABLE: string }>) {
+    columns.set(row.COLUMN_NAME, row.IS_NULLABLE);
+  }
+
+  const statements: Array<{ reason: string; sql: string }> = [];
+  if (!columns.has("passwordHash")) {
+    statements.push({
+      reason: "missing users.passwordHash",
+      sql: "ALTER TABLE `users` ADD COLUMN `passwordHash` varchar(255) NULL",
+    });
+  }
+
+  const openIdNullable = columns.get("openId");
+  if (openIdNullable === "NO") {
+    statements.push({
+      reason: "users.openId is not nullable",
+      sql: "ALTER TABLE `users` MODIFY COLUMN `openId` varchar(64) NULL",
+    });
+  }
+
+  if (statements.length === 0) {
+    return;
+  }
+
+  console.warn(
+    `[Database] users auth schema drift detected in "${databaseName}". Applying ${statements.length} fix(es)...`,
+  );
+
+  for (const stmt of statements) {
+    await pool.query(stmt.sql);
+    console.warn(`[Database] Applied auth schema fix: ${stmt.reason}`);
+  }
+}
+
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -63,10 +125,24 @@ export async function getDb() {
         connectionLimit: 10,
       });
       _db = drizzle(_pool) as unknown as ReturnType<typeof drizzle>;
+      _databaseName = databaseUrl.pathname.replace(/^\//, "");
+      if (_databaseName && !_usersAuthSchemaEnsurePromise) {
+        _usersAuthSchemaEnsurePromise = ensureUsersAuthSchema(_pool, _databaseName).catch((error) => {
+          console.warn(
+            "[Database] Could not auto-heal users auth schema. Run `pnpm db:push` on the backend host.",
+            error,
+          );
+        });
+      }
+      if (_usersAuthSchemaEnsurePromise) {
+        await _usersAuthSchemaEnsurePromise;
+      }
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
       _pool = null;
+      _databaseName = null;
+      _usersAuthSchemaEnsurePromise = null;
     }
   }
   return _db;
@@ -434,16 +510,30 @@ export async function createUser(data: {
 }): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  
-  const result = await db.insert(users).values({
-    email: data.email,
-    passwordHash: data.passwordHash,
-    name: data.name,
-    loginMethod: data.loginMethod,
-    role: "user",
-  });
-  
-  return Number(result[0].insertId);
+
+  try {
+    const result = await db.insert(users).values({
+      openId: null,
+      email: data.email,
+      passwordHash: data.passwordHash,
+      name: data.name,
+      loginMethod: data.loginMethod,
+      role: "user",
+    });
+
+    return Number(result[0].insertId);
+  } catch (error) {
+    const message = normalizeErrorMessage(error);
+    const likelyAuthSchemaDrift =
+      message.includes("Failed query: insert into `users`") &&
+      (message.includes("`passwordHash`") || message.includes("`openId`"));
+    if (likelyAuthSchemaDrift) {
+      throw new Error(
+        "Datenbankschema fuer E-Mail-Login ist veraltet. Fuehre auf dem Backend-Host `pnpm db:push` aus und starte den Server neu.",
+      );
+    }
+    throw error;
+  }
 }
 
 /**

@@ -1,16 +1,71 @@
 // Load environment variables with proper priority (system > .env)
 import "./scripts/load-env.js";
+import { execSync } from "child_process";
+import os from "os";
+
+function getLocalLanIp(): string | null {
+  const networkInterfaces = os.networkInterfaces();
+  const privateRanges = [
+    /^10\./,
+    /^192\.168\./,
+    /^172\.(1[6-9]|2\d|3[0-1])\./,
+  ];
+
+  for (const entries of Object.values(networkInterfaces)) {
+    if (!entries) continue;
+    for (const entry of entries) {
+      const isIpv4 = entry.family === "IPv4";
+      if (!isIpv4 || entry.internal) continue;
+      if (privateRanges.some((pattern) => pattern.test(entry.address))) {
+        return entry.address;
+      }
+    }
+  }
+
+  for (const entries of Object.values(networkInterfaces)) {
+    if (!entries) continue;
+    for (const entry of entries) {
+      const isIpv4 = entry.family === "IPv4";
+      if (isIpv4 && !entry.internal) {
+        return entry.address;
+      }
+    }
+  }
+
+  try {
+    const ipEn0 = execSync("ipconfig getifaddr en0", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+    if (ipEn0) return ipEn0;
+  } catch {}
+
+  try {
+    const ipEn1 = execSync("ipconfig getifaddr en1", { stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+    if (ipEn1) return ipEn1;
+  } catch {}
+
+  return null;
+}
 
 // Backend URL fallback for local development only.
 if (!process.env.EXPO_PUBLIC_API_URL && process.env.NODE_ENV !== "production") {
-  process.env.EXPO_PUBLIC_API_URL = "http://localhost:3000";
-  console.warn(
-    "⚠️ EXPO_PUBLIC_API_URL nicht gesetzt – nutze DEV-Fallback (http://localhost:3000)",
-  );
+  const lanIp = getLocalLanIp();
+  if (lanIp) {
+    process.env.EXPO_PUBLIC_API_URL = `http://${lanIp}:3000`;
+    console.warn(
+      `⚠️ EXPO_PUBLIC_API_URL nicht gesetzt – nutze DEV-LAN-Fallback (${process.env.EXPO_PUBLIC_API_URL})`,
+    );
+  } else {
+    console.warn(
+      "⚠️ EXPO_PUBLIC_API_URL nicht gesetzt und keine LAN-IP erkannt – nutze Runtime-Host-Ermittlung in der App",
+    );
+  }
 }
 
 // In production, EXPO_PUBLIC_API_URL must always be explicit.
-if (!process.env.EXPO_PUBLIC_API_URL) {
+if (!process.env.EXPO_PUBLIC_API_URL && process.env.NODE_ENV === "production") {
   throw new Error("EXPO_PUBLIC_API_URL ist nicht gesetzt");
 }
 
