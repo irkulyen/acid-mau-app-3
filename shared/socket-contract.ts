@@ -68,4 +68,34 @@ export interface CardPlayFxEvent {
 export interface DrawCardFxEvent {
   startAt?: number;
   playerId?: number;
+  drawCount?: number;
+}
+
+export type GameFxEventType =
+  | "card_play"
+  | "draw_card"
+  | "blackbird"
+  | "elimination"
+  | "round_transition"
+  | "match_result";
+
+export interface GameFxEvent {
+  id: string;
+  roomId: number;
+  sequence: number;
+  type: GameFxEventType;
+  startAt: number;
+  emittedAt: number;
+  replay?: boolean;
+  playerId?: number;
+  userId?: number;
+  playerName?: string;
+  card?: Card;
+  drawCount?: number;
+  roundNumber?: number;
+  eliminatedUserId?: number;
+  eliminatedPlayerName?: string;
+  winnerUserId?: number;
+  winnerPlayerName?: string;
+  blackbird?: BlackbirdEvent;
 }

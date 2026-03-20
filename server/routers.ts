@@ -52,10 +52,32 @@ export const appRouter = router({
       )
       .mutation(async ({ input, ctx }) => {
         const { hashPassword, createToken } = await import("./auth-helpers");
+        const startedAt = Date.now();
+        const forwardedFor = ctx.req.headers["x-forwarded-for"];
+        const clientIp =
+          (Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor)?.split(",")[0]?.trim() ||
+          ctx.req.socket.remoteAddress ||
+          null;
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[auth.register] Request received", {
+            email: input.email,
+            username: input.username,
+            ip: clientIp,
+            origin: ctx.req.headers.origin ?? null,
+            userAgent: ctx.req.headers["user-agent"] ?? null,
+          });
+        }
         
         // Check if email already exists
         const existing = await db.getUserByEmail(input.email);
         if (existing) {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[auth.register] Reject existing email", {
+              email: input.email,
+              ip: clientIp,
+              durationMs: Date.now() - startedAt,
+            });
+          }
           throw new Error("E-Mail bereits registriert");
         }
         
@@ -79,6 +101,14 @@ export const appRouter = router({
           ...cookieOptions,
           maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         });
+        if (process.env.NODE_ENV !== "production") {
+          console.log("[auth.register] Success", {
+            userId,
+            email: input.email,
+            ip: clientIp,
+            durationMs: Date.now() - startedAt,
+          });
+        }
         
         return { token, userId };
       }),
@@ -91,6 +121,7 @@ export const appRouter = router({
       )
       .mutation(async ({ input, ctx }) => {
         const { verifyPassword, createToken } = await import("./auth-helpers");
+        const startedAt = Date.now();
         const forwardedFor = ctx.req.headers["x-forwarded-for"];
         const clientIp =
           (Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor)?.split(",")[0]?.trim() ||
@@ -112,6 +143,7 @@ export const appRouter = router({
             console.warn("[auth.login] Invalid credentials (user not found/password missing)", {
               email: input.email,
               ip: clientIp,
+              durationMs: Date.now() - startedAt,
             });
           }
           throw new Error("Ungültige Anmeldedaten");
@@ -124,6 +156,7 @@ export const appRouter = router({
             console.warn("[auth.login] Invalid credentials (password mismatch)", {
               email: input.email,
               ip: clientIp,
+              durationMs: Date.now() - startedAt,
             });
           }
           throw new Error("Ungültige Anmeldedaten");
@@ -142,7 +175,12 @@ export const appRouter = router({
           maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
         });
         if (process.env.NODE_ENV !== "production") {
-          console.log("[auth.login] Success", { userId: user.id, email: input.email, ip: clientIp });
+          console.log("[auth.login] Success", {
+            userId: user.id,
+            email: input.email,
+            ip: clientIp,
+            durationMs: Date.now() - startedAt,
+          });
         }
         
         return { token, userId: user.id };

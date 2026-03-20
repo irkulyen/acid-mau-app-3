@@ -115,6 +115,193 @@ describe("Multiplayer Room System", () => {
     });
   });
 
+  it("should keep join idempotent when join-room is emitted twice quickly", async () => {
+    const hostToken = await createTestToken(90, "idempotent-host@test.local");
+    const userId = 9;
+    const token = await createTestToken(userId, "doublejoin@test.local");
+    return new Promise<void>((resolve, reject) => {
+      const hostSocket = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token: hostToken },
+      });
+      const socket3 = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token },
+      });
+
+      const timeout = setTimeout(() => {
+        hostSocket.disconnect();
+        socket3.disconnect();
+        reject(new Error("Timeout waiting for idempotent join"));
+      }, 8000);
+
+      let joinedOnce = false;
+      let localRoomCode = "";
+      let localRoomId = 0;
+
+      hostSocket.on("connect", () => {
+        hostSocket.emit("create-room", { userId: 90, username: "IdempotentHost", maxPlayers: 6 });
+      });
+
+      hostSocket.on("room-created", (payload) => {
+        localRoomCode = payload.roomCode;
+        localRoomId = payload.roomId;
+      });
+
+      socket3.on("connect", () => {
+        const sendJoin = () => {
+          if (!localRoomCode) {
+            setTimeout(sendJoin, 50);
+            return;
+          }
+          socket3.emit("join-room", { roomCode: localRoomCode, userId, username: "DoubleJoin" });
+          socket3.emit("join-room", { roomCode: localRoomCode, userId, username: "DoubleJoin" });
+        };
+        sendJoin();
+      });
+
+      socket3.on("room-joined", async () => {
+        if (joinedOnce) return;
+        joinedOnce = true;
+        try {
+          await new Promise((r) => setTimeout(r, 250));
+          const room = await realtimeStore.getUserRoom(userId);
+          expect(room).toBe(localRoomId);
+          const state = await realtimeStore.getGameState(localRoomId);
+          expect(state).toBeDefined();
+          const sameUserEntries = state!.players.filter((p) => p.userId === userId);
+          expect(sameUserEntries.length).toBe(1);
+          clearTimeout(timeout);
+          hostSocket.disconnect();
+          socket3.disconnect();
+          resolve();
+        } catch (error) {
+          clearTimeout(timeout);
+          hostSocket.disconnect();
+          socket3.disconnect();
+          reject(error);
+        }
+      });
+
+      socket3.on("error", (err) => {
+        clearTimeout(timeout);
+        hostSocket.disconnect();
+        socket3.disconnect();
+        reject(new Error(`Socket error: ${err.message}`));
+      });
+
+      hostSocket.on("error", (err) => {
+        clearTimeout(timeout);
+        hostSocket.disconnect();
+        socket3.disconnect();
+        reject(new Error(`Host socket error: ${err.message}`));
+      });
+    });
+  });
+
+  it("should reject joining another room while user has an active room session", async () => {
+    const guestUserId = 10;
+    const guestToken = await createTestToken(guestUserId, "guest-active@test.local");
+    const roomAHostToken = await createTestToken(101, "room-a-host@test.local");
+    const roomBHostToken = await createTestToken(11, "other-host@test.local");
+    return new Promise<void>((resolve, reject) => {
+      const roomAHostSocket = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token: roomAHostToken },
+        autoConnect: false,
+      });
+      const guestSocket = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token: guestToken },
+        autoConnect: false,
+      });
+      const hostSocket = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token: roomBHostToken },
+        autoConnect: false,
+      });
+
+      const cleanup = () => {
+        roomAHostSocket.disconnect();
+        guestSocket.disconnect();
+        hostSocket.disconnect();
+      };
+
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timeout waiting for cross-room join rejection"));
+      }, 10000);
+
+      let firstRoomCode = "";
+
+      roomAHostSocket.on("connect", () => {
+        roomAHostSocket.emit("create-room", { userId: 101, username: "RoomAHost", maxPlayers: 4 });
+      });
+
+      roomAHostSocket.once("room-created", (payload) => {
+        firstRoomCode = payload.roomCode;
+        guestSocket.connect();
+      });
+
+      guestSocket.on("connect", () => {
+        guestSocket.emit("join-room", { roomCode: firstRoomCode, userId: guestUserId, username: "ActiveGuest" });
+      });
+
+      guestSocket.once("room-joined", () => {
+        hostSocket.connect();
+      });
+
+      hostSocket.on("connect", () => {
+        hostSocket.emit("create-room", { userId: 11, username: "OtherHost", maxPlayers: 4 });
+      });
+
+      hostSocket.once("room-created", (secondRoomPayload) => {
+        guestSocket.emit("join-room", {
+          roomCode: secondRoomPayload.roomCode,
+          userId: guestUserId,
+          username: "ActiveGuest",
+        });
+      });
+
+      guestSocket.on("join-failed", (payload) => {
+        if (payload?.code !== "USER_IN_OTHER_ROOM") return;
+        try {
+          expect(payload.message).toBe("User already in another active room");
+          clearTimeout(timeout);
+          cleanup();
+          resolve();
+        } catch (error) {
+          clearTimeout(timeout);
+          cleanup();
+          reject(error);
+        }
+      });
+
+      guestSocket.on("error", () => {
+        // join-failed is asserted above
+      });
+
+      hostSocket.on("error", (err) => {
+        clearTimeout(timeout);
+        cleanup();
+        reject(new Error(`Host socket error: ${err.message}`));
+      });
+
+      roomAHostSocket.on("error", (err) => {
+        clearTimeout(timeout);
+        cleanup();
+        reject(new Error(`RoomA host socket error: ${err.message}`));
+      });
+
+      roomAHostSocket.connect();
+    });
+  });
+
   it("should broadcast state to all players", async () => {
     const token = await createTestToken(3, "broadcast@test.local");
     return new Promise<void>((resolve, reject) => {

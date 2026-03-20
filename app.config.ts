@@ -3,6 +3,17 @@ import "./scripts/load-env.js";
 import { execSync } from "child_process";
 import os from "os";
 
+function isTunnelStartMode(): boolean {
+  const args = process.argv.map((arg) => arg.toLowerCase());
+  if (args.includes("--tunnel")) return true;
+  const hostIndex = args.findIndex((arg) => arg === "--host");
+  if (hostIndex >= 0) {
+    const hostValue = args[hostIndex + 1] || "";
+    return hostValue === "tunnel";
+  }
+  return false;
+}
+
 function getLocalLanIp(): string | null {
   const networkInterfaces = os.networkInterfaces();
   const privateRanges = [
@@ -51,16 +62,22 @@ function getLocalLanIp(): string | null {
 
 // Backend URL fallback for local development only.
 if (!process.env.EXPO_PUBLIC_API_URL && process.env.NODE_ENV !== "production") {
-  const lanIp = getLocalLanIp();
-  if (lanIp) {
-    process.env.EXPO_PUBLIC_API_URL = `http://${lanIp}:3000`;
+  if (isTunnelStartMode()) {
     console.warn(
-      `⚠️ EXPO_PUBLIC_API_URL nicht gesetzt – nutze DEV-LAN-Fallback (${process.env.EXPO_PUBLIC_API_URL})`,
+      "⚠️ EXPO_PUBLIC_API_URL nicht gesetzt im Tunnel-Modus – kein LAN-Fallback. Runtime nutzt externe Tunnel-API-Auflösung.",
     );
   } else {
-    console.warn(
-      "⚠️ EXPO_PUBLIC_API_URL nicht gesetzt und keine LAN-IP erkannt – nutze Runtime-Host-Ermittlung in der App",
-    );
+    const lanIp = getLocalLanIp();
+    if (lanIp) {
+      process.env.EXPO_PUBLIC_API_URL = `http://${lanIp}:3000`;
+      console.warn(
+        `⚠️ EXPO_PUBLIC_API_URL nicht gesetzt – nutze DEV-LAN-Fallback (${process.env.EXPO_PUBLIC_API_URL})`,
+      );
+    } else {
+      console.warn(
+        "⚠️ EXPO_PUBLIC_API_URL nicht gesetzt und keine LAN-IP erkannt – nutze Runtime-Host-Ermittlung in der App",
+      );
+    }
   }
 }
 
@@ -97,9 +114,6 @@ const env = {
   // App branding - update these values directly (do not use env vars)
   appName: "Acid-Mau",
   appSlug: "{{project_name}}",
-  // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
-  // Leave empty to use the default icon from assets/images/icon.png
-  logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/310519663085099016/gsmgkIKcwrQHGUwL.png",
   scheme: schemeFromBundleId,
   iosBundleId: bundleId,
   androidPackage: bundleId,
@@ -111,7 +125,7 @@ const config = {
   slug: env.appSlug,
   version: "1.0.0",
   orientation: "portrait",
-  icon: "./assets/images/icon.png",
+  icon: "./assets/images/game-logo.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
   newArchEnabled: true,
@@ -125,9 +139,9 @@ const config = {
   android: {
     adaptiveIcon: {
       backgroundColor: "#E6F4FE",
-      foregroundImage: "./assets/images/android-icon-foreground.png",
+      foregroundImage: "./assets/images/game-logo.png",
       backgroundImage: "./assets/images/android-icon-background.png",
-      monochromeImage: "./assets/images/android-icon-monochrome.png",
+      monochromeImage: "./assets/images/game-logo.png",
     },
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
@@ -150,7 +164,7 @@ const config = {
   web: {
     bundler: "metro",
     output: "static",
-    favicon: "./assets/images/favicon.png",
+    favicon: "./assets/images/game-logo.png",
   },
   plugins: [
     "expo-router",
@@ -170,7 +184,7 @@ const config = {
     [
       "expo-splash-screen",
       {
-        image: "./assets/images/splash-icon.png",
+        image: "./assets/images/game-logo.png",
         imageWidth: 200,
         resizeMode: "contain",
         backgroundColor: "#ffffff",

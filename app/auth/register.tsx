@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/lib/auth-provider";
+import { getApiBaseUrl } from "@/constants/oauth";
 
 export default function RegisterScreen() {
   const router = useRouter();
@@ -63,12 +64,35 @@ export default function RegisterScreen() {
     }
 
     setIsLoading(true);
+    const startedAt = Date.now();
+    const apiBaseUrl = getApiBaseUrl();
+    const registerEndpoint = `${apiBaseUrl}/api/trpc/auth.register?batch=1`;
+    if (__DEV__) {
+      console.log("[Register] Request start", {
+        platform: Platform.OS,
+        envApiBaseUrl: process.env.EXPO_PUBLIC_API_URL ?? null,
+        apiBaseUrl,
+        registerEndpoint,
+        payload: {
+          email: email.trim(),
+          username: username.trim(),
+          hasPassword: Boolean(password),
+        },
+        startedAtIso: new Date(startedAt).toISOString(),
+      });
+    }
     try {
       const result = await registerMutation.mutateAsync({
         email: email.trim(),
         password,
         username: username.trim(),
       });
+      if (__DEV__) {
+        console.log("[Register] Request success", {
+          durationMs: Date.now() - startedAt,
+          userId: result.userId,
+        });
+      }
       
       // Token speichern (SecureStore für native, localStorage für web)
       if (result.token) {
@@ -88,7 +112,13 @@ export default function RegisterScreen() {
       // AuthGuard will automatically redirect to onboarding
       console.log("[Register] Navigation will be handled by AuthGuard");
     } catch (error: any) {
-      console.error("Registration error:", error);
+      const message = error?.message ? String(error.message) : String(error ?? "");
+      console.error("[Register] Request failed", {
+        durationMs: Date.now() - startedAt,
+        timeoutDetected: /timed out|timeout|abort/i.test(message),
+        message,
+        rawError: error,
+      });
       let errorMessage = "Registrierung fehlgeschlagen";
       
       // Zod-Validierungsfehler zuerst prüfen

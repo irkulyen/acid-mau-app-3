@@ -1,6 +1,7 @@
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { Server as HTTPServer } from "http";
-import type { GameState, GameAction, Player } from "../shared/game-types";
+import type { GameState, GameAction, Player, Card } from "../shared/game-types";
+import type { GameFxEvent } from "../shared/socket-contract";
 import type { SeatDrawResult } from "../shared/game-preparation";
 import { applySeatChoices, drawCardsForPlayers, getSeatPickOrderPlayerIds, performDealerSelectionForPlayers } from "../shared/game-preparation";
 import { createGameState, processAction, startGame } from "../shared/game-engine";
@@ -31,6 +32,9 @@ const turnTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
 const eventRateLimits = new Map<string, { count: number; resetAt: number }>();
 const roomCleanupTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
 const blackbirdHistory = new Map<number, BlackbirdEventPayload[]>();
+const gameFxHistory = new Map<number, GameFxEvent[]>();
+const roomFxSequences = new Map<number, number>();
+const roomFxNextStartAt = new Map<number, number>();
 type BlackbirdRuntimeState = {
   lastAnyAt: number;
   lastByType: Partial<Record<BlackbirdEventType, number>>;
@@ -40,6 +44,7 @@ type BlackbirdRuntimeState = {
 const blackbirdRuntime = new Map<number, BlackbirdRuntimeState>();
 let blackbirdSequenceCounter = 0;
 const roomMutationQueues = new Map<number, Promise<void>>();
+const userMutationQueues = new Map<number, Promise<void>>();
 const blockedSocketOrigins = new Set<string>();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -282,6 +287,11 @@ function toMetricSegment(value: string): string {
   return normalized || "unknown";
 }
 
+type UserRoomMembership = {
+  roomId: number;
+  state: GameState;
+};
+
 async function getRoomByCodeWithRetry(roomCode: string, attempts = 3, delayMs = 120) {
   let lastError: unknown = null;
   for (let i = 0; i < attempts; i++) {
@@ -304,6 +314,81 @@ async function getGameStateWithRetry(roomId: number, attempts = 3, delayMs = 120
     if (i < attempts - 1) await sleep(delayMs * (i + 1));
   }
   return undefined;
+}
+
+async function getUserRoomMemberships(userId: number): Promise<UserRoomMembership[]> {
+  const roomIds = await realtimeStore.getAllRoomIds();
+  const memberships: UserRoomMembership[] = [];
+  for (const roomId of roomIds) {
+    const state = await realtimeStore.getGameState(roomId);
+    if (!state) continue;
+    if (state.players.some((player) => player.userId === userId)) {
+      memberships.push({ roomId, state });
+    }
+  }
+  return memberships;
+}
+
+async function getAuthoritativeUserSession(userId: number): Promise<UserRoomMembership | null> {
+  const mappedRoomId = await realtimeStore.getUserRoom(userId);
+  if (mappedRoomId) {
+    const mappedState = await getGameStateWithRetry(mappedRoomId, 2, 80);
+    if (mappedState?.players.some((player) => player.userId === userId)) {
+      return { roomId: mappedRoomId, state: mappedState };
+    }
+    await realtimeStore.deleteUserRoom(userId);
+    telemetry.inc("rooms.mapping_stale_cleared");
+    console.warn(`[socket] Cleared stale user-room mapping userId=${userId} roomId=${mappedRoomId}`);
+  }
+
+  const memberships = await getUserRoomMemberships(userId);
+  if (memberships.length === 1) {
+    await realtimeStore.setUserRoom(userId, memberships[0].roomId);
+    telemetry.inc("rooms.mapping_recovered.scan");
+    return memberships[0];
+  }
+  if (memberships.length > 1) {
+    telemetry.inc("rooms.user_multi_membership_detected");
+    console.error(
+      `[socket] User ${userId} appears in multiple rooms: ${memberships.map((m) => m.roomId).join(", ")}`,
+    );
+  }
+  return null;
+}
+
+async function clearUserRoomMappingIfMatches(userId: number, roomId: number) {
+  const mappedRoomId = await realtimeStore.getUserRoom(userId);
+  if (mappedRoomId === roomId) {
+    await realtimeStore.deleteUserRoom(userId);
+  }
+}
+
+function evictDuplicateUserSocketsInRoom(
+  io: SocketIOServer,
+  roomId: number,
+  userId: number,
+  keepSocketId: string,
+) {
+  const sockets = roomSockets.get(roomId);
+  if (!sockets || sockets.size <= 1) return;
+
+  let evicted = 0;
+  for (const sid of Array.from(sockets)) {
+    if (sid === keepSocketId) continue;
+    if (socketUserMapping.get(sid) !== userId) continue;
+    const staleSocket = io.sockets.sockets.get(sid);
+    staleSocket?.leave(`room-${roomId}`);
+    sockets.delete(sid);
+    socketUserMapping.delete(sid);
+    evicted += 1;
+  }
+
+  if (evicted > 0) {
+    telemetry.inc("rooms.duplicate_user_socket_evicted", evicted);
+    console.warn(
+      `[socket] Evicted ${evicted} duplicate socket(s) for user ${userId} in room ${roomId}; keep=${keepSocketId}`,
+    );
+  }
 }
 
 function isRateLimited(socketId: string, event: string, limit: number, windowMs: number): boolean {
@@ -498,6 +583,181 @@ function pushBlackbirdHistory(roomId: number, events: BlackbirdEventPayload[]) {
   blackbirdHistory.set(roomId, merged);
 }
 
+type GameFxEmitInput = Omit<GameFxEvent, "id" | "roomId" | "sequence" | "emittedAt" | "startAt"> & {
+  startAt?: number;
+};
+
+function nextGameFxSequence(roomId: number): number {
+  const next = (roomFxSequences.get(roomId) ?? 0) + 1;
+  roomFxSequences.set(roomId, next);
+  return next;
+}
+
+function reserveFxStartAt(roomId: number, preferredStartAt?: number, minGapMs = 140): number {
+  const now = Date.now();
+  const baseline = Math.max(now + 40, preferredStartAt ?? now + 120);
+  const lastStartAt = roomFxNextStartAt.get(roomId) ?? 0;
+  const startAt = Math.max(baseline, lastStartAt + minGapMs);
+  roomFxNextStartAt.set(roomId, startAt);
+  return startAt;
+}
+
+function pushGameFxHistory(roomId: number, event: GameFxEvent) {
+  const prev = gameFxHistory.get(roomId) || [];
+  const now = Date.now();
+  const merged = [...prev, event]
+    .filter((entry) => now - entry.emittedAt <= 20_000)
+    .slice(-80);
+  gameFxHistory.set(roomId, merged);
+}
+
+function emitGameFx(io: SocketIOServer, roomId: number, event: GameFxEmitInput, minGapMs = 140): GameFxEvent {
+  const emittedAt = Date.now();
+  const sequence = nextGameFxSequence(roomId);
+  const startAt = typeof event.startAt === "number"
+    ? event.startAt
+    : reserveFxStartAt(roomId, undefined, minGapMs);
+  const previous = roomFxNextStartAt.get(roomId) ?? 0;
+  if (startAt > previous) {
+    roomFxNextStartAt.set(roomId, startAt);
+  }
+  const payload: GameFxEvent = {
+    ...event,
+    id: `fx-${roomId}-${sequence}-${Math.floor(Math.random() * 1000)}`,
+    roomId,
+    sequence,
+    startAt,
+    emittedAt,
+  };
+  pushGameFxHistory(roomId, payload);
+  io.to(`room-${roomId}`).emit("game-fx", payload);
+  telemetry.inc(`fx.${event.type}`);
+  return payload;
+}
+
+function replayGameFxEventsForSocket(socket: Socket, roomId: number) {
+  const now = Date.now();
+  const replayable = (gameFxHistory.get(roomId) || []).filter((event) => now - event.emittedAt <= 12_000);
+  if (replayable.length === 0) return;
+
+  replayable.forEach((event, index) => {
+    const replayEvent: GameFxEvent = {
+      ...event,
+      replay: true,
+      startAt: now + 160 + index * 190,
+    };
+    socket.emit("game-fx", replayEvent);
+  });
+  telemetry.inc("fx.replayed", replayable.length);
+}
+
+function emitCardPlayFx(
+  io: SocketIOServer,
+  roomId: number,
+  data: {
+    card: Card;
+    playerId?: number;
+    userId?: number;
+    playerName?: string;
+    startAt?: number;
+  },
+) {
+  const startAt = reserveFxStartAt(roomId, data.startAt, 160);
+  io.to(`room-${roomId}`).emit("card-play-fx", {
+    card: data.card,
+    playerId: data.playerId,
+    startAt,
+  });
+  emitGameFx(
+    io,
+    roomId,
+    {
+      type: "card_play",
+      card: data.card,
+      playerId: data.playerId,
+      userId: data.userId,
+      playerName: data.playerName,
+      startAt,
+    },
+    10,
+  );
+}
+
+function emitDrawCardFx(
+  io: SocketIOServer,
+  roomId: number,
+  data: {
+    playerId?: number;
+    userId?: number;
+    playerName?: string;
+    drawCount?: number;
+    startAt?: number;
+  },
+) {
+  const startAt = reserveFxStartAt(roomId, data.startAt, 120);
+  io.to(`room-${roomId}`).emit("draw-card-fx", {
+    playerId: data.playerId,
+    drawCount: data.drawCount,
+    startAt,
+  });
+  emitGameFx(
+    io,
+    roomId,
+    {
+      type: "draw_card",
+      playerId: data.playerId,
+      userId: data.userId,
+      playerName: data.playerName,
+      drawCount: data.drawCount,
+      startAt,
+    },
+    10,
+  );
+}
+
+function emitStateTransitionFx(
+  io: SocketIOServer,
+  roomId: number,
+  oldState: GameState,
+  newState: GameState,
+  actorPlayerId?: number,
+) {
+  for (const player of newState.players) {
+    const oldPlayer = oldState.players.find((entry) => entry.id === player.id);
+    if (!oldPlayer) continue;
+    if (!oldPlayer.isEliminated && player.isEliminated) {
+      emitGameFx(io, roomId, {
+        type: "elimination",
+        playerId: player.id,
+        userId: player.userId,
+        playerName: player.username,
+        eliminatedUserId: player.userId,
+        eliminatedPlayerName: player.username,
+      }, 220);
+    }
+  }
+
+  if (oldState.phase === "round_end" && newState.phase === "playing" && newState.roundNumber > oldState.roundNumber) {
+    emitGameFx(io, roomId, {
+      type: "round_transition",
+      roundNumber: newState.roundNumber,
+      playerId: actorPlayerId,
+    }, 240);
+  }
+
+  if (oldState.phase !== "game_end" && newState.phase === "game_end") {
+    const winner = newState.players.find((player) => !player.isEliminated);
+    emitGameFx(io, roomId, {
+      type: "match_result",
+      roundNumber: newState.roundNumber,
+      winnerUserId: winner?.userId,
+      winnerPlayerName: winner?.username,
+      playerId: winner?.id,
+      playerName: winner?.username,
+    }, 240);
+  }
+}
+
 function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<Omit<BlackbirdEventPayload, "id" | "emittedAt">>) {
   if (!ENV.enableBlackbirdEvents) return;
   if (events.length === 0) return;
@@ -508,13 +768,13 @@ function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<O
   const sequenceId = hasSequence ? `seq-${roomId}-${++blackbirdSequenceCounter}` : undefined;
 
   const normalized: BlackbirdEventPayload[] = accepted.map((event, index) => {
-    const startAt = event.startAt ?? (now + 220 + index * 900);
+    const startAt = reserveFxStartAt(roomId, event.startAt ?? (now + 220 + index * 900), 520);
     return {
       ...event,
       id: `bb-${roomId}-${now}-${index}-${Math.floor(Math.random() * 1000)}`,
       sequenceId,
       sequenceStep: hasSequence ? index + 1 : undefined,
-      sequenceTotal: hasSequence ? events.length : undefined,
+      sequenceTotal: hasSequence ? accepted.length : undefined,
       startAt,
       intensity: event.intensity ?? deriveEventIntensity(event),
       variant: event.variant ?? deriveVariant(event),
@@ -526,6 +786,14 @@ function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<O
   pushBlackbirdHistory(roomId, normalized);
   for (const payload of normalized) {
     io.to(`room-${roomId}`).emit("blackbird-event", payload);
+    const { emittedAt, ...blackbirdEvent } = payload;
+    emitGameFx(io, roomId, {
+      type: "blackbird",
+      userId: payload.spotlightUserId,
+      playerName: payload.spotlightPlayerName ?? payload.playerName,
+      startAt: payload.startAt,
+      blackbird: blackbirdEvent,
+    }, 30);
     telemetry.inc("blackbird.emitted");
   }
   if (hasSequence) telemetry.inc("blackbird.sequences");
@@ -575,6 +843,26 @@ async function withRoomMutation<T>(roomId: number, task: () => Promise<T>): Prom
   }
 }
 
+async function withUserMutation<T>(userId: number, task: () => Promise<T>): Promise<T> {
+  const previous = userMutationQueues.get(userId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.catch(() => undefined).then(() => current);
+  userMutationQueues.set(userId, queued);
+
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+    if (userMutationQueues.get(userId) === queued) {
+      userMutationQueues.delete(userId);
+    }
+  }
+}
+
 function scheduleRoomCleanup(roomId: number, delayMs = 30 * 60 * 1000) {
   cancelRoomCleanup(roomId);
   const timeout = setTimeout(() => {
@@ -603,6 +891,9 @@ function scheduleRoomCleanup(roomId: number, delayMs = 30 * 60 * 1000) {
     await realtimeStore.deletePreparation(roomId);
     blackbirdHistory.delete(roomId);
     blackbirdRuntime.delete(roomId);
+    gameFxHistory.delete(roomId);
+    roomFxSequences.delete(roomId);
+    roomFxNextStartAt.delete(roomId);
 
     // Clear room-related user mappings
     for (const [uid, mappedRoomId] of await realtimeStore.getUserMappings()) {
@@ -689,12 +980,45 @@ async function executeBotTurn(io: SocketIOServer, roomId: number) {
 
       const newState = processAction(state, action, currentPlayer.id);
       await realtimeStore.setGameState(roomId, newState);
-      return { previousState: state, newState, botName: currentPlayer.username };
+      return {
+        previousState: state,
+        newState,
+        action,
+        actorPlayerId: currentPlayer.id,
+        actorUserId: currentPlayer.userId,
+        actorPlayerName: currentPlayer.username,
+      };
     });
 
     if (!result) return;
 
+    if (result.action.type === "PLAY_CARD") {
+      const prevTop = result.previousState.discardPile[result.previousState.discardPile.length - 1];
+      const nextTop = result.newState.discardPile[result.newState.discardPile.length - 1];
+      if (nextTop && (!prevTop || prevTop.id !== nextTop.id)) {
+        emitCardPlayFx(io, roomId, {
+          card: nextTop,
+          playerId: result.actorPlayerId,
+          userId: result.actorUserId,
+          playerName: result.actorPlayerName,
+          startAt: Date.now() + 130,
+        });
+      }
+    } else if (result.action.type === "DRAW_CARD") {
+      const actorBefore = result.previousState.players.find((player) => player.id === result.actorPlayerId);
+      const actorAfter = result.newState.players.find((player) => player.id === result.actorPlayerId);
+      const drawCount = Math.max(1, (actorAfter?.hand.length ?? 0) - (actorBefore?.hand.length ?? 0));
+      emitDrawCardFx(io, roomId, {
+        playerId: result.actorPlayerId,
+        userId: result.actorUserId,
+        playerName: result.actorPlayerName,
+        drawCount,
+        startAt: Date.now() + 90,
+      });
+    }
+
     detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.newState);
+    emitStateTransitionFx(io, roomId, result.previousState, result.newState, result.actorPlayerId);
     broadcastFilteredState(io, roomId, result.newState);
     checkAndScheduleBotTurn(io, roomId, result.newState);
 
@@ -754,12 +1078,29 @@ function scheduleDisconnectedPlayerTimeout(io: SocketIOServer, roomId: number, s
           console.log(`[socket] Auto-drawing for disconnected player ${player.username}`);
           const newState = processAction(currentState, { type: "DRAW_CARD" }, player.id);
           await realtimeStore.setGameState(roomId, newState);
-          return { previousState: currentState, newState };
+          return {
+            previousState: currentState,
+            newState,
+            actorPlayerId: player.id,
+            actorUserId: player.userId,
+            actorPlayerName: player.username,
+          };
         });
 
         if (!result) return;
 
+        const actorBefore = result.previousState.players.find((entry) => entry.id === result.actorPlayerId);
+        const actorAfter = result.newState.players.find((entry) => entry.id === result.actorPlayerId);
+        const drawCount = Math.max(1, (actorAfter?.hand.length ?? 0) - (actorBefore?.hand.length ?? 0));
+        emitDrawCardFx(io, roomId, {
+          playerId: result.actorPlayerId,
+          userId: result.actorUserId,
+          playerName: result.actorPlayerName,
+          drawCount,
+          startAt: Date.now() + 80,
+        });
         detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.newState);
+        emitStateTransitionFx(io, roomId, result.previousState, result.newState, result.actorPlayerId);
         broadcastFilteredState(io, roomId, result.newState);
         checkAndScheduleBotTurn(io, roomId, result.newState);
 
@@ -803,6 +1144,7 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
             if (result.updatedState.phase === "playing" && result.previousState.phase === "round_end") {
               detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
             }
+            emitStateTransitionFx(io, roomId, result.previousState, result.updatedState, bot.id);
             broadcastFilteredState(io, roomId, result.updatedState);
             console.log(`[socket] Bot ${bot.username} auto-READY in room ${roomId}`);
           } catch (error) {
@@ -834,6 +1176,7 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
           if (result.updatedState.phase === "playing" && result.previousState.phase === "round_end") {
             detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
           }
+          emitStateTransitionFx(io, roomId, result.previousState, result.updatedState, human.id);
           broadcastFilteredState(io, roomId, result.updatedState);
           console.log(`[socket] Auto-READY for disconnected player ${human.username} in room ${roomId}`);
         } catch (error) {
@@ -855,12 +1198,14 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
           const nonEliminated = currentState.players.filter(p => !p.isEliminated);
           const allReady = nonEliminated.every(p => p.isReady);
           if (!allReady || nonEliminated.length === 0) return null;
-          const updatedState = processAction(currentState, { type: "NEXT_ROUND" }, nonEliminated[0].id);
+          const actorPlayerId = nonEliminated[0].id;
+          const updatedState = processAction(currentState, { type: "NEXT_ROUND" }, actorPlayerId);
           await realtimeStore.setGameState(roomId, updatedState);
-          return { previousState: currentState, updatedState };
+          return { previousState: currentState, updatedState, actorPlayerId };
         });
         if (!result) return;
         detectAndBroadcastBlackbirdEvents(io, roomId, result.previousState, result.updatedState);
+        emitStateTransitionFx(io, roomId, result.previousState, result.updatedState, result.actorPlayerId);
         broadcastFilteredState(io, roomId, result.updatedState);
         checkAndScheduleBotTurn(io, roomId, result.updatedState);
         console.log(`[socket] Failsafe triggered NEXT_ROUND in room ${roomId}`);
@@ -1260,43 +1605,46 @@ export function setupGameSocket(httpServer: HTTPServer) {
       "reconnect-room",
       async (data: { userId?: number; roomCode?: string; roomId?: number; playerId?: number; username?: string }) => {
       try {
-        if (isRateLimited(socket.id, "reconnect-room", 10, 10_000)) {
-          socket.emit("error", { message: "Too many reconnect attempts" });
-          return;
-        }
+        await withUserMutation(authenticatedUserId, async () => {
+          if (isRateLimited(socket.id, "reconnect-room", 10, 10_000)) {
+            socket.emit("error", { message: "Too many reconnect attempts" });
+            return;
+          }
 
-        const userId = authenticatedUserId;
-        const requestedRoomId = parsePositiveInt(data.roomId);
-        const requestedPlayerId = parsePositiveInt(data.playerId);
+          const userId = authenticatedUserId;
+          const requestedRoomId = parsePositiveInt(data.roomId);
+          const requestedPlayerId = parsePositiveInt(data.playerId);
+          const requestedRoomCode = normalizeRoomCode(data.roomCode);
 
-        // Track socket → user mapping
-        socketUserMapping.set(socket.id, userId);
+          console.log(
+            `[socket] reconnect-room request userId=${userId} socketId=${socket.id} roomCode=${requestedRoomCode ?? "-"} roomId=${requestedRoomId ?? "-"} playerId=${requestedPlayerId ?? "-"}`,
+          );
 
-        // Check if user has an active session mapping.
-        let roomId = await realtimeStore.getUserRoom(userId);
-        let gameState = roomId ? await getGameStateWithRetry(roomId) : undefined;
+          // Track socket → user mapping
+          socketUserMapping.set(socket.id, userId);
 
-        // Recovery fallback 1: roomId + playerId hint from client.
-        if ((!roomId || !gameState) && requestedRoomId) {
-          const stateByRoomId = await getGameStateWithRetry(requestedRoomId, 3, 120);
-          if (stateByRoomId) {
-            const playerByUser = stateByRoomId.players.find((p) => p.userId === userId);
-            const playerIdMatches = !requestedPlayerId || playerByUser?.id === requestedPlayerId;
-            if (playerByUser && playerIdMatches) {
-              roomId = requestedRoomId;
-              gameState = stateByRoomId;
-              await realtimeStore.setUserRoom(userId, requestedRoomId);
-              telemetry.inc("rooms.reconnect_mapping_recovered.room_id");
+          // Check if user has an active session mapping.
+          let roomId = await realtimeStore.getUserRoom(userId);
+          let gameState = roomId ? await getGameStateWithRetry(roomId) : undefined;
+
+          // Recovery fallback 1: roomId + playerId hint from client.
+          if ((!roomId || !gameState) && requestedRoomId) {
+            const stateByRoomId = await getGameStateWithRetry(requestedRoomId, 3, 120);
+            if (stateByRoomId) {
+              const playerByUser = stateByRoomId.players.find((p) => p.userId === userId);
+              const playerIdMatches = !requestedPlayerId || playerByUser?.id === requestedPlayerId;
+              if (playerByUser && playerIdMatches) {
+                roomId = requestedRoomId;
+                gameState = stateByRoomId;
+                await realtimeStore.setUserRoom(userId, requestedRoomId);
+                telemetry.inc("rooms.reconnect_mapping_recovered.room_id");
+              }
             }
           }
-        }
 
-        // Fallback recovery if mapping is missing/stale: try roomCode from client storage,
-        // but only restore mapping if this user is already part of that room state.
-        if (!roomId || !gameState) {
-          const fallbackRoomCode = normalizeRoomCode(data.roomCode);
-          if (fallbackRoomCode) {
-            const fallbackRoom = await getRoomByCodeWithRetry(fallbackRoomCode, 3, 120);
+          // Recovery fallback 2: roomCode from client storage.
+          if ((!roomId || !gameState) && requestedRoomCode) {
+            const fallbackRoom = await getRoomByCodeWithRetry(requestedRoomCode, 3, 120);
             if (fallbackRoom) {
               const fallbackState = await getGameStateWithRetry(fallbackRoom.id, 3, 120);
               const isMember = Boolean(fallbackState?.players.some((p) => p.userId === userId));
@@ -1308,82 +1656,105 @@ export function setupGameSocket(httpServer: HTTPServer) {
               }
             }
           }
-        }
 
-        if (!roomId) {
-          socket.emit("error", { message: "No active session found" });
-          return;
-        }
-
-        // Check if game still exists
-        gameState = gameState ?? (await getGameStateWithRetry(roomId));
-        if (!gameState) {
-          const roomStillExists = await roomManager.getRoomById(roomId).catch(() => null);
-          if (!roomStillExists) {
-            await realtimeStore.deleteUserRoom(userId);
-            socket.emit("error", { message: "Game no longer exists" });
-          } else {
-            socket.emit("error", { message: "Session temporarily unavailable. Please retry." });
+          // Recovery fallback 3: full authoritative scan.
+          if (!roomId || !gameState) {
+            const authoritative = await getAuthoritativeUserSession(userId);
+            if (authoritative) {
+              roomId = authoritative.roomId;
+              gameState = authoritative.state;
+              if (requestedRoomCode && authoritative.state.roomCode !== requestedRoomCode) {
+                telemetry.inc("rooms.reconnect_hint_mismatch");
+                console.warn(
+                  `[socket] reconnect-room hint mismatch userId=${userId}: requestedCode=${requestedRoomCode}, authoritativeCode=${authoritative.state.roomCode}`,
+                );
+              }
+            } else if (!gameState) {
+              // Avoid keeping a stale roomId hint from old mappings when no
+              // authoritative membership can be recovered anymore.
+              roomId = undefined;
+            }
           }
-          return;
-        }
-        const playerInState = gameState.players.find((p) => p.userId === userId);
-        if (!playerInState) {
-          await realtimeStore.deleteUserRoom(userId);
-          socket.emit("error", { message: "Player not found in game" });
-          return;
-        }
 
-        // Cancel disconnect timeout
-        const timeout = disconnectTimeouts.get(userId);
-        if (timeout) {
-          clearTimeout(timeout);
-          disconnectTimeouts.delete(userId);
-          console.log(`[socket] Cancelled disconnect timeout for user ${userId}`);
-        }
+          if (!roomId) {
+            socket.emit("error", { message: "No active session found" });
+            console.warn(`[socket] reconnect-room rejected userId=${userId}: no active session`);
+            return;
+          }
 
-        // Rejoin socket room (single tracked room per socket)
-        attachSocketToTrackedRoom(socket, roomId);
-        cancelRoomCleanup(roomId);
+          // Check if game still exists
+          gameState = gameState ?? (await getGameStateWithRetry(roomId));
+          if (!gameState) {
+            const roomStillExists = await roomManager.getRoomById(roomId).catch(() => null);
+            if (!roomStillExists) {
+              await clearUserRoomMappingIfMatches(userId, roomId);
+              socket.emit("error", { message: "Game no longer exists" });
+            } else {
+              socket.emit("error", { message: "Session temporarily unavailable. Please retry." });
+            }
+            return;
+          }
+          const playerInState = gameState.players.find((p) => p.userId === userId);
+          if (!playerInState) {
+            await clearUserRoomMappingIfMatches(userId, roomId);
+            socket.emit("error", { message: "Player not found in game" });
+            return;
+          }
 
-        // If preparation is pending, send preparation data to reconnected player
-        const prepData = await realtimeStore.getPreparation(roomId);
-        if (prepData) {
-          socket.emit("game-preparation", toPreparationPayload(prepData as PendingPreparation));
-          console.log(`[socket] Sent pending preparation data to reconnected user ${userId}`);
-        }
+          // Cancel disconnect timeout
+          const timeout = disconnectTimeouts.get(userId);
+          if (timeout) {
+            clearTimeout(timeout);
+            disconnectTimeouts.delete(userId);
+            console.log(`[socket] Cancelled disconnect timeout for user ${userId}`);
+          }
 
-        // Send filtered game state to reconnected player
-        socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
-        socket.emit("room-joined", {
-          roomId,
-          roomCode: gameState.roomCode,
-          maxPlayers: gameState.maxPlayers ?? 5,
+          // Rejoin socket room (single tracked room per socket)
+          attachSocketToTrackedRoom(socket, roomId);
+          evictDuplicateUserSocketsInRoom(io, roomId, userId, socket.id);
+          cancelRoomCleanup(roomId);
+          await realtimeStore.setUserRoom(userId, roomId);
+
+          // If preparation is pending, send preparation data to reconnected player
+          const prepData = await realtimeStore.getPreparation(roomId);
+          if (prepData) {
+            socket.emit("game-preparation", toPreparationPayload(prepData as PendingPreparation));
+            console.log(`[socket] Sent pending preparation data to reconnected user ${userId}`);
+          }
+
+          // Send filtered game state to reconnected player
+          socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+          socket.emit("room-joined", {
+            roomId,
+            roomCode: gameState.roomCode,
+            maxPlayers: gameState.maxPlayers ?? 5,
+          });
+          replayGameFxEventsForSocket(socket, roomId);
+          replayBlackbirdEventsForSocket(socket, roomId);
+
+          // Send chat history
+          try {
+            const chatHistory = await db.getRoomChatMessages(roomId);
+            socket.emit("chat:history", chatHistory);
+            socket.emit("chat-history", chatHistory);
+          } catch (e) {
+            console.error("[socket] Error sending chat history on reconnect:", e);
+          }
+
+          console.log(`[socket] User ${userId} reconnected to room ${roomId}`);
+          telemetry.inc("rooms.reconnect_success");
+
+          // If it's this player's turn, clear any auto-draw timeout
+          const currentTurnPlayer = gameState.players[gameState.currentPlayerIndex];
+          if (currentTurnPlayer && currentTurnPlayer.userId === userId && gameState.phase === "playing") {
+            const existingTurnTimeout = turnTimeouts.get(roomId);
+            if (existingTurnTimeout) {
+              clearTimeout(existingTurnTimeout);
+              turnTimeouts.delete(roomId);
+              console.log(`[socket] Cleared auto-draw timeout for reconnected player ${userId}`);
+            }
+          }
         });
-        replayBlackbirdEventsForSocket(socket, roomId);
-
-        // Send chat history
-        try {
-          const chatHistory = await db.getRoomChatMessages(roomId);
-          socket.emit("chat:history", chatHistory);
-          socket.emit("chat-history", chatHistory);
-        } catch (e) {
-          console.error("[socket] Error sending chat history on reconnect:", e);
-        }
-
-        console.log(`[socket] User ${userId} reconnected to room ${roomId}`);
-        telemetry.inc("rooms.reconnect_success");
-
-        // If it's this player's turn, clear any auto-draw timeout
-        const currentTurnPlayer = gameState.players[gameState.currentPlayerIndex];
-        if (currentTurnPlayer && currentTurnPlayer.userId === userId && gameState.phase === "playing") {
-          const existingTurnTimeout = turnTimeouts.get(roomId);
-          if (existingTurnTimeout) {
-            clearTimeout(existingTurnTimeout);
-            turnTimeouts.delete(roomId);
-            console.log(`[socket] Cleared auto-draw timeout for reconnected player ${userId}`);
-          }
-        }
       } catch (error) {
         console.error("[socket] Error reconnecting:", error);
         telemetry.inc("errors.reconnect_room");
@@ -1394,95 +1765,130 @@ export function setupGameSocket(httpServer: HTTPServer) {
     // Create a new game room
     socket.on("create-room", async (data: { userId?: number; username: string; maxPlayers?: number; isPrivate?: boolean }) => {
       try {
-        if (isRateLimited(socket.id, "create-room", 3, 10_000)) {
-          socket.emit("error", { message: "Too many room create attempts" });
-          return;
-        }
+        await withUserMutation(authenticatedUserId, async () => {
+          if (isRateLimited(socket.id, "create-room", 3, 10_000)) {
+            socket.emit("error", { message: "Too many room create attempts" });
+            return;
+          }
 
-        const userId = authenticatedUserId;
-        const safeUsername = sanitizeUsername(data.username);
-        if (!safeUsername) {
-          socket.emit("error", { message: "Invalid username" });
-          return;
-        }
-        const maxPlayers = typeof data.maxPlayers === "number" ? data.maxPlayers : 5;
-        const isPrivate = data.isPrivate === true;
-        if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > 6) {
-          socket.emit("error", { message: "Invalid maxPlayers value" });
-          return;
-        }
+          const userId = authenticatedUserId;
+          const safeUsername = sanitizeUsername(data.username);
+          if (!safeUsername) {
+            socket.emit("error", { message: "Invalid username" });
+            return;
+          }
+          const maxPlayers = typeof data.maxPlayers === "number" ? data.maxPlayers : 5;
+          const isPrivate = data.isPrivate === true;
+          if (!Number.isInteger(maxPlayers) || maxPlayers < 2 || maxPlayers > 6) {
+            socket.emit("error", { message: "Invalid maxPlayers value" });
+            return;
+          }
 
-        const existingRoomId = await realtimeStore.getUserRoom(userId);
-        if (existingRoomId && (await realtimeStore.getGameState(existingRoomId))) {
-          socket.emit("error", { message: "User already has an active room session" });
-          return;
-        }
+          console.log(
+            `[socket] create-room request userId=${userId} socketId=${socket.id} username=${safeUsername} maxPlayers=${maxPlayers} isPrivate=${isPrivate}`,
+          );
 
-        // Track socket → user mapping
-        socketUserMapping.set(socket.id, userId);
+          const authoritativeSession = await getAuthoritativeUserSession(userId);
+          if (authoritativeSession) {
+            const existingPlayer = authoritativeSession.state.players.find((player) => player.userId === userId);
+            const canReuseExistingHostRoom = Boolean(
+              existingPlayer &&
+              authoritativeSession.state.hostUserId === userId &&
+              authoritativeSession.state.phase === "waiting",
+            );
 
-        // Generiere eindeutigen Room-Code
-        let roomCode: string;
-        let room = null;
-        let attempts = 0;
-        do {
-          roomCode = roomManager.generateRoomCode();
-          room = await roomManager.getRoomByCode(roomCode);
-          attempts++;
-        } while (room && attempts < 10);
+            if (!canReuseExistingHostRoom) {
+              socket.emit("error", { message: "User already has an active room session" });
+              return;
+            }
 
-        if (room) {
-          socket.emit("error", { message: "Failed to generate unique room code" });
-          return;
-        }
+            socketUserMapping.set(socket.id, userId);
+            attachSocketToTrackedRoom(socket, authoritativeSession.roomId);
+            evictDuplicateUserSocketsInRoom(io, authoritativeSession.roomId, userId, socket.id);
+            cancelRoomCleanup(authoritativeSession.roomId);
+            await realtimeStore.setUserRoom(userId, authoritativeSession.roomId);
 
-        // Erstelle Raum
-        const newRoom = await roomManager.createRoom({
-          roomCode,
-          hostUserId: userId,
-          maxPlayers,
-          isPrivate,
+            socket.emit("room-created", {
+              roomId: authoritativeSession.roomId,
+              roomCode: authoritativeSession.state.roomCode,
+              maxPlayers: authoritativeSession.state.maxPlayers ?? 5,
+            });
+            socket.emit("game-state-update", filterStateForPlayer(authoritativeSession.state, userId));
+            broadcastFilteredState(io, authoritativeSession.roomId, authoritativeSession.state);
+            telemetry.inc("rooms.create_idempotent_reused");
+            console.log(
+              `[socket] create-room idempotent reuse userId=${userId} roomId=${authoritativeSession.roomId} roomCode=${authoritativeSession.state.roomCode}`,
+            );
+            return;
+          }
+
+          // Track socket → user mapping
+          socketUserMapping.set(socket.id, userId);
+
+          // Generiere eindeutigen Room-Code
+          let roomCode: string;
+          let room = null;
+          let attempts = 0;
+          do {
+            roomCode = roomManager.generateRoomCode();
+            room = await roomManager.getRoomByCode(roomCode);
+            attempts++;
+          } while (room && attempts < 10);
+
+          if (room) {
+            socket.emit("error", { message: "Failed to generate unique room code" });
+            return;
+          }
+
+          // Erstelle Raum
+          const newRoom = await roomManager.createRoom({
+            roomCode,
+            hostUserId: userId,
+            maxPlayers,
+            isPrivate,
+          });
+
+          const roomId = newRoom.id;
+          const avatarUrl = await getUserAvatarUrl(userId);
+
+          // Erstelle GameState
+          const player: Player = {
+            id: 1,
+            userId,
+            username: safeUsername,
+            avatarUrl,
+            hand: [],
+            lossPoints: 0,
+            isEliminated: false,
+            isReady: false,
+          };
+
+          const gameState = createGameState(roomId, roomCode, [player], userId, maxPlayers);
+          await realtimeStore.setGameState(roomId, gameState);
+
+          // Join socket room (single tracked room per socket)
+          attachSocketToTrackedRoom(socket, roomId);
+          evictDuplicateUserSocketsInRoom(io, roomId, userId, socket.id);
+          cancelRoomCleanup(roomId);
+
+          // Track user → room mapping
+          await realtimeStore.setUserRoom(userId, roomId);
+
+          // Sende Raum-Info und GameState
+          socket.emit("room-created", {
+            roomId,
+            roomCode,
+            maxPlayers,
+          });
+
+          // Always send a direct state snapshot to the creator socket.
+          // This avoids waiting-screen stalls if room broadcast delivery is delayed.
+          socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+          broadcastFilteredState(io, roomId, gameState);
+
+          console.log(`[socket] Room created: ${roomCode} (${roomId}) by ${safeUsername} (${userId})`);
+          telemetry.inc("rooms.created");
         });
-
-        const roomId = newRoom.id;
-        const avatarUrl = await getUserAvatarUrl(userId);
-
-        // Erstelle GameState
-        const player: Player = {
-          id: 1,
-          userId,
-          username: safeUsername,
-          avatarUrl,
-          hand: [],
-          lossPoints: 0,
-          isEliminated: false,
-          isReady: false,
-        };
-
-        const gameState = createGameState(roomId, roomCode, [player], userId, maxPlayers);
-        await realtimeStore.setGameState(roomId, gameState);
-
-        // Join socket room (single tracked room per socket)
-        attachSocketToTrackedRoom(socket, roomId);
-        cancelRoomCleanup(roomId);
-
-        // Track user → room mapping
-        await realtimeStore.setUserRoom(userId, roomId);
-
-        // Sende Raum-Info und GameState
-        socket.emit("room-created", {
-          roomId,
-          roomCode,
-          maxPlayers,
-        });
-
-        // Always send a direct state snapshot to the creator socket.
-        // This avoids waiting-screen stalls if room broadcast delivery is delayed.
-        socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
-        broadcastFilteredState(io, roomId, gameState);
-
-        console.log(`[socket] Room created: ${roomCode} (${roomId}) by ${safeUsername} (${userId})`);
-        telemetry.inc("rooms.created");
       } catch (error) {
         console.error("[socket] Error creating room:", error);
         telemetry.inc("errors.create_room");
@@ -1493,142 +1899,163 @@ export function setupGameSocket(httpServer: HTTPServer) {
     // Join a game room
     socket.on("join-room", async (data: { roomCode: string; userId?: number; username: string }) => {
       try {
-        if (isRateLimited(socket.id, "join-room", 12, 10_000)) {
-          emitJoinFailed(socket, "Too many join attempts", "RATE_LIMIT");
-          return;
-        }
-
-        const userId = authenticatedUserId;
-        const roomCode = normalizeRoomCode(data.roomCode);
-        const username = sanitizeUsername(data.username);
-        if (!roomCode) {
-          emitJoinFailed(socket, "Invalid room code", "INVALID_ROOM_CODE");
-          return;
-        }
-        if (!username) {
-          emitJoinFailed(socket, "Invalid username", "INVALID_USERNAME");
-          return;
-        }
-
-        const existingRoomId = await realtimeStore.getUserRoom(userId);
-        if (existingRoomId && (await realtimeStore.getGameState(existingRoomId))) {
-          const existingState = await realtimeStore.getGameState(existingRoomId);
-          if (existingState && existingState.roomCode !== roomCode) {
-            emitJoinFailed(socket, "User already in another active room", "USER_IN_OTHER_ROOM");
+        await withUserMutation(authenticatedUserId, async () => {
+          if (isRateLimited(socket.id, "join-room", 12, 10_000)) {
+            emitJoinFailed(socket, "Too many join attempts", "RATE_LIMIT");
             return;
           }
-        }
 
-        // Track socket → user mapping
-        socketUserMapping.set(socket.id, userId);
-
-        // Find or create room (with fallback)
-        let room = await getRoomByCodeWithRetry(roomCode, 4, 140);
-
-        if (!room) {
-          emitJoinFailed(socket, "Room not found", "ROOM_NOT_FOUND");
-          return;
-        }
-
-        const roomId = room.id;
-        const avatarUrl = await getUserAvatarUrl(userId);
-        const gameState = await withRoomMutation(roomId, async () => {
-          const pendingTimeout = disconnectTimeouts.get(userId);
-          if (pendingTimeout) {
-            clearTimeout(pendingTimeout);
-            disconnectTimeouts.delete(userId);
-            console.log(`[socket] Cancelled disconnect timeout for rejoining user ${userId}`);
+          const userId = authenticatedUserId;
+          const roomCode = normalizeRoomCode(data.roomCode);
+          const username = sanitizeUsername(data.username);
+          if (!roomCode) {
+            emitJoinFailed(socket, "Invalid room code", "INVALID_ROOM_CODE");
+            return;
+          }
+          if (!username) {
+            emitJoinFailed(socket, "Invalid username", "INVALID_USERNAME");
+            return;
           }
 
-          let currentState = await getGameStateWithRetry(roomId, 4, 120);
+          console.log(
+            `[socket] join-room request userId=${userId} socketId=${socket.id} roomCode=${roomCode} username=${username}`,
+          );
 
-          if (!currentState) {
-            // Avoid destructive cleanup on transient store lag/outage.
-            // Let reconciliation clean stale rooms out-of-band.
-            throw new Error("Session temporarily unavailable. Please retry.");
+          // Track socket → user mapping
+          socketUserMapping.set(socket.id, userId);
+
+          const authoritativeSession = await getAuthoritativeUserSession(userId);
+
+          // Find room
+          const room = await getRoomByCodeWithRetry(roomCode, 4, 140);
+          if (!room) {
+            emitJoinFailed(socket, "Room not found", "ROOM_NOT_FOUND");
+            return;
           }
 
-          const existingPlayer = currentState.players.find((p) => p.userId === userId);
-          if (!existingPlayer) {
-            if (currentState.phase !== "waiting") {
-              throw new Error("Game already in progress");
+          const roomId = room.id;
+          if (authoritativeSession && authoritativeSession.roomId !== roomId) {
+            emitJoinFailed(socket, "User already in another active room", "USER_IN_OTHER_ROOM");
+            console.warn(
+              `[socket] join-room rejected userId=${userId} requestedRoomId=${roomId} existingRoomId=${authoritativeSession.roomId}`,
+            );
+            return;
+          }
+
+          const avatarUrl = await getUserAvatarUrl(userId);
+          const gameState = await withRoomMutation(roomId, async () => {
+            const pendingTimeout = disconnectTimeouts.get(userId);
+            if (pendingTimeout) {
+              clearTimeout(pendingTimeout);
+              disconnectTimeouts.delete(userId);
+              console.log(`[socket] Cancelled disconnect timeout for rejoining user ${userId}`);
             }
 
-            const maxPlayers = currentState.maxPlayers ?? room.maxPlayers ?? 5;
-            if (currentState.players.length >= maxPlayers) {
-              throw new Error("Room is full");
+            let currentState = await getGameStateWithRetry(roomId, 4, 120);
+
+            if (!currentState) {
+              const roomCreatedAtMs = new Date(room.createdAt as unknown as string | number | Date).getTime();
+              const roomAgeMs = Number.isFinite(roomCreatedAtMs) ? Date.now() - roomCreatedAtMs : 0;
+              const trackedSocketCount = roomSockets.get(roomId)?.size ?? 0;
+
+              // Stale DB rooms can survive process restarts while realtime state is gone.
+              // Clean these up once they are clearly old and inactive, then report ROOM_NOT_FOUND.
+              if (roomAgeMs > 10_000 && trackedSocketCount === 0) {
+                await roomManager.deleteRoom(roomId).catch((cleanupError) => {
+                  console.warn(`[socket] Failed stale room cleanup for room ${roomId}:`, cleanupError);
+                });
+                telemetry.inc("rooms.stale_db_room_cleaned");
+                throw new Error("Room not found");
+              }
+
+              // Keep transient-store errors distinguishable from invalid room codes.
+              throw new Error("Session temporarily unavailable. Please retry.");
             }
 
-            const newPlayer: Player = {
-              id: getNextPlayerId(currentState.players),
-              userId,
-              username,
-              avatarUrl,
-              hand: [],
-              lossPoints: 0,
-              isEliminated: false,
-              isReady: false,
-            };
+            const existingPlayer = currentState.players.find((p) => p.userId === userId);
+            if (!existingPlayer) {
+              if (currentState.phase !== "waiting") {
+                throw new Error("Game already in progress");
+              }
 
-            currentState = {
-              ...currentState,
-              players: [...currentState.players, newPlayer],
-            };
-            await realtimeStore.setGameState(roomId, currentState);
+              const maxPlayers = currentState.maxPlayers ?? room.maxPlayers ?? 5;
+              if (currentState.players.length >= maxPlayers) {
+                throw new Error("Room is full");
+              }
+
+              const newPlayer: Player = {
+                id: getNextPlayerId(currentState.players),
+                userId,
+                username,
+                avatarUrl,
+                hand: [],
+                lossPoints: 0,
+                isEliminated: false,
+                isReady: false,
+              };
+
+              currentState = {
+                ...currentState,
+                players: [...currentState.players, newPlayer],
+              };
+              await realtimeStore.setGameState(roomId, currentState);
+              return currentState;
+            }
+
+            if ((existingPlayer.username !== username && username) || existingPlayer.avatarUrl !== avatarUrl) {
+              currentState = {
+                ...currentState,
+                players: currentState.players.map(p =>
+                  p.userId === userId ? { ...p, username, avatarUrl } : p
+                ),
+              };
+              await realtimeStore.setGameState(roomId, currentState);
+              console.log(`[socket] Updated profile for user ${userId}: ${existingPlayer.username} -> ${username}`);
+            }
+
             return currentState;
+          });
+
+          // Join socket room (single tracked room per socket)
+          attachSocketToTrackedRoom(socket, roomId);
+          evictDuplicateUserSocketsInRoom(io, roomId, userId, socket.id);
+          cancelRoomCleanup(roomId);
+
+          // Track user → room mapping for reconnect
+          await realtimeStore.setUserRoom(userId, roomId);
+
+          // Send chat history
+          try {
+            const chatHistory = await db.getRoomChatMessages(roomId);
+            socket.emit("chat:history", chatHistory);
+            socket.emit("chat-history", chatHistory);
+          } catch (e) {
+            console.error("[socket] Error sending chat history:", e);
           }
 
-          if ((existingPlayer.username !== username && username) || existingPlayer.avatarUrl !== avatarUrl) {
-            currentState = {
-              ...currentState,
-              players: currentState.players.map(p =>
-                p.userId === userId ? { ...p, username, avatarUrl } : p
-              ),
-            };
-            await realtimeStore.setGameState(roomId, currentState);
-            console.log(`[socket] Updated profile for user ${userId}: ${existingPlayer.username} -> ${username}`);
+          const prepData = await realtimeStore.getPreparation(roomId);
+          if (prepData) {
+            socket.emit("game-preparation", toPreparationPayload(prepData as PendingPreparation));
           }
 
-          return currentState;
+          // Broadcast updated state to all players
+          broadcastFilteredState(io, roomId, gameState);
+          // Always send a direct state snapshot to the joining socket.
+          // This avoids waiting-screen stalls if room broadcast delivery is delayed.
+          socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+          socket.emit("room-joined", {
+            roomId,
+            roomCode,
+            maxPlayers: gameState.maxPlayers ?? room.maxPlayers ?? 5,
+          });
+          if (gameState.phase !== "waiting") {
+            replayGameFxEventsForSocket(socket, roomId);
+            replayBlackbirdEventsForSocket(socket, roomId);
+          }
+
+          console.log(`[socket] User ${username} (${userId}) joined room ${roomCode} (${roomId})`);
+          telemetry.inc("rooms.joined");
         });
-
-        // Join socket room (single tracked room per socket)
-        attachSocketToTrackedRoom(socket, roomId);
-        cancelRoomCleanup(roomId);
-
-        // Track user → room mapping for reconnect
-        await realtimeStore.setUserRoom(userId, roomId);
-
-        // Send chat history
-        try {
-          const chatHistory = await db.getRoomChatMessages(roomId);
-          socket.emit("chat:history", chatHistory);
-          socket.emit("chat-history", chatHistory);
-        } catch (e) {
-          console.error("[socket] Error sending chat history:", e);
-        }
-
-        const prepData = await realtimeStore.getPreparation(roomId);
-        if (prepData) {
-          socket.emit("game-preparation", toPreparationPayload(prepData as PendingPreparation));
-        }
-
-        // Broadcast updated state to all players
-        broadcastFilteredState(io, roomId, gameState);
-        // Always send a direct state snapshot to the joining socket.
-        // This avoids waiting-screen stalls if room broadcast delivery is delayed.
-        socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
-        socket.emit("room-joined", {
-          roomId,
-          roomCode,
-          maxPlayers: gameState.maxPlayers ?? room.maxPlayers ?? 5,
-        });
-        if (gameState.phase === "playing") {
-          replayBlackbirdEventsForSocket(socket, roomId);
-        }
-
-        console.log(`[socket] User ${username} (${userId}) joined room ${roomCode} (${roomId})`);
-        telemetry.inc("rooms.joined");
       } catch (error) {
         console.error("[socket] Error joining room:", error);
         telemetry.inc("errors.join_room");
@@ -1735,11 +2162,17 @@ export function setupGameSocket(httpServer: HTTPServer) {
           console.log(`[socket] Action from ${player.username}: ${action.type}`);
 
           if (action.type === "START_GAME") {
-            if (gameState.phase !== "waiting") {
-              throw new Error("Game already started");
-            }
             if (gameState.hostUserId !== authenticatedUserId) {
               throw new Error("Only the host can start the game");
+            }
+            if (gameState.phase !== "waiting") {
+              const prepRaw = await realtimeStore.getPreparation(roomId);
+              const prep = prepRaw as PendingPreparation | undefined;
+              return {
+                type: "already_started" as const,
+                currentState: gameState,
+                preparation: prep ? toPreparationPayload(prep) : null,
+              };
             }
             if (gameState.players.length < 2) {
               throw new Error("Need at least 2 players to start");
@@ -1761,23 +2194,38 @@ export function setupGameSocket(httpServer: HTTPServer) {
         if (result.type === "preparation") {
           return;
         }
+        if (result.type === "already_started") {
+          if (result.preparation) {
+            socket.emit("game-preparation", result.preparation);
+          }
+          socket.emit("game-state-update", filterStateForPlayer(result.currentState, authenticatedUserId));
+          return;
+        }
 
         const { previousState: gameState, newState, actorPlayerId } = result;
+        const actorBefore = gameState.players.find((player) => player.id === actorPlayerId);
+        const actorAfter = newState.players.find((player) => player.id === actorPlayerId);
 
         if (action.type === "PLAY_CARD") {
           const prevTop = gameState.discardPile[gameState.discardPile.length - 1];
           const newTop = newState.discardPile[newState.discardPile.length - 1];
           if (newTop && (!prevTop || prevTop.id !== newTop.id)) {
-            io.to(`room-${roomId}`).emit("card-play-fx", {
+            emitCardPlayFx(io, roomId, {
               card: newTop,
               playerId: actorPlayerId,
+              userId: actorAfter?.userId,
+              playerName: actorAfter?.username,
               startAt: Date.now() + 150,
             });
           }
         }
         if (action.type === "DRAW_CARD") {
-          io.to(`room-${roomId}`).emit("draw-card-fx", {
+          const drawCount = Math.max(1, (actorAfter?.hand.length ?? 0) - (actorBefore?.hand.length ?? 0));
+          emitDrawCardFx(io, roomId, {
             playerId: actorPlayerId,
+            userId: actorAfter?.userId,
+            playerName: actorAfter?.username,
+            drawCount,
             startAt: Date.now() + 90,
           });
         }
@@ -1794,6 +2242,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
         } else {
           detectAndBroadcastBlackbirdEvents(io, roomId, gameState, newState);
         }
+        emitStateTransitionFx(io, roomId, gameState, newState, actorPlayerId);
 
         // Broadcast filtered state to all players
         broadcastFilteredState(io, roomId, newState);
@@ -1868,62 +2317,82 @@ export function setupGameSocket(httpServer: HTTPServer) {
     // Leave room
     socket.on("leave-room", async (data: { roomId: number; playerId: number }) => {
       try {
-        if (isRateLimited(socket.id, "leave-room", 8, 10_000)) {
-          socket.emit("error", { message: "Too many leave attempts" });
-          return;
-        }
+        await withUserMutation(authenticatedUserId, async () => {
+          if (isRateLimited(socket.id, "leave-room", 8, 10_000)) {
+            socket.emit("error", { message: "Too many leave attempts" });
+            return;
+          }
 
-        const { roomId } = data;
+          const { roomId } = data;
 
-        // Resolve playerId from socket mapping
-        const socketUserId = socketUserMapping.get(socket.id);
-        if (!socketUserId || !(await isUserMappedToRoom(socketUserId, roomId))) {
-          socket.emit("error", { message: "Unauthorized room access" });
-          return;
-        }
+          // Resolve playerId from socket mapping
+          const socketUserId = socketUserMapping.get(socket.id);
+          if (!socketUserId) {
+            socket.emit("error", { message: "Unauthorized room access" });
+            return;
+          }
+          if (!(await isUserMappedToRoom(socketUserId, roomId))) {
+            const fallbackState = await realtimeStore.getGameState(roomId);
+            const existsInRoom = Boolean(fallbackState?.players.some((player) => player.userId === socketUserId));
+            if (!existsInRoom) {
+              socket.emit("error", { message: "Unauthorized room access" });
+              return;
+            }
+            await realtimeStore.setUserRoom(socketUserId, roomId);
+          }
 
-        const gameStateBeforeLeave = await withRoomMutation(roomId, async () => {
-          const currentState = await realtimeStore.getGameState(roomId);
-          if (!currentState) return null;
-          const player = currentState.players.find(p => p.userId === socketUserId);
-          if (!player) return currentState;
-          const nextState = processAction(currentState, { type: "LEAVE_GAME" }, player.id);
-          await realtimeStore.setGameState(roomId, nextState);
-          return nextState;
+          const gameStateBeforeLeave = await withRoomMutation(roomId, async () => {
+            const currentState = await realtimeStore.getGameState(roomId);
+            if (!currentState) return null;
+            const player = currentState.players.find(p => p.userId === socketUserId);
+            if (!player) return { previousState: currentState, newState: currentState, actorPlayerId: undefined as number | undefined };
+            const nextState = processAction(currentState, { type: "LEAVE_GAME" }, player.id);
+            await realtimeStore.setGameState(roomId, nextState);
+            return { previousState: currentState, newState: nextState, actorPlayerId: player.id };
+          });
+          if (gameStateBeforeLeave) {
+            emitStateTransitionFx(
+              io,
+              roomId,
+              gameStateBeforeLeave.previousState,
+              gameStateBeforeLeave.newState,
+              gameStateBeforeLeave.actorPlayerId,
+            );
+            broadcastFilteredState(io, roomId, gameStateBeforeLeave.newState);
+            if (gameStateBeforeLeave.newState.phase === "game_end") {
+              await roomManager.updateRoomStatus(roomId, "finished");
+            }
+          }
+
+          socket.leave(`room-${roomId}`);
+
+          // Remove socket from tracking
+          const sockets = roomSockets.get(roomId);
+          if (sockets) {
+            sockets.delete(socket.id);
+            if (sockets.size === 0) {
+              roomSockets.delete(roomId);
+              scheduleRoomCleanup(roomId);
+            }
+          }
+
+          // Clean up socket → user mapping
+          socketUserMapping.delete(socket.id);
+
+          // Clean up user → room mapping only if user has no other socket in same room
+          if (socketUserId) {
+            const timeout = disconnectTimeouts.get(socketUserId);
+            if (timeout) {
+              clearTimeout(timeout);
+              disconnectTimeouts.delete(socketUserId);
+            }
+            if (!isUserConnectedInRoom(roomId, socketUserId)) {
+              await clearUserRoomMappingIfMatches(socketUserId, roomId);
+            }
+          }
+
+          console.log(`[socket] User ${socketUserId} left room ${roomId}`);
         });
-        if (gameStateBeforeLeave) {
-          broadcastFilteredState(io, roomId, gameStateBeforeLeave);
-          if (gameStateBeforeLeave.phase === "game_end") {
-            await roomManager.updateRoomStatus(roomId, "finished");
-          }
-        }
-
-        socket.leave(`room-${roomId}`);
-
-        // Remove socket from tracking
-        const sockets = roomSockets.get(roomId);
-        if (sockets) {
-          sockets.delete(socket.id);
-          if (sockets.size === 0) {
-            roomSockets.delete(roomId);
-            scheduleRoomCleanup(roomId);
-          }
-        }
-
-        // Clean up socket → user mapping
-        socketUserMapping.delete(socket.id);
-
-        // Clean up user → room mapping
-        if (socketUserId) {
-          const timeout = disconnectTimeouts.get(socketUserId);
-          if (timeout) {
-            clearTimeout(timeout);
-            disconnectTimeouts.delete(socketUserId);
-          }
-          await realtimeStore.deleteUserRoom(socketUserId);
-        }
-
-        console.log(`[socket] User ${socketUserId} left room ${roomId}`);
       } catch (error) {
         console.error("[socket] Error leaving room:", error);
         telemetry.inc("errors.leave_room");
@@ -2089,6 +2558,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
       clearRoomRuntimeTimers(roomId);
       blackbirdHistory.delete(roomId);
       blackbirdRuntime.delete(roomId);
+      gameFxHistory.delete(roomId);
+      roomFxSequences.delete(roomId);
+      roomFxNextStartAt.delete(roomId);
 
       const sockets = roomSockets.get(roomId);
       if (sockets) {
@@ -2307,10 +2779,11 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
               const newState = processAction(gameState, { type: "LEAVE_GAME" }, player.id);
               await realtimeStore.setGameState(roomId, newState);
-              return { removed: true as const, newState };
+              return { removed: true as const, previousState: gameState, newState, actorPlayerId: player.id };
             });
 
-            if (result?.removed && result.newState) {
+            if (result && result.removed && result.newState) {
+              emitStateTransitionFx(io, roomId, result.previousState, result.newState, result.actorPlayerId);
               broadcastFilteredState(io, roomId, result.newState);
               if (result.newState.phase === "game_end") {
                 void roomManager.updateRoomStatus(roomId, "finished");
@@ -2319,7 +2792,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           } catch (err) {
             console.error(`[socket] Error during disconnect timeout cleanup:`, err);
           } finally {
-            await realtimeStore.deleteUserRoom(disconnectedUserId!);
+            await clearUserRoomMappingIfMatches(disconnectedUserId!, roomId);
             disconnectTimeouts.delete(disconnectedUserId!);
           }
           })();

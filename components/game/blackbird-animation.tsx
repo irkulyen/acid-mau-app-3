@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { View, Text, StyleSheet, Dimensions } from "react-native";
+import { Image } from "expo-image";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -128,6 +129,9 @@ export function BlackbirdAnimation({
   const tailWag = useSharedValue(0);
   const bodyGlow = useSharedValue(0);
   const eyeGlow = useSharedValue(0);
+  const spritePulse = useSharedValue(0);
+  const spriteBob = useSharedValue(0);
+  const spriteTilt = useSharedValue(0);
   const [trail, setTrail] = useState<TrailParticle[]>([]);
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([]);
   const [phrase, setPhrase] = useState("");
@@ -208,6 +212,9 @@ export function BlackbirdAnimation({
     tailWag.value = 0;
     bodyGlow.value = 0;
     eyeGlow.value = 0;
+    spritePulse.value = 0;
+    spriteBob.value = 0;
+    spriteTilt.value = 0;
     setTrail([]);
     setConfetti([]);
 
@@ -283,6 +290,33 @@ export function BlackbirdAnimation({
 
     // Event-based flights
     const isQuickEvent = evType !== "mvp";
+
+    // Sprite breathing / premium "alive" feel
+    spritePulse.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 460, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0.1, { duration: 460, easing: Easing.inOut(Easing.ease) }),
+      ),
+      isQuickEvent ? 10 : 22,
+      false,
+    );
+    spriteBob.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 320, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 320, easing: Easing.inOut(Easing.ease) }),
+      ),
+      isQuickEvent ? 16 : 34,
+      false,
+    );
+    spriteTilt.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 260, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 260, easing: Easing.inOut(Easing.ease) }),
+      ),
+      isQuickEvent ? 14 : 30,
+      false,
+    );
+
     const dur = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.inOut(Easing.ease) });
     const fast = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.out(Easing.cubic) });
 
@@ -480,6 +514,20 @@ export function BlackbirdAnimation({
     transform: [{ scale: 0.95 + eyeGlow.value * 0.1 }],
   }));
 
+  const spriteHaloStyle = useAnimatedStyle(() => ({
+    opacity: 0.22 + spritePulse.value * 0.42,
+    transform: [{ scale: 0.8 + spritePulse.value * 0.42 }],
+  }));
+
+  const spriteStyle = useAnimatedStyle(() => ({
+    opacity: 0.86 + spritePulse.value * 0.14,
+    transform: [
+      { translateY: -3 + spriteBob.value * 6 },
+      { rotate: `${-4 + spriteTilt.value * 8}deg` },
+      { scale: 0.92 + spritePulse.value * 0.11 },
+    ],
+  }));
+
   // Event-based colors
   const getColors = () => {
     if (variant === "legendary") {
@@ -609,6 +657,45 @@ export function BlackbirdAnimation({
       {/* The Bird – larger (90x62) */}
       {visible && (
         <Animated.View style={[{ position: "absolute", width: 90, height: 62, zIndex: 105 }, containerStyle]}>
+          {/* Premium halo behind mascot */}
+          <Animated.View
+            style={[
+              {
+                position: "absolute",
+                width: 86,
+                height: 86,
+                borderRadius: 43,
+                top: -12,
+                left: 2,
+                backgroundColor: colors.glow,
+                shadowColor: colors.glow,
+                shadowOpacity: 1,
+                shadowRadius: 28,
+                elevation: 30,
+              },
+              spriteHaloStyle,
+            ]}
+          />
+          {/* Brand sprite layer */}
+          <Animated.View
+            style={[
+              {
+                position: "absolute",
+                width: 72,
+                height: 72,
+                top: -8,
+                left: 10,
+                zIndex: 2,
+              },
+              spriteStyle,
+            ]}
+          >
+            <Image
+              source={require("@/assets/images/game-logo.png")}
+              style={{ width: "100%", height: "100%" }}
+              contentFit="contain"
+            />
+          </Animated.View>
           {/* Outer neon glow – bigger, more dramatic */}
           <Animated.View style={[{
             position: "absolute",
@@ -834,6 +921,26 @@ export function BlackbirdAnimation({
             top: 1, left: 64,
             transform: [{ rotate: "30deg" }],
           }} />
+          {/* Final sprite pass on top for crisp mascot silhouette */}
+          <Animated.View
+            style={[
+              {
+                position: "absolute",
+                width: 70,
+                height: 70,
+                top: -8,
+                left: 11,
+                zIndex: 40,
+              },
+              spriteStyle,
+            ]}
+          >
+            <Image
+              source={require("@/assets/images/game-logo.png")}
+              style={{ width: "100%", height: "100%" }}
+              contentFit="contain"
+            />
+          </Animated.View>
         </Animated.View>
       )}
     </Animated.View>

@@ -45,15 +45,21 @@ export default function LoginScreen() {
     }
 
     setIsLoading(true);
+    const startedAt = Date.now();
     const apiBaseUrl = getApiBaseUrl();
     const loginEndpoint = `${apiBaseUrl}/api/trpc/auth.login?batch=1`;
     if (__DEV__) {
-      console.log("[Login] API target", {
+      console.log("[Login] Request start", {
         platform: Platform.OS,
+        envApiBaseUrl: process.env.EXPO_PUBLIC_API_URL ?? null,
         apiBaseUrl,
         loginEndpoint,
+        payload: {
+          email: email.trim(),
+          hasPassword: Boolean(password),
+        },
+        startedAtIso: new Date(startedAt).toISOString(),
       });
-      console.log("[Login] Sending request...");
     }
     
     try {
@@ -63,7 +69,10 @@ export default function LoginScreen() {
       });
       
       if (__DEV__) {
-        console.log("[Login] Success!");
+        console.log("[Login] Request success", {
+          durationMs: Date.now() - startedAt,
+          userId: result.userId,
+        });
       }
       
       // Store token in frontend (LocalStorage for web, SecureStore for native)
@@ -91,7 +100,16 @@ export default function LoginScreen() {
       // AuthGuard will automatically redirect to home or onboarding
       
     } catch (error: unknown) {
-      console.error("[Login] Error:", error);
+      const message =
+        error && typeof error === "object" && "message" in error
+          ? String((error as { message?: unknown }).message ?? "")
+          : String(error ?? "");
+      console.error("[Login] Request failed", {
+        durationMs: Date.now() - startedAt,
+        timeoutDetected: /timed out|timeout|abort/i.test(message),
+        message,
+        rawError: error,
+      });
       setError("Login fehlgeschlagen: " + toFriendlyAuthError(error));
     } finally {
       setIsLoading(false);

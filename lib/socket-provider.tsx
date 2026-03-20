@@ -6,12 +6,13 @@ import type {
   BlackbirdEvent,
   CardPlayFxEvent,
   DrawCardFxEvent,
+  GameFxEvent,
   ChatMessage,
   PreparationData,
   RoomCreatedPayload,
   RoomJoinedPayload,
 } from "@/shared/socket-contract";
-export type { BlackbirdEvent, CardPlayFxEvent, DrawCardFxEvent, ChatMessage, PreparationData, RoomCreatedPayload, RoomJoinedPayload } from "@/shared/socket-contract";
+export type { BlackbirdEvent, CardPlayFxEvent, DrawCardFxEvent, GameFxEvent, ChatMessage, PreparationData, RoomCreatedPayload, RoomJoinedPayload } from "@/shared/socket-contract";
 import * as Auth from "@/lib/_core/auth";
 import { AppState, type AppStateStatus } from "react-native";
 import { getApiBaseUrl } from "@/constants/oauth";
@@ -41,6 +42,7 @@ interface SocketContextValue {
   setOnBlackbirdEvent: (cb: ((event: BlackbirdEvent) => void) | null) => void;
   setOnCardPlayFx: (cb: ((event: CardPlayFxEvent) => void) | null) => void;
   setOnDrawCardFx: (cb: ((event: DrawCardFxEvent) => void) | null) => void;
+  setOnGameFx: (cb: ((event: GameFxEvent) => void) | null) => void;
   setOnError: (cb: ((error: string) => void) | null) => void;
 }
 
@@ -59,6 +61,17 @@ const parsePositiveInt = (raw: string | null | undefined): number | null => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+type JoinFlowSource = "manual" | "retry" | "recover-fallback" | "self-heal" | "server-error-retry";
+
+type JoinInFlight = {
+  roomCode: string;
+  userId: number;
+  username: string;
+  source: JoinFlowSource;
+  sentAt: number;
+  attempts: number;
+};
+
 export function SocketProvider({ children }: { children: ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
   const [gameState, setGameState] = useState<GameState | null>(null);
@@ -74,6 +87,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const onBlackbirdEventRef = useRef<((event: BlackbirdEvent) => void) | null>(null);
   const onCardPlayFxRef = useRef<((event: CardPlayFxEvent) => void) | null>(null);
   const onDrawCardFxRef = useRef<((event: DrawCardFxEvent) => void) | null>(null);
+  const onGameFxRef = useRef<((event: GameFxEvent) => void) | null>(null);
   const onErrorRef = useRef<((error: string) => void) | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const gameStateRef = useRef<GameState | null>(null);
@@ -88,6 +102,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const lastServerErrorRef = useRef<{ message: string; at: number }>({ message: "", at: 0 });
   const hasEverConnectedRef = useRef(false);
   const lastConnectErrorRef = useRef<{ message: string; at: number }>({ message: "", at: 0 });
+  const joinInFlightRef = useRef<JoinInFlight | null>(null);
+  const lastJoinEmitRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+  const reconnectInFlightRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
   const normalizeRoomCode = useCallback((value: string | null | undefined) => {
     if (!value) return null;
     const normalized = value.trim().toUpperCase();
@@ -162,6 +179,99 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const clearJoinInFlight = useCallback((reason: string) => {
+    const current = joinInFlightRef.current;
+    if (!current) return;
+    console.log(
+      `[socket] join-flow cleared (${reason}) roomCode=${current.roomCode} userId=${current.userId} source=${current.source}`,
+    );
+    joinInFlightRef.current = null;
+  }, []);
+
+  const emitJoinRoomGuarded = useCallback((args: {
+    roomCode: string;
+    userId: number;
+    username: string;
+    source: JoinFlowSource;
+  }): boolean => {
+    const socket = socketRef.current;
+    if (!socket) return false;
+    const normalizedRoomCode = normalizeRoomCode(args.roomCode);
+    if (!normalizedRoomCode) return false;
+
+    const now = Date.now();
+    const key = `${normalizedRoomCode}:${args.userId}:${args.username}`;
+    if (lastJoinEmitRef.current.key === key && now - lastJoinEmitRef.current.at < 850) {
+      console.log(
+        `[socket] join-room suppressed (burst) roomCode=${normalizedRoomCode} userId=${args.userId} source=${args.source}`,
+      );
+      return false;
+    }
+
+    const inFlight = joinInFlightRef.current;
+    if (
+      inFlight &&
+      inFlight.roomCode === normalizedRoomCode &&
+      inFlight.userId === args.userId &&
+      now - inFlight.sentAt < 1800
+    ) {
+      console.log(
+        `[socket] join-room suppressed (in-flight) roomCode=${normalizedRoomCode} userId=${args.userId} source=${args.source}`,
+      );
+      return false;
+    }
+
+    const attempts =
+      inFlight && inFlight.roomCode === normalizedRoomCode && inFlight.userId === args.userId
+        ? inFlight.attempts + 1
+        : 1;
+
+    joinInFlightRef.current = {
+      roomCode: normalizedRoomCode,
+      userId: args.userId,
+      username: args.username,
+      source: args.source,
+      sentAt: now,
+      attempts,
+    };
+    lastJoinEmitRef.current = { key, at: now };
+    console.log(
+      `[socket] join-room sent roomCode=${normalizedRoomCode} userId=${args.userId} source=${args.source} attempt=${attempts}`,
+    );
+    socket.emit("join-room", { roomCode: normalizedRoomCode, userId: args.userId, username: args.username });
+    return true;
+  }, [normalizeRoomCode]);
+
+  const emitReconnectRoomGuarded = useCallback((args: {
+    userId: number;
+    roomCode?: string;
+    roomId?: number;
+    playerId?: number;
+    username?: string;
+  }): boolean => {
+    const socket = socketRef.current;
+    if (!socket) return false;
+    const normalizedRoomCode = normalizeRoomCode(args.roomCode);
+    const key = `${args.userId}:${normalizedRoomCode || "-"}:${args.roomId || "-"}:${args.playerId || "-"}`;
+    const now = Date.now();
+    if (reconnectInFlightRef.current.key === key && now - reconnectInFlightRef.current.at < 1300) {
+      console.log(`[socket] reconnect-room suppressed (burst) key=${key}`);
+      return false;
+    }
+    reconnectInFlightRef.current = { key, at: now };
+    console.log(
+      `[socket] reconnect-room sent userId=${args.userId} roomCode=${normalizedRoomCode || "-"} roomId=${args.roomId || "-"} playerId=${args.playerId || "-"}`,
+    );
+    socket.emit("reconnect-room", {
+      userId: args.userId,
+      roomCode: normalizedRoomCode ?? undefined,
+      roomId: args.roomId,
+      playerId: args.playerId,
+      username: args.username,
+    });
+    return true;
+  }, [normalizeRoomCode]);
+
   const recoverSessionOnSocket = useCallback(async (socket: Socket | null) => {
     if (!socket || recoveringRef.current) return;
     const now = Date.now();
@@ -201,7 +311,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         if (!recoverStartedAtRef.current) recoverStartedAtRef.current = Date.now();
         recoverAttemptRef.current += 1;
         const attempt = recoverAttemptRef.current;
-        socket.emit("reconnect-room", {
+        emitReconnectRoomGuarded({
           userId,
           roomCode: normalizedRoomCode ?? undefined,
           roomId: roomId ?? undefined,
@@ -217,14 +327,19 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             if (attempt !== recoverAttemptRef.current) return;
             if (!socket.connected) return;
             if (!staleSinceRecover) return;
-            socket.emit("join-room", { roomCode: normalizedRoomCode, userId, username });
+            emitJoinRoomGuarded({
+              roomCode: normalizedRoomCode,
+              userId,
+              username,
+              source: "recover-fallback",
+            });
           }, 1400);
         }
       }
     } finally {
       recoveringRef.current = false;
     }
-  }, [normalizeRoomCode]);
+  }, [emitJoinRoomGuarded, emitReconnectRoomGuarded, normalizeRoomCode]);
 
   useEffect(() => {
     gameStateRef.current = gameState;
@@ -264,6 +379,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket.on("disconnect", (reason) => {
         console.log("[socket] Disconnected:", reason);
         setIsConnected(false);
+        clearJoinInFlight("disconnect");
         if (reason !== "io client disconnect") {
           socket?.connect();
         }
@@ -319,7 +435,12 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           const isMember = state.players.some((p) => p.userId === userId);
           if (!isMember && socket?.connected) {
             lastMembershipRecoverAtRef.current = now;
-            socket.emit("join-room", { roomCode: normalizedRoomCode, userId, username });
+            emitJoinRoomGuarded({
+              roomCode: normalizedRoomCode,
+              userId,
+              username,
+              source: "self-heal",
+            });
           }
         })();
       });
@@ -329,6 +450,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         recoverAttemptRef.current = 0;
         recoverStartedAtRef.current = 0;
         recoverBlockedUntilRef.current = 0;
+        reconnectInFlightRef.current = { key: "", at: 0 };
+        clearJoinInFlight("room-created");
         persistSessionHints({ roomCode: data.roomCode.toUpperCase(), roomId: data.roomId });
         onRoomCreatedRef.current?.(data);
       });
@@ -338,6 +461,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         recoverAttemptRef.current = 0;
         recoverStartedAtRef.current = 0;
         recoverBlockedUntilRef.current = 0;
+        reconnectInFlightRef.current = { key: "", at: 0 };
+        clearJoinInFlight("room-joined");
         persistSessionHints({ roomCode: data.roomCode.toUpperCase(), roomId: data.roomId });
         onRoomJoinedRef.current?.(data);
       });
@@ -345,6 +470,14 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket.on("join-failed", (data: { message: string; code?: string }) => {
         const message = data?.message || "Failed to join room";
         console.warn("[socket] join-failed:", data?.code || "UNKNOWN", message);
+        const inFlight = joinInFlightRef.current;
+        const source = inFlight?.source;
+        const isUserInitiated = source === "manual" || source === "retry";
+        const isAutoRecoverSource =
+          source === "recover-fallback" ||
+          source === "server-error-retry" ||
+          source === "self-heal";
+        clearJoinInFlight(`join-failed:${data?.code || "UNKNOWN"}`);
         if (data?.code === "ROOM_NOT_FOUND") {
           // Stale local room hints can cause endless auto-rejoin loops after server restarts.
           // Clear them immediately when the server confirms the room no longer exists.
@@ -354,7 +487,21 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             STORAGE_KEYS.playerId,
           ]);
           setGameState(null);
-          // Do not surface this as a user-facing error toast outside explicit join flow.
+          // Show only when user explicitly initiated the join flow.
+          if (isUserInitiated) {
+            emitErrorDeduped(message);
+          }
+          return;
+        }
+        if (/temporarily unavailable/i.test(message) && isAutoRecoverSource) {
+          // Auto-recovery should not trap the user in stale-room loops.
+          // Clear room hints and stay silent; manual user actions can start a fresh join/create.
+          void AsyncStorage.multiRemove([
+            STORAGE_KEYS.roomCode,
+            STORAGE_KEYS.roomId,
+            STORAGE_KEYS.playerId,
+          ]);
+          setGameState(null);
           return;
         }
         emitErrorDeduped(message);
@@ -373,6 +520,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket.on("draw-card-fx", (event: DrawCardFxEvent) => {
         onDrawCardFxRef.current?.(event);
       });
+      socket.on("game-fx", (event: GameFxEvent) => {
+        onGameFxRef.current?.(event);
+      });
 
       socket.on("chat:history", (messages: ChatMessage[]) => {
         setChatMessages(messages);
@@ -386,9 +536,16 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       });
 
       socket.on("error", async (data: { message: string }) => {
+        const normalizedMessage = (data.message || "").trim().toLowerCase();
         const inRecoverWindow = Date.now() - recoverStartedAtRef.current < 5000;
-        if (inRecoverWindow && data.message === "Game already in progress") {
+        if (inRecoverWindow && normalizedMessage === "game already in progress") {
           // Harmless during recovery fallback; keep silent to avoid false alarm popup.
+          return;
+        }
+        if (normalizedMessage === "game already started") {
+          // Duplicate START_GAME action can happen on laggy mobile taps/reconnects.
+          // Treat as idempotent and force a session refresh instead of showing a blocking popup.
+          await recoverSessionOnSocket(socket);
           return;
         }
         if (isExpectedMoveValidationError(data.message)) {
@@ -403,25 +560,54 @@ export function SocketProvider({ children }: { children: ReactNode }) {
             const username = await AsyncStorage.getItem(STORAGE_KEYS.username);
             const normalizedRoomCode = normalizeRoomCode(roomCode);
             if (normalizedRoomCode && userIdStr && username) {
-              socket?.emit("join-room", { roomCode: normalizedRoomCode, userId: parseInt(userIdStr, 10), username });
+              emitJoinRoomGuarded({
+                roomCode: normalizedRoomCode,
+                userId: parseInt(userIdStr, 10),
+                username,
+                source: "server-error-retry",
+              });
             }
           } catch (e) {
             console.error("[socket] Auto-rejoin error:", e);
           }
           return;
         }
-        if (/temporarily unavailable/i.test(data.message)) {
+        if (/temporarily unavailable/i.test(normalizedMessage)) {
           try {
+            const hasActiveRoomState = Boolean(gameStateRef.current);
+            const source = joinInFlightRef.current?.source;
+            const isAutoRecoverSource =
+              source === "recover-fallback" ||
+              source === "server-error-retry" ||
+              source === "self-heal";
+            if (!hasActiveRoomState && (inRecoverWindow || isAutoRecoverSource)) {
+              // Stale reconnect hints after app/server restarts: stop auto-retry loop.
+              await AsyncStorage.multiRemove([
+                STORAGE_KEYS.roomCode,
+                STORAGE_KEYS.roomId,
+                STORAGE_KEYS.playerId,
+              ]);
+              recoverAttemptRef.current = 0;
+              recoverStartedAtRef.current = 0;
+              recoverBlockedUntilRef.current = Date.now() + 10_000;
+              if (recoverFallbackTimerRef.current) {
+                clearTimeout(recoverFallbackTimerRef.current);
+                recoverFallbackTimerRef.current = null;
+              }
+              clearJoinInFlight("stale-temporary-unavailable");
+              return;
+            }
             const roomCode = await AsyncStorage.getItem(STORAGE_KEYS.roomCode);
             const userIdStr = await AsyncStorage.getItem(STORAGE_KEYS.userId);
             const username = await AsyncStorage.getItem(STORAGE_KEYS.username);
             const normalizedRoomCode = normalizeRoomCode(roomCode);
             if (normalizedRoomCode && userIdStr && username) {
               setTimeout(() => {
-                socket?.emit("join-room", {
+                emitJoinRoomGuarded({
                   roomCode: normalizedRoomCode,
                   userId: parseInt(userIdStr, 10),
                   username,
+                  source: "server-error-retry",
                 });
               }, 850);
             }
@@ -430,7 +616,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           }
           return;
         }
-        if (/too many reconnect attempts/i.test(data.message)) {
+        if (/too many reconnect attempts/i.test(normalizedMessage)) {
           recoverBlockedUntilRef.current = Date.now() + 30_000;
           return;
         }
@@ -463,7 +649,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket?.disconnect();
     };
   }, [
+    clearJoinInFlight,
     classifyConnectError,
+    emitJoinRoomGuarded,
     emitErrorDeduped,
     normalizeRoomCode,
     persistSessionHints,
@@ -500,6 +688,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   }, [isConnected, gameState, recoverSessionOnSocket]);
 
   const createRoom = useCallback((userId: number, username: string, maxPlayers: number = 5, isPrivate: boolean = false) => {
+    console.log(
+      `[socket] create-room sent userId=${userId} username=${username} maxPlayers=${maxPlayers} isPrivate=${isPrivate}`,
+    );
     socketRef.current?.emit("create-room", { userId, username, maxPlayers, isPrivate });
   }, []);
 
@@ -509,14 +700,19 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       onErrorRef.current?.("Ungültiger Raum-Code");
       return;
     }
-    socketRef.current?.emit("join-room", { roomCode: normalizedRoomCode, userId, username });
+    emitJoinRoomGuarded({
+      roomCode: normalizedRoomCode,
+      userId,
+      username,
+      source: "manual",
+    });
     void AsyncStorage.multiSet([
       [STORAGE_KEYS.roomCode, normalizedRoomCode],
       [STORAGE_KEYS.userId, userId.toString()],
       [STORAGE_KEYS.username, username],
     ]);
     void AsyncStorage.multiRemove([STORAGE_KEYS.roomId, STORAGE_KEYS.playerId]);
-  }, [normalizeRoomCode]);
+  }, [emitJoinRoomGuarded, normalizeRoomCode]);
 
   const leaveRoom = useCallback((roomId: number, playerId: number) => {
     socketRef.current?.emit("leave-room", { roomId, playerId });
@@ -603,6 +799,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     onDrawCardFxRef.current = cb;
   }, []);
 
+  const setOnGameFx = useCallback((cb: ((event: GameFxEvent) => void) | null) => {
+    onGameFxRef.current = cb;
+  }, []);
+
   const setOnError = useCallback((cb: ((error: string) => void) | null) => {
     onErrorRef.current = cb;
   }, []);
@@ -633,6 +833,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setOnBlackbirdEvent,
       setOnCardPlayFx,
       setOnDrawCardFx,
+      setOnGameFx,
       setOnError,
     }}>
       {children}

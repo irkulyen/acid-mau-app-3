@@ -18,6 +18,7 @@ export default function RoomScreen() {
 
   const [isJoining, setIsJoining] = useState(true);
   const [botsAdded, setBotsAdded] = useState(false);
+  const [isStartingGame, setIsStartingGame] = useState(false);
   const [joinAttempt, setJoinAttempt] = useState(0);
   const normalizedCode = useMemo(() => (code || "").toUpperCase(), [code]);
   const joinUsername = useMemo(() => {
@@ -65,7 +66,7 @@ export default function RoomScreen() {
   // Registriere Callbacks
   useEffect(() => {
     setOnRoomJoined((data) => {
-      if (data.roomCode.toUpperCase() === normalizedCode) {
+      if (isJoining && data.roomCode.toUpperCase() === normalizedCode) {
         // If room-joined arrives before/without a state packet, force recovery.
         void recoverSession();
         setTimeout(() => void recoverSession(), 700);
@@ -84,6 +85,7 @@ export default function RoomScreen() {
     });
 
     setOnError((error: string) => {
+      setIsStartingGame(false);
       Alert.alert("Fehler", error);
       if (isJoining && /Room not found|Invalid room code|User already in another active room|Game session unavailable|Room is full|Game already in progress|Too many join attempts|Failed to join|Socket-Verbindung blockiert|Server nicht erreichbar|Socket-Verbindung fehlgeschlagen/i.test(error)) {
         setIsJoining(false);
@@ -124,13 +126,14 @@ export default function RoomScreen() {
 
   // Auto-add bots after joining room
   useEffect(() => {
-    if (!gameState || !user || botsAdded) return;
-    if (gameState.hostUserId !== user.id) return;
+    if (!activeGameState || !user || botsAdded) return;
+    if (activeGameState.hostUserId !== user.id) return;
+    if (activeGameState.phase !== "waiting") return;
 
     const requestedBots = parseInt(botCountParam || "0", 10);
     if (requestedBots <= 0) return;
 
-    const currentBots = gameState.players.filter(p => p.userId < 0).length;
+    const currentBots = activeGameState.players.filter((p) => p.userId < 0).length;
     if (currentBots >= requestedBots) {
       setBotsAdded(true);
       return;
@@ -138,19 +141,22 @@ export default function RoomScreen() {
 
     const botsToAdd = requestedBots - currentBots;
     if (botsToAdd > 0) {
-      addBot(gameState.roomId, user.id);
+      addBot(activeGameState.roomId, user.id);
     }
-  }, [gameState, user, botsAdded, botCountParam]);
+  }, [activeGameState, user, botsAdded, botCountParam, addBot]);
 
   // Mark bots as fully added
   useEffect(() => {
-    if (!gameState || botsAdded) return;
+    if (!activeGameState || botsAdded) return;
     const requestedBots = parseInt(botCountParam || "0", 10);
-    const currentBots = gameState.players.filter(p => p.userId < 0).length;
+    const currentBots = activeGameState.players.filter((p) => p.userId < 0).length;
     if (currentBots >= requestedBots && requestedBots > 0) {
       setBotsAdded(true);
     }
-  }, [gameState?.players.length]);
+    if (activeGameState.phase !== "waiting") {
+      setBotsAdded(true);
+    }
+  }, [activeGameState, botsAdded, botCountParam]);
 
   const handleLeaveRoom = () => {
     if (gameState && user) {
@@ -163,9 +169,10 @@ export default function RoomScreen() {
   };
 
   const handleStartGame = () => {
-    if (!gameState || !user) return;
+    if (!gameState || !user || isStartingGame) return;
     const player = gameState.players.find((p) => p.userId === user.id);
     if (!player) return;
+    setIsStartingGame(true);
     sendAction(gameState.roomId, player.id, { type: "START_GAME" });
   };
 
@@ -207,6 +214,7 @@ export default function RoomScreen() {
   // Navigate to game when it starts AND preparation is done
   useEffect(() => {
     if (gameState && gameState.phase === "playing" && !showPreparation) {
+      setIsStartingGame(false);
       setShowPreparation(false);
       router.replace(`/game/play?code=${code}` as any);
     }
@@ -335,17 +343,17 @@ export default function RoomScreen() {
             <>
               <Pressable
                 onPress={handleStartGame}
-                disabled={!canStart}
+                disabled={!canStart || isStartingGame}
                 style={({ pressed }) => [{
                   backgroundColor: '#228B22',
                   paddingHorizontal: 32,
                   paddingVertical: 20,
                   borderRadius: 16,
-                  opacity: !canStart ? 0.5 : pressed ? 0.8 : 1,
+                  opacity: (!canStart || isStartingGame) ? 0.5 : pressed ? 0.8 : 1,
                 }]}
               >
                 <Text className="text-background text-xl font-bold text-center">
-                  Spiel starten
+                  {isStartingGame ? "Startet..." : "Spiel starten"}
                 </Text>
               </Pressable>
 

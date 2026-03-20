@@ -428,7 +428,7 @@ export default function PracticeGameScreen() {
       {/* Watermark logo */}
       <View className="absolute inset-0 items-center justify-center" style={{ opacity: 0.06 }}>
         <Image
-          source={require("@/assets/images/acid-mau-logo.png")}
+          source={require("@/assets/images/game-logo.png")}
           style={{ width: 300, height: 300 }}
           resizeMode="contain"
         />

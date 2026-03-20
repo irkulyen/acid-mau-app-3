@@ -17,6 +17,7 @@ const env = {
   // Zentrale Backend-URL für REST + WebSocket.
   // In Produktion ist EXPO_PUBLIC_API_URL verpflichtend.
   apiBaseUrl: process.env.EXPO_PUBLIC_API_URL ?? "",
+  tunnelApiBaseUrl: process.env.EXPO_PUBLIC_TUNNEL_API_URL ?? process.env.EXPO_PUBLIC_EXTERNAL_API_URL ?? "",
   deepLinkScheme: schemeFromBundleId,
 };
 
@@ -26,6 +27,7 @@ export const APP_ID = env.appId;
 export const OWNER_OPEN_ID = env.ownerId;
 export const OWNER_NAME = env.ownerName;
 export const API_BASE_URL = env.apiBaseUrl;
+const DEFAULT_TUNNEL_API_BASE_URL = "http://185.215.165.148:3000";
 const runtimeConstants = Constants as unknown as {
   expoConfig?: { hostUri?: string };
   expoGoConfig?: { debuggerHost?: string };
@@ -114,6 +116,30 @@ function inferDevServerHost(): string | null {
   return null;
 }
 
+function hasExpoTunnelRuntimeHint(): boolean {
+  const linkingUrl = (() => {
+    try {
+      return Linking.createURL("/");
+    } catch {
+      return undefined;
+    }
+  })();
+  const sourceCode = (ReactNative.NativeModules as Record<string, unknown> | undefined)
+    ?.SourceCode as { scriptURL?: string } | undefined;
+  const candidates = [
+    runtimeConstants.expoConfig?.hostUri,
+    runtimeConstants.expoGoConfig?.debuggerHost,
+    runtimeConstants.manifest?.debuggerHost,
+    runtimeConstants.manifest?.hostUri,
+    linkingUrl,
+    sourceCode?.scriptURL,
+  ];
+  return candidates.some((candidate) => {
+    const host = extractHost(candidate);
+    return Boolean(host && isExpoTunnelHost(host));
+  });
+}
+
 function logResolvedApiBaseUrl(reason: string, url: string, details?: Record<string, unknown>) {
   if (!__DEV__) return;
   const key = `${reason}:${url}`;
@@ -169,6 +195,21 @@ export function getApiBaseUrl(): string {
   }
 
   if (__DEV__) {
+    const tunnelHint = hasExpoTunnelRuntimeHint();
+    if (ReactNative.Platform.OS !== "web" && tunnelHint) {
+      const configuredTunnelApi = trimTrailingSlash(env.tunnelApiBaseUrl);
+      const resolvedTunnelApi = configuredTunnelApi || DEFAULT_TUNNEL_API_BASE_URL;
+      if (!configuredTunnelApi) {
+        console.warn(
+          `[API] Expo-Tunnel erkannt ohne EXPO_PUBLIC_API_URL. Nutze externen Fallback ${resolvedTunnelApi}.`,
+        );
+      }
+      logResolvedApiBaseUrl("native-tunnel-external-fallback", resolvedTunnelApi, {
+        configuredTunnelApi: configuredTunnelApi || null,
+      });
+      return resolvedTunnelApi;
+    }
+
     const inferredHost = inferDevServerHost();
     if (ReactNative.Platform.OS !== "web" && inferredHost && !isLoopbackHost(inferredHost)) {
       const resolved = `http://${inferredHost}:${DEV_API_PORT}`;

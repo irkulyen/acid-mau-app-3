@@ -15,7 +15,7 @@ import { DrawChainEscalation, DrawChainShakeWrapper } from "@/components/game/dr
 import { CardFlyAnimation } from "@/components/game/card-fly-animation";
 import { GamePreparationScreen, type PreparationDrawData } from "@/components/game/game-preparation-screen";
 import { useAuth } from "@/lib/auth-provider";
-import { useSocket, type PreparationData, type BlackbirdEvent, type CardPlayFxEvent, type DrawCardFxEvent } from "@/lib/socket-provider";
+import { useSocket, type PreparationData, type BlackbirdEvent, type CardPlayFxEvent, type DrawCardFxEvent, type GameFxEvent } from "@/lib/socket-provider";
 import { useGameSounds } from "@/hooks/use-game-sounds";
 import { getBotProfileByName } from "@/lib/bot-profiles";
 import type { Card, CardSuit } from "@/shared/game-types";
@@ -195,6 +195,12 @@ export default function GamePlayScreen() {
   const discardAnimationHydratedRef = useRef(false);
   const cardPlayFxQueueRef = useRef<CardPlayFxEvent[]>([]);
   const cardPlayFxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gameFxQueueRef = useRef<GameFxEvent[]>([]);
+  const gameFxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeGameFxRef = useRef<GameFxEvent | null>(null);
+  const hasUnifiedGameFxRef = useRef(false);
+  const seenGameFxRef = useRef<Map<string, number>>(new Map());
+  const processNextGameFxRef = useRef<() => void>(() => {});
   const prevHandCountByPlayerRef = useRef<Record<number, number>>({});
   const playerNameByIdRef = useRef<Record<number, string>>({});
   const rivalryTrackRef = useRef<{ pair?: string; lastPlayerId?: number; alternations: number; lastShownAt: number }>({
@@ -207,6 +213,8 @@ export default function GamePlayScreen() {
   const clutchBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rivalryBanner, setRivalryBanner] = useState<string | null>(null);
   const rivalryBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [momentBanner, setMomentBanner] = useState<string | null>(null);
+  const momentBannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadingSinceRef = useRef<number | null>(null);
   const loaderEscalatedRef = useRef(false);
   const lastRecoverAttemptAtRef = useRef(0);
@@ -278,6 +286,14 @@ export default function GamePlayScreen() {
       if (rivalryBannerTimerRef.current) {
         clearTimeout(rivalryBannerTimerRef.current);
         rivalryBannerTimerRef.current = null;
+      }
+      if (gameFxTimerRef.current) {
+        clearTimeout(gameFxTimerRef.current);
+        gameFxTimerRef.current = null;
+      }
+      if (momentBannerTimerRef.current) {
+        clearTimeout(momentBannerTimerRef.current);
+        momentBannerTimerRef.current = null;
       }
     };
   }, []);
@@ -361,42 +377,43 @@ export default function GamePlayScreen() {
     }
   }, []);
 
-  // Process next blackbird event from queue
+  const activateBlackbirdEvent = useCallback((event: BlackbirdEvent) => {
+    triggerBlackbirdFx(event);
+    setBlackbirdEvent(event.type);
+    setBlackbirdLoser(event.type === "loser" ? event.playerName : undefined);
+    setBlackbirdWinner(event.type === "winner" ? event.playerName : undefined);
+    setBlackbirdDrawChain(event.drawChainCount);
+    setBlackbirdWishSuit(event.wishSuit);
+    setBlackbirdIntensity(event.intensity);
+    setBlackbirdSpotlight(event.spotlightPlayerName || event.playerName);
+    setBlackbirdStatsText(event.statsText);
+    setBlackbirdVariant(event.variant);
+    setBlackbirdPhrase(event.phrase);
+    playBlackbirdFeedback(event);
+    setShowBlackbird(true);
+    if ((event.intensity ?? 0) >= 4 && event.type !== "loser") {
+      playRoundEnd();
+    }
+    if (event.type === "loser") {
+      playRoundEnd();
+      setShowRoundStart(true);
+      setTimeout(() => setShowRoundStart(false), 2000);
+    }
+  }, [playBlackbirdFeedback, playRoundEnd, triggerBlackbirdFx]);
+
+  // Process next legacy blackbird event from queue
   const processNextBlackbird = useCallback(() => {
     if (showBlackbirdRef.current) return;
     if (blackbirdQueueRef.current.length === 0) return;
     const event = blackbirdQueueRef.current.shift()!;
-    const activate = () => {
-      triggerBlackbirdFx(event);
-      setBlackbirdEvent(event.type);
-      setBlackbirdLoser(event.type === "loser" ? event.playerName : undefined);
-      setBlackbirdWinner(event.type === "winner" ? event.playerName : undefined);
-      setBlackbirdDrawChain(event.drawChainCount);
-      setBlackbirdWishSuit(event.wishSuit);
-      setBlackbirdIntensity(event.intensity);
-      setBlackbirdSpotlight(event.spotlightPlayerName || event.playerName);
-      setBlackbirdStatsText(event.statsText);
-      setBlackbirdVariant(event.variant);
-      setBlackbirdPhrase(event.phrase);
-      playBlackbirdFeedback(event);
-      setShowBlackbird(true);
-      if ((event.intensity ?? 0) >= 4 && event.type !== "loser") {
-        playRoundEnd();
-      }
-      if (event.type === "loser") {
-        playRoundEnd();
-        setShowRoundStart(true);
-        setTimeout(() => setShowRoundStart(false), 2000);
-      }
-    };
 
     const delay = Math.max(0, (event.startAt ?? Date.now()) - Date.now());
     if (delay > 0) {
-      setTimeout(activate, delay);
+      setTimeout(() => activateBlackbirdEvent(event), delay);
     } else {
-      activate();
+      activateBlackbirdEvent(event);
     }
-  }, [playBlackbirdFeedback, playRoundEnd, triggerBlackbirdFx]);
+  }, [activateBlackbirdEvent]);
 
   const processNextCardPlayFx = useCallback(() => {
     if (showFlyingCard) return;
@@ -428,6 +445,15 @@ export default function GamePlayScreen() {
       rivalryBannerTimerRef.current = null;
     }, 1800);
   }, [playRivalryCallout]);
+
+  const showMomentBanner = useCallback((text: string, duration = 1800) => {
+    setMomentBanner(text);
+    if (momentBannerTimerRef.current) clearTimeout(momentBannerTimerRef.current);
+    momentBannerTimerRef.current = setTimeout(() => {
+      setMomentBanner(null);
+      momentBannerTimerRef.current = null;
+    }, duration);
+  }, []);
 
   const buildClutchCallout = useCallback((player: { username: string; userId: number }) => {
     const normalized = (player.username || "")
@@ -523,6 +549,100 @@ export default function GamePlayScreen() {
     }
   }, [processNextCardPlayFx]);
 
+  const completeActiveGameFx = useCallback((expectedId?: string) => {
+    const active = activeGameFxRef.current;
+    if (!active) return;
+    if (expectedId && active.id !== expectedId) return;
+    activeGameFxRef.current = null;
+    setTimeout(() => {
+      processNextGameFxRef.current();
+    }, 16);
+  }, []);
+
+  const processNextGameFx = useCallback(() => {
+    if (activeGameFxRef.current) return;
+    if (showFlyingCard) return;
+    if (showBlackbirdRef.current) return;
+    const next = gameFxQueueRef.current.shift();
+    if (!next) return;
+
+    const start = () => {
+      gameFxTimerRef.current = null;
+      activeGameFxRef.current = next;
+      switch (next.type) {
+        case "card_play": {
+          if (next.card) {
+            playCardPlay();
+            lastAnimatedDiscardCardIdRef.current = next.card.id;
+            setFlyingCard(next.card);
+            setShowFlyingCard(true);
+            trackRivalryFromPlay(next.playerId);
+            return;
+          }
+          completeActiveGameFx(next.id);
+          return;
+        }
+        case "draw_card": {
+          playCardDraw();
+          setTimeout(() => completeActiveGameFx(next.id), 140);
+          return;
+        }
+        case "blackbird": {
+          if (next.blackbird) {
+            activateBlackbirdEvent(next.blackbird);
+            return;
+          }
+          completeActiveGameFx(next.id);
+          return;
+        }
+        case "elimination": {
+          const label = next.eliminatedPlayerName || next.playerName || "Spieler";
+          showMomentBanner(`💀 ${label} ist eliminiert`, 2100);
+          setTimeout(() => completeActiveGameFx(next.id), 760);
+          return;
+        }
+        case "round_transition": {
+          setRoundGlowKey((k) => k + 1);
+          setShowRoundGlow(true);
+          showMomentBanner(`🎮 Runde ${next.roundNumber ?? "?"} startet`, 1400);
+          setTimeout(() => completeActiveGameFx(next.id), 650);
+          return;
+        }
+        case "match_result": {
+          const winnerName = next.winnerPlayerName || next.playerName || "Gewinner";
+          showMomentBanner(`🏆 ${winnerName} gewinnt das Match`, 2600);
+          playRoundEnd();
+          setTimeout(() => completeActiveGameFx(next.id), 900);
+          return;
+        }
+        default: {
+          completeActiveGameFx(next.id);
+        }
+      }
+    };
+
+    const delay = Math.max(0, (next.startAt ?? Date.now()) - Date.now());
+    if (delay > 0) {
+      if (gameFxTimerRef.current) clearTimeout(gameFxTimerRef.current);
+      gameFxTimerRef.current = setTimeout(start, delay);
+      return;
+    }
+    start();
+  }, [
+    activateBlackbirdEvent,
+    completeActiveGameFx,
+    playCardDraw,
+    playCardPlay,
+    playRoundEnd,
+    showFlyingCard,
+    showMomentBanner,
+    trackRivalryFromPlay,
+  ]);
+
+  useEffect(() => {
+    processNextGameFxRef.current = processNextGameFx;
+  }, [processNextGameFx]);
+
   const {
     isConnected,
     gameState: socketGameState,
@@ -539,6 +659,7 @@ export default function GamePlayScreen() {
     setOnBlackbirdEvent,
     setOnCardPlayFx,
     setOnDrawCardFx,
+    setOnGameFx,
     setOnError,
   } = useSocket();
   const expectedRoomCode = (code || "").trim().toUpperCase();
@@ -558,17 +679,38 @@ export default function GamePlayScreen() {
       setPrepCurrentPicker(data.currentPickerUserId ?? null);
       setShowPreparation(true);
     });
+    setOnGameFx((event: GameFxEvent) => {
+      if (!event?.id) return;
+      hasUnifiedGameFxRef.current = true;
+      const seen = seenGameFxRef.current;
+      const now = Date.now();
+      for (const [id, at] of seen.entries()) {
+        if (now - at > 25_000) seen.delete(id);
+      }
+      if (seen.has(event.id)) return;
+      seen.set(event.id, now);
+
+      gameFxQueueRef.current.push(event);
+      gameFxQueueRef.current.sort((a, b) => {
+        if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+        return (a.startAt ?? 0) - (b.startAt ?? 0);
+      });
+      processNextGameFxRef.current();
+    });
     setOnBlackbirdEvent((event: BlackbirdEvent) => {
+      if (hasUnifiedGameFxRef.current) return;
       blackbirdQueueRef.current.push(event);
       if (!showBlackbirdRef.current) {
         processNextBlackbird();
       }
     });
     setOnCardPlayFx((event: CardPlayFxEvent) => {
+      if (hasUnifiedGameFxRef.current) return;
       enqueueCardPlayFx(event);
       trackRivalryFromPlay(event.playerId);
     });
     setOnDrawCardFx((event: DrawCardFxEvent) => {
+      if (hasUnifiedGameFxRef.current) return;
       const delay = Math.max(0, (event.startAt ?? Date.now()) - Date.now());
       setTimeout(() => {
         playCardDraw();
@@ -579,6 +721,10 @@ export default function GamePlayScreen() {
         // Keep gameplay fluid: these are expected server-side validations in race conditions.
         setShowFlyingCard(false);
         setFlyingCard(null);
+        const activeFx = activeGameFxRef.current;
+        if (activeFx?.type === "card_play") {
+          completeActiveGameFx(activeFx.id);
+        }
         return;
       }
       if (/No active session found|Player not found in game|Failed to reconnect|Session temporarily unavailable/i.test(error)) {
@@ -593,6 +739,7 @@ export default function GamePlayScreen() {
     });
     return () => {
       setOnPreparation(null);
+      setOnGameFx(null);
       setOnBlackbirdEvent(null);
       setOnCardPlayFx(null);
       setOnDrawCardFx(null);
@@ -600,6 +747,7 @@ export default function GamePlayScreen() {
     };
   }, [
     setOnPreparation,
+    setOnGameFx,
     setOnBlackbirdEvent,
     setOnCardPlayFx,
     setOnDrawCardFx,
@@ -608,6 +756,7 @@ export default function GamePlayScreen() {
     enqueueCardPlayFx,
     trackRivalryFromPlay,
     playCardDraw,
+    completeActiveGameFx,
     recoverSession,
     router,
   ]);
@@ -831,6 +980,7 @@ export default function GamePlayScreen() {
 
   // Keep discard fly animation synchronized from authoritative server state for all clients.
   useEffect(() => {
+    if (hasUnifiedGameFxRef.current) return;
     if (!gameState || gameState.discardPile.length === 0) return;
     const topCard = gameState.discardPile[gameState.discardPile.length - 1];
     if (!topCard) return;
@@ -1019,7 +1169,7 @@ export default function GamePlayScreen() {
         }}
       >
         <Image
-          source={require("@/assets/images/icon.png")}
+          source={require("@/assets/images/game-logo.png")}
           style={{ width: "100%", height: "100%" }}
           contentFit="contain"
         />
@@ -1201,6 +1351,22 @@ export default function GamePlayScreen() {
                     <Text style={{ color: "#FFB3B3", fontWeight: "800", fontSize: 12 }}>{rivalryBanner}</Text>
                   </View>
                 )}
+              </View>
+            )}
+            {momentBanner && (
+              <View style={{ alignItems: "center", marginTop: 6, marginBottom: 6 }}>
+                <View
+                  style={{
+                    backgroundColor: "rgba(8, 15, 24, 0.95)",
+                    borderWidth: 1,
+                    borderColor: "rgba(90, 240, 170, 0.8)",
+                    borderRadius: 13,
+                    paddingHorizontal: 14,
+                    paddingVertical: 7,
+                  }}
+                >
+                  <Text style={{ color: "#E6FFF3", fontWeight: "800", fontSize: 12 }}>{momentBanner}</Text>
+                </View>
               </View>
             )}
 
@@ -1885,6 +2051,7 @@ export default function GamePlayScreen() {
         variant={blackbirdVariant}
         phrase={blackbirdPhrase}
         onDone={() => {
+          const activeFx = activeGameFxRef.current;
           setShowBlackbird(false);
           setBlackbirdLoser(undefined);
           setBlackbirdWinner(undefined);
@@ -1896,6 +2063,10 @@ export default function GamePlayScreen() {
           setBlackbirdStatsText(undefined);
           setBlackbirdVariant(undefined);
           setBlackbirdPhrase(undefined);
+          if (activeFx?.type === "blackbird") {
+            completeActiveGameFx(activeFx.id);
+            return;
+          }
           // Process next queued event after a short delay
           setTimeout(() => {
             if (blackbirdQueueRef.current.length > 0) {
@@ -1909,8 +2080,13 @@ export default function GamePlayScreen() {
         card={flyingCard}
         visible={showFlyingCard}
         onDone={() => {
+          const activeFx = activeGameFxRef.current;
           setShowFlyingCard(false);
           setFlyingCard(null);
+          if (activeFx?.type === "card_play") {
+            completeActiveGameFx(activeFx.id);
+            return;
+          }
           setTimeout(() => {
             processNextCardPlayFx();
           }, 50);
