@@ -1,6 +1,5 @@
 // Load environment variables with proper priority (system > .env)
 import "./scripts/load-env.js";
-import { execSync } from "child_process";
 import os from "os";
 
 function isTunnelStartMode(): boolean {
@@ -42,20 +41,6 @@ function getLocalLanIp(): string | null {
       }
     }
   }
-
-  try {
-    const ipEn0 = execSync("ipconfig getifaddr en0", { stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .trim();
-    if (ipEn0) return ipEn0;
-  } catch {}
-
-  try {
-    const ipEn1 = execSync("ipconfig getifaddr en1", { stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .trim();
-    if (ipEn1) return ipEn1;
-  } catch {}
 
   return null;
 }
@@ -120,6 +105,49 @@ const env = {
 };
 
 /** @type {import("expo/config").ExpoConfig} */
+const includeBuildPropertiesPlugin = process.env.EXPO_SKIP_BUILD_PROPERTIES !== "1";
+
+const plugins: Array<string | [string, Record<string, unknown>]> = [
+  "expo-router",
+  [
+    "expo-audio",
+    {
+      microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
+    },
+  ],
+  [
+    "expo-video",
+    {
+      supportsBackgroundPlayback: true,
+      supportsPictureInPicture: true,
+    },
+  ],
+  [
+    "expo-splash-screen",
+    {
+      image: "./assets/images/game-logo.png",
+      imageWidth: 200,
+      resizeMode: "contain",
+      backgroundColor: "#ffffff",
+      dark: {
+        backgroundColor: "#000000",
+      },
+    },
+  ],
+];
+
+if (includeBuildPropertiesPlugin) {
+  plugins.push([
+    "expo-build-properties",
+    {
+      android: {
+        buildArchs: ["armeabi-v7a", "arm64-v8a"],
+        minSdkVersion: 24,
+      },
+    },
+  ]);
+}
+
 const config = {
   name: env.appName,
   slug: env.appSlug,
@@ -166,43 +194,7 @@ const config = {
     output: "static",
     favicon: "./assets/images/game-logo.png",
   },
-  plugins: [
-    "expo-router",
-    [
-      "expo-audio",
-      {
-        microphonePermission: "Allow $(PRODUCT_NAME) to access your microphone.",
-      },
-    ],
-    [
-      "expo-video",
-      {
-        supportsBackgroundPlayback: true,
-        supportsPictureInPicture: true,
-      },
-    ],
-    [
-      "expo-splash-screen",
-      {
-        image: "./assets/images/game-logo.png",
-        imageWidth: 200,
-        resizeMode: "contain",
-        backgroundColor: "#ffffff",
-        dark: {
-          backgroundColor: "#000000",
-        },
-      },
-    ],
-    [
-      "expo-build-properties",
-      {
-        android: {
-          buildArchs: ["armeabi-v7a", "arm64-v8a"],
-          minSdkVersion: 24,
-        },
-      },
-    ],
-  ],
+  plugins,
   experiments: {
     typedRoutes: true,
     reactCompiler: true,
