@@ -18,7 +18,7 @@ import { useAuth } from "@/lib/auth-provider";
 import { useSocket, type PreparationData, type BlackbirdEvent, type CardPlayFxEvent, type DrawCardFxEvent, type GameFxEvent } from "@/lib/socket-provider";
 import { useGameSounds } from "@/hooks/use-game-sounds";
 import { getBotProfileByName } from "@/lib/bot-profiles";
-import type { Card, CardSuit } from "@/shared/game-types";
+import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 /** Mini card backs for opponent hand display */
 function MiniCardFan({ count, maxShow = 6, compact = false }: { count: number; maxShow?: number; compact?: boolean }) {
@@ -200,6 +200,10 @@ export default function GamePlayScreen() {
   const activeGameFxRef = useRef<GameFxEvent | null>(null);
   const hasUnifiedGameFxRef = useRef(false);
   const seenGameFxRef = useRef<Map<string, number>>(new Map());
+  const lastProcessedGameFxSequenceRef = useRef(0);
+  const highestQueuedGameFxSequenceRef = useRef(0);
+  const activeGameFxRoomIdRef = useRef<number | null>(null);
+  const gameStateRef = useRef<GameState | null>(null);
   const processNextGameFxRef = useRef<() => void>(() => {});
   const prevHandCountByPlayerRef = useRef<Record<number, number>>({});
   const playerNameByIdRef = useRef<Record<number, string>>({});
@@ -553,6 +557,10 @@ export default function GamePlayScreen() {
     const active = activeGameFxRef.current;
     if (!active) return;
     if (expectedId && active.id !== expectedId) return;
+    lastProcessedGameFxSequenceRef.current = Math.max(
+      lastProcessedGameFxSequenceRef.current,
+      active.sequence,
+    );
     activeGameFxRef.current = null;
     setTimeout(() => {
       processNextGameFxRef.current();
@@ -585,6 +593,38 @@ export default function GamePlayScreen() {
         case "draw_card": {
           playCardDraw();
           setTimeout(() => completeActiveGameFx(next.id), 140);
+          return;
+        }
+        case "special_card": {
+          if (next.specialRank === "ass") {
+            setAssFlash(true);
+            setTimeout(() => setAssFlash(false), 420);
+            showMomentBanner(`🂡 ${next.playerName || "Spieler"} spielt Ass`, 1200);
+            setTimeout(() => completeActiveGameFx(next.id), 360);
+            return;
+          }
+          if (next.specialRank === "bube") {
+            setWishFxSuit(next.wishSuit);
+            setWishFxKey((k) => k + 1);
+            setShowWishFx(true);
+            showMomentBanner(
+              `🂫 ${next.playerName || "Spieler"} wunscht ${next.wishSuit || "eine Farbe"}`,
+              1400,
+            );
+            setTimeout(() => completeActiveGameFx(next.id), 420);
+            return;
+          }
+          completeActiveGameFx(next.id);
+          return;
+        }
+        case "draw_chain": {
+          const chain = Math.max(2, next.drawChainCount ?? 2);
+          const intensity = chain >= 5 ? 5 : chain >= 4 ? 4 : chain >= 3 ? 3 : 2;
+          setDiscardImpactIntensity(intensity as 1 | 2 | 3 | 4 | 5);
+          setDiscardImpactKey((k) => k + 1);
+          setShowDiscardImpact(true);
+          showMomentBanner(`💥 Ziehkette x${chain}`, 1400);
+          setTimeout(() => completeActiveGameFx(next.id), 430);
           return;
         }
         case "blackbird": {
@@ -670,6 +710,25 @@ export default function GamePlayScreen() {
   const currentPlayer = gameState?.players.find((p) => p.userId === user?.id);
 
   useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
+  useEffect(() => {
+    const roomId = gameState?.roomId ?? null;
+    if (activeGameFxRoomIdRef.current === roomId) return;
+    activeGameFxRoomIdRef.current = roomId;
+    gameFxQueueRef.current = [];
+    activeGameFxRef.current = null;
+    seenGameFxRef.current.clear();
+    lastProcessedGameFxSequenceRef.current = 0;
+    highestQueuedGameFxSequenceRef.current = 0;
+    if (gameFxTimerRef.current) {
+      clearTimeout(gameFxTimerRef.current);
+      gameFxTimerRef.current = null;
+    }
+  }, [gameState?.roomId]);
+
+  useEffect(() => {
     setOnPreparation((data: PreparationData) => {
       setPrepSeatDraws(data.seatDraws.map(d => ({ playerId: d.playerId, username: d.username, card: d.card })));
       setPrepDealerDraws(data.dealerDraws.map(d => ({ playerId: d.playerId, username: d.username, card: d.card })));
@@ -681,6 +740,10 @@ export default function GamePlayScreen() {
     });
     setOnGameFx((event: GameFxEvent) => {
       if (!event?.id) return;
+      const currentState = gameStateRef.current;
+      if (!currentState || event.roomId !== currentState.roomId) {
+        return;
+      }
       hasUnifiedGameFxRef.current = true;
       const seen = seenGameFxRef.current;
       const now = Date.now();
@@ -688,6 +751,17 @@ export default function GamePlayScreen() {
         if (now - at > 25_000) seen.delete(id);
       }
       if (seen.has(event.id)) return;
+      if (event.sequence <= lastProcessedGameFxSequenceRef.current) return;
+      const highestSeenSequence = Math.max(
+        lastProcessedGameFxSequenceRef.current,
+        highestQueuedGameFxSequenceRef.current,
+      );
+      if (!event.replay && event.sequence > highestSeenSequence + 1) {
+        console.warn(
+          `[game-fx] Sequence gap detected roomId=${event.roomId} expected>${highestSeenSequence} got=${event.sequence}. Trigger recover.`,
+        );
+        void recoverSession();
+      }
       seen.set(event.id, now);
 
       gameFxQueueRef.current.push(event);
@@ -695,6 +769,10 @@ export default function GamePlayScreen() {
         if (a.sequence !== b.sequence) return a.sequence - b.sequence;
         return (a.startAt ?? 0) - (b.startAt ?? 0);
       });
+      highestQueuedGameFxSequenceRef.current = Math.max(
+        highestQueuedGameFxSequenceRef.current,
+        event.sequence,
+      );
       processNextGameFxRef.current();
     });
     setOnBlackbirdEvent((event: BlackbirdEvent) => {

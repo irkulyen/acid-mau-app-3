@@ -343,6 +343,175 @@ describe("Multiplayer Room System", () => {
     });
   });
 
+  it("should deliver synchronized game-fx events to all room members", async () => {
+    let socketError: Error | null = null;
+    const waitFor = async (predicate: () => boolean, timeoutMs: number, label: string) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (socketError) throw socketError;
+        if (predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      throw new Error(`Timeout: ${label}`);
+    };
+
+    const hostToken = await createTestToken(201, "fx-host@test.local");
+    const guestToken = await createTestToken(202, "fx-guest@test.local");
+    const hostSocket = ioClient(API_URL, {
+      path: SOCKET_PATH,
+      transports: ["websocket", "polling"],
+      auth: { token: hostToken },
+      autoConnect: false,
+    });
+    const guestSocket = ioClient(API_URL, {
+      path: SOCKET_PATH,
+      transports: ["websocket", "polling"],
+      auth: { token: guestToken },
+      autoConnect: false,
+    });
+
+    const hostFx: any[] = [];
+    const guestFx: any[] = [];
+    let hostState: any = null;
+    let guestState: any = null;
+    let localRoomCode = "";
+
+    const cleanup = () => {
+      hostSocket.removeAllListeners();
+      guestSocket.removeAllListeners();
+      hostSocket.disconnect();
+      guestSocket.disconnect();
+    };
+
+    try {
+      hostSocket.on("game-fx", (event) => hostFx.push(event));
+      guestSocket.on("game-fx", (event) => guestFx.push(event));
+      hostSocket.on("game-state-update", (state) => {
+        hostState = state;
+      });
+      guestSocket.on("game-state-update", (state) => {
+        guestState = state;
+      });
+
+      hostSocket.on("connect", () => {
+        hostSocket.emit("create-room", { userId: 201, username: "FxHost", maxPlayers: 4, isPrivate: true });
+      });
+      hostSocket.on("room-created", (payload) => {
+        localRoomCode = payload.roomCode;
+        if (guestSocket.disconnected) guestSocket.connect();
+      });
+      guestSocket.on("connect", () => {
+        if (!localRoomCode) return;
+        guestSocket.emit("join-room", { roomCode: localRoomCode, userId: 202, username: "FxGuest" });
+      });
+      hostSocket.on("error", (err) => {
+        socketError = new Error(`Host socket error: ${err.message}`);
+      });
+      guestSocket.on("error", (err) => {
+        socketError = new Error(`Guest socket error: ${err.message}`);
+      });
+
+      hostSocket.connect();
+
+      await waitFor(() => Boolean(localRoomCode && hostState && guestState), 8000, "initial fx room state");
+
+      const hostPlayer = hostState.players.find((p: any) => p.userId === 201);
+      hostSocket.emit("game-action", {
+        roomId: hostState.roomId,
+        playerId: hostPlayer.id,
+        action: { type: "START_GAME" },
+      });
+
+      await waitFor(
+        () => hostState?.phase === "playing" && guestState?.phase === "playing",
+        8000,
+        "fx room playing phase",
+      );
+
+      const drawActorUserId = hostState.players[hostState.currentPlayerIndex]?.userId;
+      const drawActorSocket = drawActorUserId === 201 ? hostSocket : guestSocket;
+      const drawActorState = drawActorUserId === 201 ? hostState : guestState;
+      const drawActorPlayer = drawActorState.players.find((p: any) => p.userId === drawActorUserId);
+      const drawBaseline = Math.max(
+        hostFx.filter((e) => e.type === "draw_card").length,
+        guestFx.filter((e) => e.type === "draw_card").length,
+      );
+
+      drawActorSocket.emit("game-action", {
+        roomId: drawActorState.roomId,
+        playerId: drawActorPlayer.id,
+        action: { type: "DRAW_CARD" },
+      });
+
+      await waitFor(
+        () =>
+          hostFx.filter((e) => e.type === "draw_card").length > drawBaseline &&
+          guestFx.filter((e) => e.type === "draw_card").length > drawBaseline,
+        8000,
+        "draw_card fx on both sockets",
+      );
+
+      const hostDrawFx = hostFx.filter((e) => e.type === "draw_card").at(-1);
+      const guestDrawFx = guestFx.filter((e) => e.type === "draw_card").at(-1);
+      expect(hostDrawFx.id).toBe(guestDrawFx.id);
+      expect(hostDrawFx.sequence).toBe(guestDrawFx.sequence);
+      expect(hostDrawFx.roomId).toBe(guestDrawFx.roomId);
+
+      const resolvePlayableActor = () => {
+        const actorUserId = hostState.players[hostState.currentPlayerIndex]?.userId;
+        if (actorUserId === 201 && (hostState.playableCardIds?.length ?? 0) > 0) {
+          const card = hostState.players
+            .find((p: any) => p.userId === 201)
+            ?.hand?.find((c: any) => hostState.playableCardIds.includes(c.id));
+          if (card) return { socket: hostSocket, state: hostState, userId: 201, card };
+        }
+        if (actorUserId === 202 && (guestState.playableCardIds?.length ?? 0) > 0) {
+          const card = guestState.players
+            .find((p: any) => p.userId === 202)
+            ?.hand?.find((c: any) => guestState.playableCardIds.includes(c.id));
+          if (card) return { socket: guestSocket, state: guestState, userId: 202, card };
+        }
+        return null;
+      };
+
+      const playableActor = resolvePlayableActor();
+      if (playableActor) {
+        const cardPlayBaseline = Math.max(
+          hostFx.filter((e) => e.type === "card_play").length,
+          guestFx.filter((e) => e.type === "card_play").length,
+        );
+
+        const actorPlayer = playableActor.state.players.find((p: any) => p.userId === playableActor.userId);
+        const playAction: any = { type: "PLAY_CARD", cardId: playableActor.card.id };
+        if (playableActor.card.rank === "bube") {
+          // Unter requires explicit wish suit in current ruleset.
+          playAction.wishSuit = "eichel";
+        }
+        playableActor.socket.emit("game-action", {
+          roomId: playableActor.state.roomId,
+          playerId: actorPlayer.id,
+          action: playAction,
+        });
+
+        await waitFor(
+          () =>
+            hostFx.filter((e) => e.type === "card_play").length > cardPlayBaseline &&
+            guestFx.filter((e) => e.type === "card_play").length > cardPlayBaseline,
+          8000,
+          "card_play fx on both sockets",
+        );
+
+        const hostCardPlayFx = hostFx.filter((e) => e.type === "card_play").at(-1);
+        const guestCardPlayFx = guestFx.filter((e) => e.type === "card_play").at(-1);
+        expect(hostCardPlayFx.id).toBe(guestCardPlayFx.id);
+        expect(hostCardPlayFx.sequence).toBe(guestCardPlayFx.sequence);
+        expect(hostCardPlayFx.roomId).toBe(guestCardPlayFx.roomId);
+      }
+    } finally {
+      cleanup();
+    }
+  }, 20000);
+
   it("should prevent joining a non-existent room", async () => {
     const token = await createTestToken(4, "invalid@test.local");
     return new Promise<void>((resolve, reject) => {

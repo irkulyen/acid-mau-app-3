@@ -2217,6 +2217,32 @@ export function setupGameSocket(httpServer: HTTPServer) {
               playerName: actorAfter?.username,
               startAt: Date.now() + 150,
             });
+
+            // Keep critical special-card feedback server-authoritative even when
+            // optional blackbird events are disabled in the environment.
+            if (!ENV.enableBlackbirdEvents) {
+              if (newTop.rank === "ass" || newTop.rank === "bube") {
+                emitGameFx(io, roomId, {
+                  type: "special_card",
+                  playerId: actorPlayerId,
+                  userId: actorAfter?.userId,
+                  playerName: actorAfter?.username,
+                  specialRank: newTop.rank,
+                  wishSuit: newTop.rank === "bube" ? (newState.currentWishSuit ?? undefined) : undefined,
+                  startAt: Date.now() + 260,
+                }, 120);
+              }
+              if (newTop.rank === "7") {
+                emitGameFx(io, roomId, {
+                  type: "draw_chain",
+                  playerId: actorPlayerId,
+                  userId: actorAfter?.userId,
+                  playerName: actorAfter?.username,
+                  drawChainCount: newState.drawChainCount,
+                  startAt: Date.now() + 230,
+                }, 120);
+              }
+            }
           }
         }
         if (action.type === "DRAW_CARD") {

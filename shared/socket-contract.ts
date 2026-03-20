@@ -74,6 +74,8 @@ export interface DrawCardFxEvent {
 export type GameFxEventType =
   | "card_play"
   | "draw_card"
+  | "special_card"
+  | "draw_chain"
   | "blackbird"
   | "elimination"
   | "round_transition"
@@ -92,6 +94,9 @@ export interface GameFxEvent {
   playerName?: string;
   card?: Card;
   drawCount?: number;
+  drawChainCount?: number;
+  specialRank?: Card["rank"];
+  wishSuit?: string;
   roundNumber?: number;
   eliminatedUserId?: number;
   eliminatedPlayerName?: string;
