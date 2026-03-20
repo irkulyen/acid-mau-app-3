@@ -47,6 +47,7 @@ export interface GameState {
   hostUserId: number;
   hasRoundStarted: boolean; // Prevents isRoundOver check immediately after startNewRound
   openingFreePlay: boolean; // Schellen-8 als Startkarte: erster Spieler darf beliebige Karte legen
+  maxPlayers?: number; // Room capacity hint for lobby/server sync
   // Server-computed hint for the currently connected player.
   // Client must not derive rules locally.
   playableCardIds?: string[];

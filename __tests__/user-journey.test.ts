@@ -10,7 +10,8 @@ import { describe, it, expect } from "vitest";
  */
 describe("User Journey: Registrierung → Login", () => {
   const apiUrl = process.env.E2E_API_URL;
-  const runRemoteE2E = Boolean(apiUrl);
+  const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
+  const runRemoteE2E = Boolean(apiUrl && hasDatabaseUrl);
 
   (runRemoteE2E ? it : it.skip)("sollte Registrierung, Login und Profil-Abruf erfolgreich durchführen", async () => {
     if (!apiUrl) throw new Error("E2E_API_URL fehlt");

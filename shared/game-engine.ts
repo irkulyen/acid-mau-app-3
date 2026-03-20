@@ -24,7 +24,13 @@ import {
 /**
  * Creates initial game state
  */
-export function createGameState(roomId: number, roomCode: string, players: Player[], hostUserId: number): GameState {
+export function createGameState(
+  roomId: number,
+  roomCode: string,
+  players: Player[],
+  hostUserId: number,
+  maxPlayers: number = 5,
+): GameState {
   return {
     roomId,
     roomCode,
@@ -42,6 +48,7 @@ export function createGameState(roomId: number, roomCode: string, players: Playe
     hostUserId,
     hasRoundStarted: false,
     openingFreePlay: false,
+    maxPlayers,
   };
 }
 

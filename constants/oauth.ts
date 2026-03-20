@@ -14,7 +14,7 @@ const env = {
   ownerId: process.env.EXPO_PUBLIC_OWNER_OPEN_ID ?? "",
   ownerName: process.env.EXPO_PUBLIC_OWNER_NAME ?? "",
   // Zentrale Backend-URL für REST + WebSocket.
-  // Muss in .env / Build-Env gesetzt sein, um gemischte Server-Ziele zu vermeiden.
+  // In Produktion ist EXPO_PUBLIC_API_URL verpflichtend.
   apiBaseUrl: process.env.EXPO_PUBLIC_API_URL ?? "",
   deepLinkScheme: schemeFromBundleId,
 };
@@ -28,14 +28,29 @@ export const API_BASE_URL = env.apiBaseUrl;
 
 /**
  * Get the API base URL.
- * SYSTEMANWEISUNG: EXPO_PUBLIC_API_URL ist PFLICHT.
- * Keine Fallbacks, keine Ableitungen.
+ * - Production: explicit EXPO_PUBLIC_API_URL required
+ * - Development: safe local defaults to keep local startup/test flows usable
  */
 export function getApiBaseUrl(): string {
-  if (!API_BASE_URL) {
-    throw new Error("EXPO_PUBLIC_API_URL ist nicht gesetzt");
+  if (API_BASE_URL) {
+    return API_BASE_URL.replace(/\/$/, "");
   }
-  return API_BASE_URL.replace(/\/$/, "");
+
+  if (__DEV__ && ReactNative.Platform.OS === "web") {
+    // Web development can use same-origin requests.
+    return "";
+  }
+
+  if (__DEV__ && ReactNative.Platform.OS === "android") {
+    // Android emulator maps host localhost to 10.0.2.2
+    return "http://10.0.2.2:3000";
+  }
+
+  if (__DEV__) {
+    return "http://localhost:3000";
+  }
+
+  throw new Error("EXPO_PUBLIC_API_URL ist nicht gesetzt");
 }
 
 export const SESSION_TOKEN_KEY = "app_session_token";

@@ -296,7 +296,7 @@ export const appRouter = router({
         }
 
         const currentPlayers = state.players.length;
-        const maxPlayers = (state as any).maxPlayers || room.maxPlayers;
+        const maxPlayers = state.maxPlayers ?? room.maxPlayers;
         if (currentPlayers >= maxPlayers) continue;
         result.push({ ...room, currentPlayers, maxPlayers, status: "waiting" });
       }

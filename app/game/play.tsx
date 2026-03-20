@@ -1081,7 +1081,7 @@ export default function GamePlayScreen() {
                   {isMyTurn ? "Dein Zug" : `Am Zug: ${currentTurnPlayer?.username}`}
                 </Text>
                 <Text style={{ color: "rgba(255,255,255,0.82)", fontWeight: "700", fontSize: 13 }}>
-                  R{gameState.roundNumber} · {gameState.players.length}/{(gameState as any).maxPlayers || gameState.players.length}
+                  R{gameState.roundNumber} · {gameState.players.length}/{gameState.maxPlayers ?? gameState.players.length}
                 </Text>
               </Animated.View>
               <View

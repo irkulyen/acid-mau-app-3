@@ -214,6 +214,7 @@ export default function RoomScreen() {
 
   const isHost = activeGameState && user && activeGameState.hostUserId === user.id;
   const canStart = activeGameState && activeGameState.players.length >= 2;
+  const roomMaxPlayers = activeGameState?.maxPlayers ?? 5;
   const myPreparationUserId = user?.id ?? activeGameState?.players.find((p) => profile?.username && p.username === profile.username)?.userId;
 
   // Show preparation screen
@@ -350,13 +351,13 @@ export default function RoomScreen() {
 
               <Pressable
                 onPress={handleAddBot}
-                disabled={activeGameState && activeGameState.players.length >= (activeGameState as any).maxPlayers}
+                disabled={Boolean(activeGameState && activeGameState.players.length >= roomMaxPlayers)}
                 style={({ pressed }) => [{
                   backgroundColor: '#0a7ea4',
                   paddingHorizontal: 32,
                   paddingVertical: 16,
                   borderRadius: 16,
-                  opacity: (activeGameState && activeGameState.players.length >= (activeGameState as any).maxPlayers) ? 0.5 : pressed ? 0.8 : 1,
+                  opacity: (activeGameState && activeGameState.players.length >= roomMaxPlayers) ? 0.5 : pressed ? 0.8 : 1,
                 }]}
               >
                 <Text className="text-background text-lg font-semibold text-center">

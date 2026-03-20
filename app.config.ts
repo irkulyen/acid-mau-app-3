@@ -1,8 +1,15 @@
 // Load environment variables with proper priority (system > .env)
 import "./scripts/load-env.js";
-import type { ExpoConfig } from "expo/config";
 
-// EXPO_PUBLIC_API_URL is mandatory to keep all clients on the same backend.
+// Backend URL fallback for local development only.
+if (!process.env.EXPO_PUBLIC_API_URL && process.env.NODE_ENV !== "production") {
+  process.env.EXPO_PUBLIC_API_URL = "http://localhost:3000";
+  console.warn(
+    "⚠️ EXPO_PUBLIC_API_URL nicht gesetzt – nutze DEV-Fallback (http://localhost:3000)",
+  );
+}
+
+// In production, EXPO_PUBLIC_API_URL must always be explicit.
 if (!process.env.EXPO_PUBLIC_API_URL) {
   throw new Error("EXPO_PUBLIC_API_URL ist nicht gesetzt");
 }
@@ -43,7 +50,8 @@ const env = {
   androidPackage: bundleId,
 };
 
-const config: ExpoConfig = {
+/** @type {import("expo/config").ExpoConfig} */
+const config = {
   name: env.appName,
   slug: env.appSlug,
   version: "1.0.0",

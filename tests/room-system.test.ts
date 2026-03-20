@@ -59,7 +59,7 @@ describe("Multiplayer Room System", () => {
         socket1.emit("create-room", {
           userId: 1,
           username: "Host",
-          maxPlayers: 5,
+          maxPlayers: 6,
         });
       });
 
@@ -67,7 +67,7 @@ describe("Multiplayer Room System", () => {
         try {
           expect(data.roomCode).toBeDefined();
           expect(data.roomCode.length).toBe(6);
-          expect(data.maxPlayers).toBe(5);
+          expect(data.maxPlayers).toBe(6);
           roomCode = data.roomCode;
           resolve();
         } catch (err) {
@@ -116,14 +116,42 @@ describe("Multiplayer Room System", () => {
   });
 
   it("should broadcast state to all players", async () => {
+    const token = await createTestToken(3, "broadcast@test.local");
     return new Promise<void>((resolve, reject) => {
-      socket1.on("game-state-update", (state) => {
+      const socket3 = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token },
+      });
+
+      const timer = setTimeout(() => {
+        socket3.disconnect();
+        reject(new Error("Timeout waiting for broadcast state"));
+      }, 7000);
+
+      socket1.once("game-state-update", (state) => {
+        clearTimeout(timer);
+        socket3.disconnect();
         try {
-          expect(state.players.length).toBe(2);
+          expect(state.players.length).toBeGreaterThanOrEqual(2);
           resolve();
         } catch (err) {
           reject(err);
         }
+      });
+
+      socket3.on("connect", () => {
+        socket3.emit("join-room", {
+          roomCode,
+          userId: 3,
+          username: "BroadcastGuest",
+        });
+      });
+
+      socket3.on("error", (data) => {
+        clearTimeout(timer);
+        socket3.disconnect();
+        reject(new Error(`Socket error: ${data?.message || "unknown"}`));
       });
     });
   });
@@ -139,15 +167,16 @@ describe("Multiplayer Room System", () => {
 
       socket3.on("connect", () => {
         socket3.emit("join-room", {
-          roomCode: "ZZZZ",
+          roomCode: "QWERTY",
           userId: 4,
           username: "InvalidUser",
         });
       });
 
-      socket3.on("error", (data) => {
+      socket3.on("join-failed", (data) => {
         try {
-          expect(["Room not found", "Invalid room code"]).toContain(data.message);
+          expect(data.code).toBe("ROOM_NOT_FOUND");
+          expect(data.message).toBe("Room not found");
           socket3.disconnect();
           resolve();
         } catch (err) {
@@ -214,6 +243,13 @@ describe("Multiplayer Room System", () => {
       });
 
       let userId = 5;
+      let reconnectSocket: Socket | null = null;
+      let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+      const timeout = setTimeout(() => {
+        socket3.disconnect();
+        reconnectSocket?.disconnect();
+        reject(new Error("Timeout waiting for reconnect"));
+      }, 10000);
 
       socket3.on("connect", () => {
         socket3.emit("join-room", {
@@ -223,52 +259,50 @@ describe("Multiplayer Room System", () => {
         });
       });
 
-      socket3.on("game-state-update", (state) => {
+      socket3.once("game-state-update", () => {
         socket3.disconnect();
 
-        setTimeout(() => {
-          const socket3Reconnect = ioClient(API_URL, {
+        reconnectTimer = setTimeout(() => {
+          reconnectSocket = ioClient(API_URL, {
             path: SOCKET_PATH,
             transports: ["websocket", "polling"],
             auth: { token },
           });
 
-          socket3Reconnect.on("connect", () => {
-            socket3Reconnect.emit("reconnect-room", { userId });
+          reconnectSocket.on("connect", () => {
+            reconnectSocket?.emit("reconnect-room", { userId });
           });
 
-          socket3Reconnect.on("game-state-update", (reconnectState) => {
+          reconnectSocket.once("game-state-update", (reconnectState) => {
             try {
               expect(reconnectState.players.some((p: any) => p.userId === userId)).toBe(true);
-              socket3Reconnect.disconnect();
+              if (reconnectTimer) clearTimeout(reconnectTimer);
+              clearTimeout(timeout);
+              reconnectSocket?.disconnect();
               resolve();
             } catch (err) {
-              socket3Reconnect.disconnect();
+              if (reconnectTimer) clearTimeout(reconnectTimer);
+              clearTimeout(timeout);
+              reconnectSocket?.disconnect();
               reject(err);
             }
           });
 
-          socket3Reconnect.on("error", (err) => {
-            socket3Reconnect.disconnect();
+          reconnectSocket.on("error", (err) => {
+            if (reconnectTimer) clearTimeout(reconnectTimer);
+            clearTimeout(timeout);
+            reconnectSocket?.disconnect();
             reject(new Error(`Reconnect error: ${err.message}`));
           });
-
-          setTimeout(() => {
-            socket3Reconnect.disconnect();
-            reject(new Error("Timeout waiting for reconnect"));
-          }, 10000);
         }, 500);
       });
 
       socket3.on("error", (err) => {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        clearTimeout(timeout);
         socket3.disconnect();
         reject(new Error(`Socket error: ${err.message}`));
       });
-
-      setTimeout(() => {
-        socket3.disconnect();
-        reject(new Error("Timeout waiting for initial join"));
-      }, 10000);
     });
   });
 

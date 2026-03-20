@@ -122,7 +122,7 @@ async function reconcileRoomState(): Promise<void> {
 
       const nextStatus = state.phase === "waiting" ? "waiting" : "playing";
       const nextCurrentPlayers = state.players.length;
-      const nextMaxPlayers = (state as any).maxPlayers || room.maxPlayers;
+      const nextMaxPlayers = state.maxPlayers ?? room.maxPlayers;
       const hasChanges =
         room.status !== nextStatus ||
         room.currentPlayers !== nextCurrentPlayers ||

@@ -1358,7 +1358,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
         socket.emit("room-joined", {
           roomId,
           roomCode: gameState.roomCode,
-          maxPlayers: (gameState as any).maxPlayers || 5,
+          maxPlayers: gameState.maxPlayers ?? 5,
         });
         replayBlackbirdEventsForSocket(socket, roomId);
 
@@ -1459,8 +1459,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           isReady: false,
         };
 
-        const gameState = createGameState(roomId, roomCode, [player], userId);
-        (gameState as any).maxPlayers = maxPlayers;
+        const gameState = createGameState(roomId, roomCode, [player], userId, maxPlayers);
         await realtimeStore.setGameState(roomId, gameState);
 
         // Join socket room (single tracked room per socket)
@@ -1555,7 +1554,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
               throw new Error("Game already in progress");
             }
 
-            const maxPlayers = (currentState as any).maxPlayers || 5;
+            const maxPlayers = currentState.maxPlayers ?? room.maxPlayers ?? 5;
             if (currentState.players.length >= maxPlayers) {
               throw new Error("Room is full");
             }
@@ -1622,7 +1621,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
         socket.emit("room-joined", {
           roomId,
           roomCode,
-          maxPlayers: (gameState as any).maxPlayers || room.maxPlayers || 5,
+          maxPlayers: gameState.maxPlayers ?? room.maxPlayers ?? 5,
         });
         if (gameState.phase === "playing") {
           replayBlackbirdEventsForSocket(socket, roomId);
@@ -1671,7 +1670,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
             throw new Error("Can only add bots in waiting phase");
           }
 
-          const maxPlayers = (gameState as any).maxPlayers || 5;
+          const maxPlayers = gameState.maxPlayers ?? 5;
           if (gameState.players.length >= maxPlayers) {
             throw new Error("Room is full");
           }

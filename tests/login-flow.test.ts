@@ -30,6 +30,8 @@ function createPublicContext(): { ctx: TrpcContext; cookies: CookieCall[] } {
 
 describe("Login Flow", () => {
   const originalNodeEnv = process.env.NODE_ENV;
+  const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
+  const dbTest = hasDatabaseUrl ? it : it.skip;
 
   beforeEach(() => {
     (process.env as Record<string, string | undefined>).NODE_ENV = "development";
@@ -39,7 +41,7 @@ describe("Login Flow", () => {
     (process.env as Record<string, string | undefined>).NODE_ENV = originalNodeEnv;
   });
 
-  it("should login successfully with correct credentials", async () => {
+  dbTest("should login successfully with correct credentials", async () => {
     const { ctx, cookies } = createPublicContext();
     const caller = appRouter.createCaller(ctx);
 
@@ -55,7 +57,7 @@ describe("Login Flow", () => {
     expect(cookies[0]?.value).toBeTypeOf("string");
   });
 
-  it("should fail login with wrong password", async () => {
+  dbTest("should fail login with wrong password", async () => {
     const { ctx } = createPublicContext();
     const caller = appRouter.createCaller(ctx);
 

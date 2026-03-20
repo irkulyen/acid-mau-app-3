@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { processAction } from "../game-engine";
 import type { GameState, Card } from "../game-types";
 
-function makeCard(suit: string, rank: string): Card {
-  return { suit: suit as any, rank: rank as any, id: `${suit}-${rank}` };
+function makeCard(suit: Card["suit"], rank: Card["rank"]): Card {
+  return { suit, rank, id: `${suit}-${rank}` };
 }
 
 function makePlayer(id: number, userId: number, hand: Card[]) {
@@ -26,7 +26,7 @@ function makeState(players: ReturnType<typeof makePlayer>[], discardPile: Card[]
     players,
     currentPlayerIndex: 0,
     dealerIndex: 0,
-    deck: [makeCard("eichel", "9"), makeCard("gras", "9"), makeCard("herz", "9")],
+    deck: [makeCard("eichel", "9"), makeCard("gruen", "9"), makeCard("rot", "9")],
     discardPile,
     direction: "clockwise",
     currentWishSuit: null,
@@ -36,6 +36,7 @@ function makeState(players: ReturnType<typeof makePlayer>[], discardPile: Card[]
     hostUserId: 1,
     hasRoundStarted: true,
     openingFreePlay: false,
+    maxPlayers: players.length,
   };
 }
 
@@ -43,13 +44,12 @@ describe("Ass Bug bei 2 Spielern", () => {
   it("Spieler A legt Ass → B setzt aus → A ist wieder dran → kein Freeze", () => {
     const eichelAss = makeCard("eichel", "ass");
     const eichelKonig = makeCard("eichel", "konig");
-    const grasAss = makeCard("gras", "ass");
-    const grasKonig = makeCard("gras", "konig");
+    const gruenKonig = makeCard("gruen", "konig");
 
     const state = makeState(
       [
         makePlayer(1, 100, [eichelAss, eichelKonig]), // A ist dran
-        makePlayer(2, 200, [grasKonig]),               // B
+        makePlayer(2, 200, [gruenKonig]),               // B
       ],
       [makeCard("eichel", "7")]
     );
@@ -76,12 +76,12 @@ describe("Ass Bug bei 2 Spielern", () => {
 
   it("Spieler A legt Ass als letzte Karte → Runde endet sofort", () => {
     const eichelAss = makeCard("eichel", "ass");
-    const grasKonig = makeCard("gras", "konig");
+    const gruenKonig = makeCard("gruen", "konig");
 
     const state = makeState(
       [
         makePlayer(1, 100, [eichelAss]), // A hat nur Ass
-        makePlayer(2, 200, [grasKonig]), // B
+        makePlayer(2, 200, [gruenKonig]), // B
       ],
       [makeCard("eichel", "7")]
     );
@@ -96,16 +96,16 @@ describe("Ass Bug bei 2 Spielern", () => {
   });
 
   it("Spieler B legt Ass → A setzt aus → B ist wieder dran → kein Freeze", () => {
-    const grasAss = makeCard("gras", "ass");
+    const gruenAss = makeCard("gruen", "ass");
     const eichelKonig = makeCard("eichel", "konig");
-    const grasKonig = makeCard("gras", "konig");
+    const gruenKonig = makeCard("gruen", "konig");
 
     const state = makeState(
       [
         makePlayer(1, 100, [eichelKonig]),           // A (Index 0)
-        makePlayer(2, 200, [grasAss, grasKonig]),    // B (Index 1)
+        makePlayer(2, 200, [gruenAss, gruenKonig]),    // B (Index 1)
       ],
-      [makeCard("gras", "7")]
+      [makeCard("gruen", "7")]
     );
 
     // Erst A ziehen lassen damit B dran ist
@@ -114,7 +114,7 @@ describe("Ass Bug bei 2 Spielern", () => {
     expect(afterADraw.currentPlayerIndex).toBe(1); // B ist dran
 
     // B legt Ass
-    const afterBass = processAction(afterADraw, { type: "PLAY_CARD", cardId: "gras-ass" }, 2);
+    const afterBass = processAction(afterADraw, { type: "PLAY_CARD", cardId: "gruen-ass" }, 2);
     console.log("Phase nach B legt Ass:", afterBass.phase);
     console.log("currentPlayerIndex:", afterBass.currentPlayerIndex);
     console.log("skipNextPlayer:", afterBass.skipNextPlayer);
