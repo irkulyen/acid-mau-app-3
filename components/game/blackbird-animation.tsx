@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { View, Text, StyleSheet, Dimensions } from "react-native";
+import { View, Text, StyleSheet, Dimensions, Modal, Platform } from "react-native";
 import { Image } from "expo-image";
 import Animated, {
   useSharedValue,
@@ -628,9 +628,10 @@ export function BlackbirdAnimation({
   };
   const colors = getColors();
 
-  if (!visible && trail.length === 0 && confetti.length === 0) return null;
+  const overlayVisible = visible || trail.length > 0 || confetti.length > 0;
+  if (!overlayVisible) return null;
 
-  return (
+  const overlayContent = (
     <Animated.View style={[StyleSheet.absoluteFill, shakeStyle]} pointerEvents="none">
       {/* Screen flash */}
       <Animated.View style={[{
@@ -1026,6 +1027,22 @@ export function BlackbirdAnimation({
         </Animated.View>
       )}
     </Animated.View>
+  );
+
+  if (Platform.OS === "web") {
+    return overlayContent;
+  }
+
+  return (
+    <Modal
+      visible={overlayVisible}
+      transparent
+      animationType="none"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+    >
+      {overlayContent}
+    </Modal>
   );
 }
 

@@ -81,6 +81,31 @@ export interface DrawCardFxEvent {
   drawCount?: number;
 }
 
+export const REACTION_EMOJIS = ["😈", "😤", "😂", "🐦", "👀", "⚡"] as const;
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+export interface ReactionEvent {
+  id: string;
+  roomId: number;
+  userId: number;
+  playerId?: number;
+  username: string;
+  emoji: ReactionEmoji;
+  createdAt: number;
+  expiresAt: number;
+  targetUserId?: number;
+  targetPlayerId?: number;
+  targetUsername?: string;
+  replay?: boolean;
+  source?:
+    | "manual"
+    | "special_7"
+    | "special_ass"
+    | "one_card"
+    | "elimination"
+    | "win";
+}
+
 export type GameFxEventType =
   | "card_play"
   | "draw_card"
@@ -107,6 +132,7 @@ export interface GameFxEvent {
   drawCount?: number;
   drawChainCount?: number;
   specialRank?: Card["rank"];
+  direction?: "clockwise" | "counterclockwise";
   wishSuit?: string;
   roundNumber?: number;
   eliminatedUserId?: number;

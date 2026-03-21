@@ -150,14 +150,23 @@ export function useGameSounds() {
     }
 
     if (typeof profile?.volume === "number") {
-      player.volume = Math.max(0, Math.min(1, profile.volume));
+      const safeVolume = Math.max(0, Math.min(1, profile.volume));
+      try {
+        player.volume = safeVolume;
+      } catch (error) {
+        console.warn(`[useGameSounds] Failed to set volume for ${label}:`, error);
+      }
     }
     if (typeof profile?.playbackRate === "number") {
       const safeRate = Math.max(0.25, Math.min(2, profile.playbackRate));
       try {
         player.setPlaybackRate(safeRate);
       } catch (error) {
-        console.warn(`[useGameSounds] Failed to set playback rate for ${label}:`, error);
+        try {
+          player.playbackRate = safeRate;
+        } catch (fallbackError) {
+          console.warn(`[useGameSounds] Failed to set playback rate for ${label}:`, fallbackError ?? error);
+        }
       }
     }
 
@@ -264,16 +273,24 @@ export function useGameSounds() {
   const playSpecialCard = (rank: "ass" | "bube" | "7" | "8") => {
     if (rank === "7") {
       playFromStart(roundEndSound, "round-end", {
-        volume: 0.62,
-        playbackRate: 1.22,
-        cooldownMs: 260,
-        priority: 4,
-        holdPriorityMs: 320,
+        volume: 0.74,
+        playbackRate: 1.18,
+        cooldownMs: 300,
+        priority: 5,
+        holdPriorityMs: 360,
       });
-      scheduleSound(90, 3, () =>
+      scheduleSound(68, 4, () =>
         playFromStart(cardPlaySound, "card-play", {
-          volume: 0.55,
-          playbackRate: 0.86,
+          volume: 0.58,
+          playbackRate: 0.82,
+          cooldownMs: 0,
+          priority: 4,
+        })
+      );
+      scheduleSound(132, 3, () =>
+        playFromStart(blackbirdSound, "blackbird", {
+          volume: 0.46,
+          playbackRate: 1.16,
           cooldownMs: 0,
           priority: 3,
         })
@@ -281,17 +298,17 @@ export function useGameSounds() {
       return;
     }
     if (rank === "8") {
-      playFromStart(blackbirdSound, "blackbird", {
-        volume: 0.5,
-        playbackRate: 1.05,
-        cooldownMs: 240,
+      playFromStart(cardPlaySound, "card-play", {
+        volume: 0.44,
+        playbackRate: 1.04,
+        cooldownMs: 220,
         priority: 4,
-        holdPriorityMs: 290,
+        holdPriorityMs: 260,
       });
-      scheduleSound(95, 3, () =>
-        playFromStart(cardPlaySound, "card-play", {
-          volume: 0.4,
-          playbackRate: 0.92,
+      scheduleSound(74, 3, () =>
+        playFromStart(blackbirdSound, "blackbird", {
+          volume: 0.45,
+          playbackRate: 1.02,
           cooldownMs: 0,
           priority: 3,
         })
@@ -299,22 +316,38 @@ export function useGameSounds() {
       return;
     }
     if (rank === "ass") {
-      playFromStart(blackbirdSound, "blackbird", {
-        volume: 0.5,
-        playbackRate: 0.9,
-        cooldownMs: 280,
+      playFromStart(cardPlaySound, "card-play", {
+        volume: 0.38,
+        playbackRate: 1.26,
+        cooldownMs: 260,
         priority: 4,
         holdPriorityMs: 300,
       });
+      scheduleSound(58, 4, () =>
+        playFromStart(blackbirdSound, "blackbird", {
+          volume: 0.43,
+          playbackRate: 0.84,
+          cooldownMs: 0,
+          priority: 4,
+        })
+      );
       return;
     }
     playFromStart(blackbirdSound, "blackbird", {
-      volume: 0.52,
-      playbackRate: 1.13,
+      volume: 0.5,
+      playbackRate: 1.12,
       cooldownMs: 240,
       priority: 4,
       holdPriorityMs: 300,
     });
+    scheduleSound(80, 3, () =>
+      playFromStart(cardDrawSound, "card-draw", {
+        volume: 0.36,
+        playbackRate: 0.96,
+        cooldownMs: 0,
+        priority: 3,
+      })
+    );
   };
 
   const playDrawChainAlert = (drawChainCount: number) => {

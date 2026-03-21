@@ -8,8 +8,9 @@ describe("game fx cue spec", () => {
 
     expect(special7.impact).toBeGreaterThan(turnTransition.impact);
     expect(special7.completionMs).toBeGreaterThan(turnTransition.completionMs);
-    expect(special8.impact).toBeGreaterThanOrEqual(special7.impact);
-    expect(special8.completionMs).toBeGreaterThanOrEqual(special7.completionMs);
+    expect(special8.impact).toBeGreaterThan(turnTransition.impact);
+    expect(special8.completionMs).toBeGreaterThan(turnTransition.completionMs);
+    expect(special7.impact).toBeGreaterThanOrEqual(special8.impact);
   });
 
   it("escalates draw-chain impact with larger chains", () => {

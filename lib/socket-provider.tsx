@@ -7,12 +7,25 @@ import type {
   CardPlayFxEvent,
   DrawCardFxEvent,
   GameFxEvent,
+  ReactionEmoji,
+  ReactionEvent,
   ChatMessage,
   PreparationData,
   RoomCreatedPayload,
   RoomJoinedPayload,
 } from "@/shared/socket-contract";
-export type { BlackbirdEvent, CardPlayFxEvent, DrawCardFxEvent, GameFxEvent, ChatMessage, PreparationData, RoomCreatedPayload, RoomJoinedPayload } from "@/shared/socket-contract";
+export type {
+  BlackbirdEvent,
+  CardPlayFxEvent,
+  DrawCardFxEvent,
+  GameFxEvent,
+  ReactionEmoji,
+  ReactionEvent,
+  ChatMessage,
+  PreparationData,
+  RoomCreatedPayload,
+  RoomJoinedPayload,
+} from "@/shared/socket-contract";
 import * as Auth from "@/lib/_core/auth";
 import { AppState, type AppStateStatus } from "react-native";
 import { getApiBaseUrl } from "@/constants/oauth";
@@ -29,6 +42,7 @@ interface SocketContextValue {
   sendAction: (roomId: number, playerId: number, action: GameAction) => void;
   addBot: (roomId: number, userId: number) => void;
   sendChatMessage: (roomId: number, userId: number, username: string, message: string) => void;
+  sendReaction: (roomId: number, emoji: ReactionEmoji, targetUserId?: number) => void;
   markChatRead: () => void;
   markChatClosed: () => void;
   sendPreparationDone: (roomId: number) => void;
@@ -43,6 +57,7 @@ interface SocketContextValue {
   setOnCardPlayFx: (cb: ((event: CardPlayFxEvent) => void) | null) => void;
   setOnDrawCardFx: (cb: ((event: DrawCardFxEvent) => void) | null) => void;
   setOnGameFx: (cb: ((event: GameFxEvent) => void) | null) => void;
+  setOnReactionEvent: (cb: ((event: ReactionEvent) => void) | null) => void;
   setOnError: (cb: ((error: string) => void) | null) => void;
 }
 
@@ -88,6 +103,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const onCardPlayFxRef = useRef<((event: CardPlayFxEvent) => void) | null>(null);
   const onDrawCardFxRef = useRef<((event: DrawCardFxEvent) => void) | null>(null);
   const onGameFxRef = useRef<((event: GameFxEvent) => void) | null>(null);
+  const onReactionEventRef = useRef<((event: ReactionEvent) => void) | null>(null);
   const onErrorRef = useRef<((error: string) => void) | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const gameStateRef = useRef<GameState | null>(null);
@@ -537,6 +553,9 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       socket.on("game-fx", (event: GameFxEvent) => {
         onGameFxRef.current?.(event);
       });
+      socket.on("reaction:event", (event: ReactionEvent) => {
+        onReactionEventRef.current?.(event);
+      });
 
       socket.on("chat:history", (messages: ChatMessage[]) => {
         setChatMessages(messages);
@@ -756,6 +775,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     socketRef.current?.emit("chat:send", { roomId, userId, username, message });
   }, []);
 
+  const sendReaction = useCallback((roomId: number, emoji: ReactionEmoji, targetUserId?: number) => {
+    socketRef.current?.emit("reaction:send", { roomId, emoji, targetUserId });
+  }, []);
+
   const markChatRead = useCallback(() => {
     isChatOpenRef.current = true;
     setUnreadCount(0);
@@ -822,6 +845,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     onGameFxRef.current = cb;
   }, []);
 
+  const setOnReactionEvent = useCallback((cb: ((event: ReactionEvent) => void) | null) => {
+    onReactionEventRef.current = cb;
+  }, []);
+
   const setOnError = useCallback((cb: ((error: string) => void) | null) => {
     onErrorRef.current = cb;
   }, []);
@@ -839,6 +866,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       sendAction,
       addBot,
       sendChatMessage,
+      sendReaction,
       markChatRead,
       markChatClosed,
       sendPreparationDone,
@@ -853,6 +881,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       setOnCardPlayFx,
       setOnDrawCardFx,
       setOnGameFx,
+      setOnReactionEvent,
       setOnError,
     }}>
       {children}

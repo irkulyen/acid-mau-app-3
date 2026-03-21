@@ -5,18 +5,26 @@ import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { useRouter, useLocalSearchParams } from "expo-router";
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, cancelAnimation } from "react-native-reanimated";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { PlayingCard } from "@/components/game/playing-card";
 import { BlackbirdAnimation } from "@/components/game/blackbird-animation";
-import { DiscardImpactBurst, SuitWishBurst, RoundStartGlow } from "@/components/game/blackbird-event-fx";
+import { DiscardImpactBurst, SuitWishBurst, RoundStartGlow, SpecialCardActionFx } from "@/components/game/blackbird-event-fx";
 import { ComboCounter } from "@/components/game/combo-counter";
-import { EmoteSystem } from "@/components/game/emote-system";
 import { DrawChainEscalation, DrawChainShakeWrapper } from "@/components/game/draw-chain-escalation";
 import { CardFlyAnimation } from "@/components/game/card-fly-animation";
 import { DrawCardAnimation } from "@/components/game/draw-card-animation";
 import { GamePreparationScreen, type PreparationDrawData } from "@/components/game/game-preparation-screen";
 import { useAuth } from "@/lib/auth-provider";
-import { useSocket, type PreparationData, type BlackbirdEvent, type CardPlayFxEvent, type DrawCardFxEvent, type GameFxEvent } from "@/lib/socket-provider";
+import {
+  useSocket,
+  type PreparationData,
+  type BlackbirdEvent,
+  type CardPlayFxEvent,
+  type DrawCardFxEvent,
+  type GameFxEvent,
+  type ReactionEmoji,
+  type ReactionEvent,
+} from "@/lib/socket-provider";
 import { useGameSounds } from "@/hooks/use-game-sounds";
 import { getBotProfileByName } from "@/lib/bot-profiles";
 import { hashString, pickBySeed } from "@/lib/deterministic";
@@ -155,10 +163,22 @@ const DESIGN = {
   lineStrong: "rgba(46, 224, 128, 0.65)",
 };
 
+const QUICK_REACTIONS: Array<{ emoji: ReactionEmoji; label: string }> = [
+  { emoji: "😈", label: "Schadenfreude" },
+  { emoji: "😤", label: "Druck" },
+  { emoji: "😂", label: "Lachen" },
+  { emoji: "🐦", label: "Amsel" },
+  { emoji: "👀", label: "Beobachten" },
+  { emoji: "⚡", label: "Impact" },
+];
+
+type ActiveReaction = ReactionEvent & { localKey: string };
+
 export default function GamePlayScreen() {
   const router = useRouter();
   const { code } = useLocalSearchParams<{ code: string }>();
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
 
   const [showSuitPicker, setShowSuitPicker] = useState(false);
@@ -209,6 +229,12 @@ export default function GamePlayScreen() {
   const [discardImpactKey, setDiscardImpactKey] = useState(0);
   const [discardImpactIntensity, setDiscardImpactIntensity] = useState<1 | 2 | 3 | 4 | 5>(2);
   const [showDiscardImpact, setShowDiscardImpact] = useState(false);
+  const [specialCardFxKey, setSpecialCardFxKey] = useState(0);
+  const [showSpecialCardFx, setShowSpecialCardFx] = useState(false);
+  const [specialCardFxRank, setSpecialCardFxRank] = useState<"7" | "ass" | "bube" | "8" | undefined>(undefined);
+  const [specialCardFxWishSuit, setSpecialCardFxWishSuit] = useState<string | undefined>(undefined);
+  const [specialCardFxDirection, setSpecialCardFxDirection] = useState<"clockwise" | "counterclockwise" | undefined>(undefined);
+  const [specialCardFxDrawChain, setSpecialCardFxDrawChain] = useState<number | undefined>(undefined);
   const [wishFxKey, setWishFxKey] = useState(0);
   const [showWishFx, setShowWishFx] = useState(false);
   const [wishFxSuit, setWishFxSuit] = useState<string | undefined>(undefined);
@@ -227,12 +253,15 @@ export default function GamePlayScreen() {
   const cardPlayFxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blackbirdDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const blackbirdNextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const blackbirdVisibilityGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gameFxQueueRef = useRef<GameFxEvent[]>([]);
+  const pendingGameFxRef = useRef<GameFxEvent[]>([]);
   const gameFxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gameFxCompletionTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const activeGameFxRef = useRef<GameFxEvent | null>(null);
   const hasUnifiedGameFxRef = useRef(false);
   const seenGameFxRef = useRef<Map<string, number>>(new Map());
+  const seenBlackbirdEventsRef = useRef<Map<string, number>>(new Map());
   const lastProcessedGameFxSequenceRef = useRef(0);
   const highestQueuedGameFxSequenceRef = useRef(0);
   const activeGameFxRoomIdRef = useRef<number | null>(null);
@@ -262,6 +291,14 @@ export default function GamePlayScreen() {
     depthAt: 0,
     lagAt: 0,
     driftAt: 0,
+  });
+  const lastSpecialHapticAtRef = useRef(0);
+  const recentSpecialCueRef = useRef<{ seven: number; ass: number; unter: number; eight: number; drawChain: number }>({
+    seven: 0,
+    ass: 0,
+    unter: 0,
+    eight: 0,
+    drawChain: 0,
   });
 
   // Pulsing glow animation for active player
@@ -308,6 +345,17 @@ export default function GamePlayScreen() {
   const [showChat, setShowChat] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const chatListRef = useRef<FlatList>(null);
+  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const [activeReactions, setActiveReactions] = useState<ActiveReaction[]>([]);
+  const [reactionCooldownActive, setReactionCooldownActive] = useState(false);
+  const [selectedReactionTargetUserId, setSelectedReactionTargetUserId] = useState<number | null>(null);
+  const reactionExpiryTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const reactionCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seenReactionEventIdsRef = useRef<Map<string, number>>(new Map());
+  const lastReactionAmselCueAtRef = useRef(0);
+  const pendingManualAmselEventsRef = useRef<BlackbirdEvent[]>([]);
+  const pendingReactionEventsRef = useRef<ReactionEvent[]>([]);
+  const recoverSessionRef = useRef<(() => void | Promise<void>) | null>(null);
 
   useEffect(() => {
     showBlackbirdRef.current = showBlackbird;
@@ -331,6 +379,10 @@ export default function GamePlayScreen() {
         clearTimeout(blackbirdNextTimerRef.current);
         blackbirdNextTimerRef.current = null;
       }
+      if (blackbirdVisibilityGuardTimerRef.current) {
+        clearTimeout(blackbirdVisibilityGuardTimerRef.current);
+        blackbirdVisibilityGuardTimerRef.current = null;
+      }
       if (clutchBannerTimerRef.current) {
         clearTimeout(clutchBannerTimerRef.current);
         clutchBannerTimerRef.current = null;
@@ -351,6 +403,12 @@ export default function GamePlayScreen() {
         clearTimeout(drawFlyFallbackTimerRef.current);
         drawFlyFallbackTimerRef.current = null;
       }
+      if (reactionCooldownTimerRef.current) {
+        clearTimeout(reactionCooldownTimerRef.current);
+        reactionCooldownTimerRef.current = null;
+      }
+      reactionExpiryTimersRef.current.forEach((timer) => clearTimeout(timer));
+      reactionExpiryTimersRef.current.clear();
       gameFxCompletionTimersRef.current.forEach(clearTimeout);
       gameFxCompletionTimersRef.current = [];
     };
@@ -358,31 +416,9 @@ export default function GamePlayScreen() {
 
   const playBlackbirdFeedback = useCallback((event: BlackbirdEvent) => {
     if (Platform.OS === "web") return;
-
-    const chain = event.drawChainCount ?? 0;
-    if (event.type === "seven_played") {
-      if (chain >= 4) {
-        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        // Extreme chain warning pattern (explosion-like)
-        Vibration.vibrate([200, 80, 200, 80, 400]);
-      } else if (chain >= 3) {
-        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        Vibration.vibrate([120, 60, 140, 60, 220]);
-      } else {
-        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        Vibration.vibrate(80);
-      }
-      return;
-    }
-
-    if (event.type === "draw_chain" && chain >= 4) {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-      Vibration.vibrate([160, 70, 170, 70, 260]);
-      return;
-    }
-    if (event.type === "direction_shift") {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      Vibration.vibrate([70, 50, 70]);
+    // Special-card peaks are handled by the authoritative special_card/draw_chain FX path.
+    // Keep blackbird haptics only for top-level outcome/errors to avoid duplicate vibration stacks.
+    if (event.type === "seven_played" || event.type === "draw_chain" || event.type === "ass" || event.type === "unter" || event.type === "direction_shift") {
       return;
     }
     if (event.type === "invalid") {
@@ -398,9 +434,72 @@ export default function GamePlayScreen() {
     }
   }, []);
 
+  const playSpecialCardHaptic = useCallback((rank: "7" | "ass" | "bube" | "8", drawChainCount?: number) => {
+    if (Platform.OS === "web") return;
+    const now = Date.now();
+    if (now - lastSpecialHapticAtRef.current < 220) return;
+    lastSpecialHapticAtRef.current = now;
+
+    if (rank === "7") {
+      const chain = Math.max(2, drawChainCount ?? 2);
+      if (chain >= 4) {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        Vibration.vibrate([120, 55, 150, 55, 180]);
+      } else {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      }
+      return;
+    }
+    if (rank === "ass") {
+      void Haptics.impactAsync((Haptics.ImpactFeedbackStyle as any).Rigid ?? Haptics.ImpactFeedbackStyle.Heavy);
+      Vibration.vibrate([64, 36, 28]);
+      return;
+    }
+    if (rank === "bube") {
+      void Haptics.impactAsync((Haptics.ImpactFeedbackStyle as any).Soft ?? Haptics.ImpactFeedbackStyle.Light);
+      return;
+    }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    Vibration.vibrate([46, 38, 46]);
+  }, []);
+
+  const getBlackbirdDedupKey = useCallback((event: BlackbirdEvent) => {
+    if (event.id) return event.id;
+    return [
+      event.type,
+      event.startAt ?? 0,
+      event.playerName ?? "",
+      event.spotlightPlayerName ?? "",
+      event.drawChainCount ?? 0,
+      event.wishSuit ?? "",
+      event.variant ?? "",
+      event.phrase ?? "",
+    ].join("|");
+  }, []);
+
+  const shouldProcessBlackbirdEvent = useCallback((event: BlackbirdEvent) => {
+    const seen = seenBlackbirdEventsRef.current;
+    const now = Date.now();
+    for (const [key, at] of seen.entries()) {
+      if (now - at > 30_000) seen.delete(key);
+    }
+    const dedupKey = getBlackbirdDedupKey(event);
+    if (seen.has(dedupKey)) return false;
+    seen.set(dedupKey, now);
+    return true;
+  }, [getBlackbirdDedupKey]);
+
   const triggerBlackbirdFx = useCallback((event: BlackbirdEvent) => {
+    const now = Date.now();
     if (event.type === "seven_played") {
+      if (now - recentSpecialCueRef.current.seven < 2200) {
+        return;
+      }
       const chain = event.drawChainCount ?? 0;
+      if (chain >= 4) {
+        // Escalation peak is handled by authoritative draw_chain FX path.
+        return;
+      }
       const intensity = chain >= 4 ? 5 : chain >= 3 ? 4 : chain >= 2 ? 3 : 2;
       setDiscardImpactIntensity(intensity);
       setDiscardImpactKey((k) => k + 1);
@@ -416,12 +515,18 @@ export default function GamePlayScreen() {
     }
 
     if (event.type === "ass") {
+      if (now - recentSpecialCueRef.current.ass < 2200) {
+        return;
+      }
       setAssFlash(true);
       setTimeout(() => setAssFlash(false), 420);
       return;
     }
 
     if (event.type === "unter") {
+      if (now - recentSpecialCueRef.current.unter < 2200) {
+        return;
+      }
       setWishFxSuit(event.wishSuit);
       setWishFxKey((k) => k + 1);
       setShowWishFx(true);
@@ -429,6 +534,9 @@ export default function GamePlayScreen() {
     }
 
     if (event.type === "direction_shift") {
+      if (now - recentSpecialCueRef.current.eight < 2200) {
+        return;
+      }
       setDiscardImpactIntensity(Math.min(4, Math.max(2, event.intensity ?? 3)) as 1 | 2 | 3 | 4 | 5);
       setDiscardImpactKey((k) => k + 1);
       setShowDiscardImpact(true);
@@ -458,6 +566,10 @@ export default function GamePlayScreen() {
   }, []);
 
   const activateBlackbirdEvent = useCallback((event: BlackbirdEvent) => {
+    showBlackbirdRef.current = true;
+    if (blackbirdVisibilityGuardTimerRef.current) {
+      clearTimeout(blackbirdVisibilityGuardTimerRef.current);
+    }
     triggerBlackbirdFx(event);
     setBlackbirdEventId(event.id ?? `${event.type}-${event.startAt ?? Date.now()}`);
     setBlackbirdEvent(event.type);
@@ -472,6 +584,35 @@ export default function GamePlayScreen() {
     setBlackbirdPhrase(event.phrase);
     playBlackbirdFeedback(event);
     setShowBlackbird(true);
+    blackbirdVisibilityGuardTimerRef.current = setTimeout(() => {
+      blackbirdVisibilityGuardTimerRef.current = null;
+      if (!showBlackbirdRef.current) return;
+      // Safety valve: never let a stalled animation block the FX queue indefinitely.
+      showBlackbirdRef.current = false;
+      setShowBlackbird(false);
+      setBlackbirdEventId(undefined);
+      setBlackbirdLoser(undefined);
+      setBlackbirdWinner(undefined);
+      setBlackbirdEvent(undefined);
+      setBlackbirdDrawChain(undefined);
+      setBlackbirdWishSuit(undefined);
+      setBlackbirdIntensity(undefined);
+      setBlackbirdSpotlight(undefined);
+      setBlackbirdStatsText(undefined);
+      setBlackbirdVariant(undefined);
+      setBlackbirdPhrase(undefined);
+      const active = activeGameFxRef.current;
+      if (active?.type === "blackbird") {
+        lastProcessedGameFxSequenceRef.current = Math.max(
+          lastProcessedGameFxSequenceRef.current,
+          active.sequence,
+        );
+        activeGameFxRef.current = null;
+      }
+      setTimeout(() => {
+        processNextGameFxRef.current();
+      }, 16);
+    }, 10_000);
     if ((event.intensity ?? 0) >= 4 && event.type !== "loser") {
       playRoundEnd();
     }
@@ -542,8 +683,23 @@ export default function GamePlayScreen() {
     }, duration);
   }, []);
 
+  const triggerSpecialCardFx = useCallback((params: {
+    rank: "7" | "ass" | "bube" | "8";
+    wishSuit?: string;
+    direction?: "clockwise" | "counterclockwise";
+    drawChainCount?: number;
+  }) => {
+    setSpecialCardFxRank(params.rank);
+    setSpecialCardFxWishSuit(params.wishSuit);
+    setSpecialCardFxDirection(params.direction);
+    setSpecialCardFxDrawChain(params.drawChainCount);
+    setSpecialCardFxKey((prev) => prev + 1);
+    setShowSpecialCardFx(true);
+  }, []);
+
   const playBlackbirdForEvent = useCallback(
     (eventType?: "round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "direction_shift" | "ass" | "unter" | "invalid" | "mvp", intensity: 1 | 2 | 3 | 4 | 5 = 3) => {
+      const now = Date.now();
       switch (eventType) {
         case "winner":
           playAmselSignature("WIN", intensity);
@@ -552,16 +708,24 @@ export default function GamePlayScreen() {
           playAmselSignature("ELIMINATION", intensity);
           return;
         case "draw_chain":
+          if (now - recentSpecialCueRef.current.drawChain < 1600) return;
+          playDrawChainAlert(Math.max(2, blackbirdDrawChain ?? intensity));
+          return;
         case "seven_played":
+          if ((blackbirdDrawChain ?? 0) >= 4) return;
+          if (now - recentSpecialCueRef.current.seven < 1600) return;
           playDrawChainAlert(Math.max(2, blackbirdDrawChain ?? intensity));
           return;
         case "ass":
+          if (now - recentSpecialCueRef.current.ass < 1600) return;
           playAmselSignature("SPECIAL_A", intensity);
           return;
         case "unter":
+          if (now - recentSpecialCueRef.current.unter < 1600) return;
           playAmselSignature("SPECIAL_U", intensity);
           return;
         case "direction_shift":
+          if (now - recentSpecialCueRef.current.eight < 1600) return;
           playAmselSignature("SPECIAL_8", intensity);
           return;
         case "invalid":
@@ -807,13 +971,23 @@ export default function GamePlayScreen() {
         case "special_card": {
           const cue = getGameFxCueSpec(next);
           if (next.specialRank === "7") {
-            playAmselSignature("SPECIAL_7", 4);
+            const chain = Math.max(2, next.drawChainCount ?? gameStateRef.current?.drawChainCount ?? 2);
+            recentSpecialCueRef.current.seven = Date.now();
+            playAmselSignature("SPECIAL_7", chain >= 5 ? 5 : chain >= 3 ? 4 : 3);
+            playSpecialCardHaptic("7", chain);
+            triggerSpecialCardFx({
+              rank: "7",
+              drawChainCount: chain,
+            });
             showMomentBanner(`🂧 ${next.playerName || "Spieler"} startet die Ziehkette`, 1200);
             scheduleGameFxCompletion(next.id, cue.completionMs);
             return;
           }
           if (next.specialRank === "ass") {
+            recentSpecialCueRef.current.ass = Date.now();
             playAmselSignature("SPECIAL_A", 4);
+            playSpecialCardHaptic("ass");
+            triggerSpecialCardFx({ rank: "ass" });
             setAssFlash(true);
             setTimeout(() => setAssFlash(false), 420);
             showMomentBanner(`🂡 ${next.playerName || "Spieler"} spielt Ass`, 1200);
@@ -821,7 +995,10 @@ export default function GamePlayScreen() {
             return;
           }
           if (next.specialRank === "bube") {
+            recentSpecialCueRef.current.unter = Date.now();
             playAmselSignature("SPECIAL_U", 4);
+            playSpecialCardHaptic("bube");
+            triggerSpecialCardFx({ rank: "bube", wishSuit: next.wishSuit });
             setWishFxSuit(next.wishSuit);
             setWishFxKey((k) => k + 1);
             setShowWishFx(true);
@@ -833,7 +1010,13 @@ export default function GamePlayScreen() {
             return;
           }
           if (next.specialRank === "8") {
+            recentSpecialCueRef.current.eight = Date.now();
             playAmselSignature("SPECIAL_8", 3);
+            playSpecialCardHaptic("8");
+            triggerSpecialCardFx({
+              rank: "8",
+              direction: next.direction ?? gameStateRef.current?.direction,
+            });
             showMomentBanner(`🂨 ${next.playerName || "Spieler"} dreht die Richtung`, 1300);
             scheduleGameFxCompletion(next.id, cue.completionMs);
             return;
@@ -844,6 +1027,7 @@ export default function GamePlayScreen() {
         case "draw_chain": {
           const cue = getGameFxCueSpec(next);
           const chain = Math.max(2, next.drawChainCount ?? 2);
+          recentSpecialCueRef.current.drawChain = Date.now();
           playDrawChainAlert(chain);
           const intensity = chain >= 5 ? 5 : chain >= 4 ? 4 : chain >= 3 ? 3 : 2;
           setDiscardImpactIntensity(intensity as 1 | 2 | 3 | 4 | 5);
@@ -855,6 +1039,16 @@ export default function GamePlayScreen() {
         }
         case "blackbird": {
           if (next.blackbird) {
+            const now = Date.now();
+            // Defensive dedupe: if escalation visuals just ran via authoritative
+            // special_card/draw_chain FX, drop stale or duplicate draw_chain blackbird cues.
+            if (
+              next.blackbird.type === "draw_chain" &&
+              now - recentSpecialCueRef.current.drawChain < 2500
+            ) {
+              completeActiveGameFx(next.id);
+              return;
+            }
             activateBlackbirdEvent(next.blackbird);
             return;
           }
@@ -923,6 +1117,7 @@ export default function GamePlayScreen() {
     playCardPlay,
     playDrawChainAlert,
     playRoundTransition,
+    playSpecialCardHaptic,
     playTurnShift,
     playAmselSignature,
     resolveDrawFxTarget,
@@ -931,12 +1126,86 @@ export default function GamePlayScreen() {
     showFlyingCard,
     showMomentBanner,
     trackRivalryFromPlay,
+    triggerSpecialCardFx,
     user?.id,
   ]);
 
   useEffect(() => {
     processNextGameFxRef.current = processNextGameFx;
   }, [processNextGameFx]);
+
+  const enqueueUnifiedGameFx = useCallback((event: GameFxEvent) => {
+    if (!event?.id) return;
+    if (!hasUnifiedGameFxRef.current) {
+      hasUnifiedGameFxRef.current = true;
+      // Drop legacy queue to avoid race duplicates between legacy and unified streams.
+      blackbirdQueueRef.current = [];
+      if (blackbirdDelayTimerRef.current) {
+        clearTimeout(blackbirdDelayTimerRef.current);
+        blackbirdDelayTimerRef.current = null;
+      }
+    }
+    if (event.type === "blackbird" && event.blackbird && !shouldProcessBlackbirdEvent(event.blackbird)) {
+      return;
+    }
+    const seen = seenGameFxRef.current;
+    const now = Date.now();
+    for (const [id, at] of seen.entries()) {
+      if (now - at > 25_000) seen.delete(id);
+    }
+    if (seen.has(event.id)) return;
+    if (event.sequence <= lastProcessedGameFxSequenceRef.current) return;
+    const highestSeenSequence = Math.max(
+      lastProcessedGameFxSequenceRef.current,
+      highestQueuedGameFxSequenceRef.current,
+    );
+    if (!event.replay && event.sequence > highestSeenSequence + 1) {
+      console.warn(
+        `[game-fx] Sequence gap detected roomId=${event.roomId} expected>${highestSeenSequence} got=${event.sequence}. Trigger recover.`,
+      );
+      void recoverSessionRef.current?.();
+    }
+    seen.set(event.id, now);
+
+    gameFxQueueRef.current.push(event);
+    gameFxQueueRef.current.sort((a, b) => {
+      if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+      return (a.startAt ?? 0) - (b.startAt ?? 0);
+    });
+    const queueDepth = gameFxQueueRef.current.length;
+    if (shouldWarnQueueDepth(queueDepth)) {
+      const warnRef = gameFxPerfWarnRef.current;
+      if (now - warnRef.depthAt > 1200) {
+        warnRef.depthAt = now;
+        console.warn(`[game-fx] queue depth high roomId=${event.roomId} depth=${queueDepth}`);
+      }
+    }
+    const queueLagMs = getQueueLagMs(event, now);
+    if (shouldWarnQueueLag(queueLagMs)) {
+      const warnRef = gameFxPerfWarnRef.current;
+      if (now - warnRef.lagAt > 1200) {
+        warnRef.lagAt = now;
+        console.warn(
+          `[game-fx] queue lag high roomId=${event.roomId} sequence=${event.sequence} lagMs=${queueLagMs}`,
+        );
+      }
+    }
+    highestQueuedGameFxSequenceRef.current = Math.max(
+      highestQueuedGameFxSequenceRef.current,
+      event.sequence,
+    );
+    processNextGameFxRef.current();
+  }, [shouldProcessBlackbirdEvent]);
+
+  useEffect(() => {
+    if (showBlackbird || showDrawFly || showFlyingCard || showSpecialCardFx) return;
+    if (!activeGameFxRef.current) {
+      processNextGameFxRef.current();
+    }
+    if (!hasUnifiedGameFxRef.current && blackbirdQueueRef.current.length > 0 && !showBlackbirdRef.current) {
+      processNextBlackbird();
+    }
+  }, [showBlackbird, showDrawFly, showFlyingCard, showSpecialCardFx, processNextBlackbird]);
 
   const {
     isConnected,
@@ -945,6 +1214,7 @@ export default function GamePlayScreen() {
     unreadCount,
     sendAction,
     sendChatMessage,
+    sendReaction,
     markChatRead,
     markChatClosed,
     sendPreparationDone,
@@ -955,6 +1225,7 @@ export default function GamePlayScreen() {
     setOnCardPlayFx,
     setOnDrawCardFx,
     setOnGameFx,
+    setOnReactionEvent,
     setOnError,
   } = useSocket();
   const expectedRoomCode = (code || "").trim().toUpperCase();
@@ -965,6 +1236,10 @@ export default function GamePlayScreen() {
   const currentPlayer = gameState?.players.find((p) => p.userId === user?.id);
 
   useEffect(() => {
+    recoverSessionRef.current = recoverSession;
+  }, [recoverSession]);
+
+  useEffect(() => {
     gameStateRef.current = gameState;
   }, [gameState]);
 
@@ -972,10 +1247,28 @@ export default function GamePlayScreen() {
     const roomId = gameState?.roomId ?? null;
     if (activeGameFxRoomIdRef.current === roomId) return;
     activeGameFxRoomIdRef.current = roomId;
+    hasUnifiedGameFxRef.current = false;
     gameFxQueueRef.current = [];
+    blackbirdQueueRef.current = [];
     activeGameFxRef.current = null;
+    seenBlackbirdEventsRef.current.clear();
+    showBlackbirdRef.current = false;
+    setShowBlackbird(false);
     setShowDrawFly(false);
     setDrawFlyFx(null);
+    setShowSpecialCardFx(false);
+    setSpecialCardFxRank(undefined);
+    setSpecialCardFxWishSuit(undefined);
+    setSpecialCardFxDirection(undefined);
+    setSpecialCardFxDrawChain(undefined);
+    setShowReactionPicker(false);
+    setActiveReactions([]);
+    setReactionCooldownActive(false);
+    setSelectedReactionTargetUserId(null);
+    seenReactionEventIdsRef.current.clear();
+    lastReactionAmselCueAtRef.current = 0;
+    pendingManualAmselEventsRef.current = [];
+    pendingReactionEventsRef.current = [];
     seenGameFxRef.current.clear();
     lastProcessedGameFxSequenceRef.current = 0;
     highestQueuedGameFxSequenceRef.current = 0;
@@ -995,8 +1288,202 @@ export default function GamePlayScreen() {
       clearTimeout(blackbirdNextTimerRef.current);
       blackbirdNextTimerRef.current = null;
     }
+    if (blackbirdVisibilityGuardTimerRef.current) {
+      clearTimeout(blackbirdVisibilityGuardTimerRef.current);
+      blackbirdVisibilityGuardTimerRef.current = null;
+    }
+    if (reactionCooldownTimerRef.current) {
+      clearTimeout(reactionCooldownTimerRef.current);
+      reactionCooldownTimerRef.current = null;
+    }
+    reactionExpiryTimersRef.current.forEach((timer) => clearTimeout(timer));
+    reactionExpiryTimersRef.current.clear();
+    const now = Date.now();
+    pendingGameFxRef.current = pendingGameFxRef.current.filter(
+      (event) => now - event.emittedAt <= 15_000,
+    );
     clearGameFxCompletionTimers();
   }, [gameState?.roomId, clearGameFxCompletionTimers]);
+
+  useEffect(() => {
+    const roomId = gameState?.roomId;
+    if (!roomId || pendingGameFxRef.current.length === 0) return;
+
+    const now = Date.now();
+    const flush: GameFxEvent[] = [];
+    const keep: GameFxEvent[] = [];
+    for (const event of pendingGameFxRef.current) {
+      if (now - event.emittedAt > 15_000) continue;
+      if (event.roomId === roomId) {
+        flush.push(event);
+      } else {
+        keep.push(event);
+      }
+    }
+    pendingGameFxRef.current = keep;
+    if (flush.length === 0) return;
+    flush.sort((a, b) => {
+      if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+      return (a.startAt ?? 0) - (b.startAt ?? 0);
+    });
+    flush.forEach((event) => enqueueUnifiedGameFx(event));
+  }, [gameState?.roomId, enqueueUnifiedGameFx]);
+
+  const consumeReactionEvent = useCallback((event: ReactionEvent) => {
+    const now = Date.now();
+    const seen = seenReactionEventIdsRef.current;
+    for (const [id, at] of seen.entries()) {
+      if (now - at > 25_000) {
+        seen.delete(id);
+      }
+    }
+    const canonicalId = event.id ? event.id.replace(/-replay-[^-]+-\d+$/, "") : "";
+    if (canonicalId && seen.has(canonicalId)) {
+      return;
+    }
+    if (canonicalId) {
+      seen.set(canonicalId, now);
+    }
+
+    const localKey = String(event.userId);
+    const ttlMs = Math.max(320, Math.min(2_500, (event.expiresAt ?? Date.now() + 1_600) - Date.now()));
+
+    const existingTimer = reactionExpiryTimersRef.current.get(localKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      reactionExpiryTimersRef.current.delete(localKey);
+    }
+
+    setActiveReactions((prev) => {
+      const now = Date.now();
+      const remaining = prev.filter((entry) => entry.localKey !== localKey && entry.expiresAt > now);
+      return [...remaining, { ...event, localKey }].slice(-8);
+    });
+
+    const removeTimer = setTimeout(() => {
+      reactionExpiryTimersRef.current.delete(localKey);
+      setActiveReactions((prev) => prev.filter((entry) => entry.localKey !== localKey));
+    }, ttlMs);
+    reactionExpiryTimersRef.current.set(localKey, removeTimer);
+
+    if (event.replay) {
+      return;
+    }
+
+    const isPeakSocialEvent =
+      event.source === "special_7" ||
+      event.source === "special_ass" ||
+      event.source === "elimination" ||
+      event.source === "win";
+    const isManualTargeted = event.source === "manual" && Boolean(event.targetUsername);
+
+    if ((isPeakSocialEvent || isManualTargeted) && event.targetUsername) {
+      if (loserPulseTimerRef.current) {
+        clearTimeout(loserPulseTimerRef.current);
+      }
+      setLoserPulseName(event.targetUsername);
+      loserPulseTimerRef.current = setTimeout(() => {
+        setLoserPulseName(undefined);
+        loserPulseTimerRef.current = null;
+      }, isPeakSocialEvent ? 1_050 : 820);
+      if (momentBannerTimerRef.current) {
+        clearTimeout(momentBannerTimerRef.current);
+      }
+      setMomentBanner(`${isPeakSocialEvent ? "🐦" : event.emoji} ${event.username} → ${event.targetUsername}`);
+      momentBannerTimerRef.current = setTimeout(() => {
+        setMomentBanner(null);
+        momentBannerTimerRef.current = null;
+      }, isPeakSocialEvent ? 950 : 760);
+    }
+
+    if (
+      isManualTargeted &&
+      Date.now() - lastReactionAmselCueAtRef.current > 1_350
+    ) {
+      lastReactionAmselCueAtRef.current = Date.now();
+      const manualIntensity: 1 | 2 | 3 = event.emoji === "⚡" || event.emoji === "😈" || event.emoji === "🐦" ? 3 : 2;
+      const manualVariant =
+        event.emoji === "😈"
+          ? "taunt"
+          : event.emoji === "😤"
+            ? "pressure"
+            : event.emoji === "😂"
+              ? "laugh"
+              : event.emoji === "👀"
+                ? "focus"
+                : event.emoji === "⚡"
+                  ? "impact"
+                  : "social";
+      const socialAmselEvent: BlackbirdEvent = {
+        type: "mvp",
+        intensity: manualIntensity,
+        startAt: Date.now(),
+        spotlightUserId: event.targetUserId,
+        spotlightPlayerName: event.targetUsername,
+        phrase: `${event.emoji} ${event.username} vs ${event.targetUsername}`,
+        statsText: "Spieler-Reaktion",
+        variant: manualVariant,
+      };
+      if (showBlackbirdRef.current) {
+        // Preserve social visibility: queue social Amsel cues while a peak FX is active.
+        pendingManualAmselEventsRef.current.push(socialAmselEvent);
+        if (pendingManualAmselEventsRef.current.length > 4) {
+          pendingManualAmselEventsRef.current = pendingManualAmselEventsRef.current.slice(-4);
+        }
+      } else {
+        activateBlackbirdEvent(socialAmselEvent);
+      }
+    }
+
+    if (event.source === "special_7") {
+      playAmselSignature("SPECIAL_7", 3);
+      return;
+    }
+    if (event.source === "special_ass") {
+      playAmselSignature("SPECIAL_A", 3);
+      return;
+    }
+    if (event.source === "elimination") {
+      playAmselSignature("ELIMINATION", 3);
+      return;
+    }
+    if (event.source === "win") {
+      playAmselSignature("WIN", 3);
+      return;
+    }
+    if (event.source === "manual") {
+      playAmselSignature("CARD_PLAY", event.emoji === "⚡" || event.emoji === "😈" ? 3 : 2);
+    }
+  }, [activateBlackbirdEvent, playAmselSignature]);
+
+  useEffect(() => {
+    if (showBlackbird) return;
+    const pending = pendingManualAmselEventsRef.current.shift();
+    if (!pending) return;
+    activateBlackbirdEvent({
+      ...pending,
+      startAt: Date.now(),
+    });
+  }, [activateBlackbirdEvent, showBlackbird]);
+
+  useEffect(() => {
+    const roomId = gameState?.roomId;
+    if (!roomId || pendingReactionEventsRef.current.length === 0) return;
+    const now = Date.now();
+    const flush: ReactionEvent[] = [];
+    const keep: ReactionEvent[] = [];
+    for (const event of pendingReactionEventsRef.current) {
+      if (now - event.createdAt > 15_000) continue;
+      if (event.roomId === roomId) {
+        flush.push(event);
+      } else {
+        keep.push(event);
+      }
+    }
+    pendingReactionEventsRef.current = keep;
+    flush.sort((a, b) => a.createdAt - b.createdAt);
+    flush.forEach((event) => consumeReactionEvent(event));
+  }, [consumeReactionEvent, gameState?.roomId]);
 
   useEffect(() => {
     setOnPreparation((data: PreparationData) => {
@@ -1011,60 +1498,22 @@ export default function GamePlayScreen() {
     setOnGameFx((event: GameFxEvent) => {
       if (!event?.id) return;
       const currentState = gameStateRef.current;
-      if (!currentState || event.roomId !== currentState.roomId) {
+      if (!currentState) {
+        const now = Date.now();
+        pendingGameFxRef.current.push(event);
+        pendingGameFxRef.current = pendingGameFxRef.current
+          .filter((entry) => now - entry.emittedAt <= 15_000)
+          .slice(-120);
         return;
       }
-      hasUnifiedGameFxRef.current = true;
-      const seen = seenGameFxRef.current;
-      const now = Date.now();
-      for (const [id, at] of seen.entries()) {
-        if (now - at > 25_000) seen.delete(id);
+      if (event.roomId !== currentState.roomId) {
+        return;
       }
-      if (seen.has(event.id)) return;
-      if (event.sequence <= lastProcessedGameFxSequenceRef.current) return;
-      const highestSeenSequence = Math.max(
-        lastProcessedGameFxSequenceRef.current,
-        highestQueuedGameFxSequenceRef.current,
-      );
-      if (!event.replay && event.sequence > highestSeenSequence + 1) {
-        console.warn(
-          `[game-fx] Sequence gap detected roomId=${event.roomId} expected>${highestSeenSequence} got=${event.sequence}. Trigger recover.`,
-        );
-        void recoverSession();
-      }
-      seen.set(event.id, now);
-
-      gameFxQueueRef.current.push(event);
-      gameFxQueueRef.current.sort((a, b) => {
-        if (a.sequence !== b.sequence) return a.sequence - b.sequence;
-        return (a.startAt ?? 0) - (b.startAt ?? 0);
-      });
-      const queueDepth = gameFxQueueRef.current.length;
-      if (shouldWarnQueueDepth(queueDepth)) {
-        const warnRef = gameFxPerfWarnRef.current;
-        if (now - warnRef.depthAt > 1200) {
-          warnRef.depthAt = now;
-          console.warn(`[game-fx] queue depth high roomId=${event.roomId} depth=${queueDepth}`);
-        }
-      }
-      const queueLagMs = getQueueLagMs(event, now);
-      if (shouldWarnQueueLag(queueLagMs)) {
-        const warnRef = gameFxPerfWarnRef.current;
-        if (now - warnRef.lagAt > 1200) {
-          warnRef.lagAt = now;
-          console.warn(
-            `[game-fx] queue lag high roomId=${event.roomId} sequence=${event.sequence} lagMs=${queueLagMs}`,
-          );
-        }
-      }
-      highestQueuedGameFxSequenceRef.current = Math.max(
-        highestQueuedGameFxSequenceRef.current,
-        event.sequence,
-      );
-      processNextGameFxRef.current();
+      enqueueUnifiedGameFx(event);
     });
     setOnBlackbirdEvent((event: BlackbirdEvent) => {
       if (hasUnifiedGameFxRef.current) return;
+      if (!shouldProcessBlackbirdEvent(event)) return;
       blackbirdQueueRef.current.push(event);
       if (!showBlackbirdRef.current) {
         processNextBlackbird();
@@ -1083,6 +1532,19 @@ export default function GamePlayScreen() {
         const target = resolveDrawFxTarget(event.playerId);
         playCardDraw(drawCount, target.isSelf);
       }, delay);
+    });
+    setOnReactionEvent((event: ReactionEvent) => {
+      const currentState = gameStateRef.current;
+      if (!currentState) {
+        const now = Date.now();
+        pendingReactionEventsRef.current.push(event);
+        pendingReactionEventsRef.current = pendingReactionEventsRef.current
+          .filter((entry) => now - entry.createdAt <= 15_000)
+          .slice(-80);
+        return;
+      }
+      if (event.roomId !== currentState.roomId) return;
+      consumeReactionEvent(event);
     });
     setOnError((error: string) => {
       if (/Karte passt nicht|gleiche Farbe oder Rang erforderlich|Ungültiger Zug|Ungueltiger Zug|Invalid move|not playable/i.test(error)) {
@@ -1123,6 +1585,7 @@ export default function GamePlayScreen() {
       setOnBlackbirdEvent(null);
       setOnCardPlayFx(null);
       setOnDrawCardFx(null);
+      setOnReactionEvent(null);
       setOnError(null);
     };
   }, [
@@ -1131,16 +1594,20 @@ export default function GamePlayScreen() {
     setOnBlackbirdEvent,
     setOnCardPlayFx,
     setOnDrawCardFx,
+    setOnReactionEvent,
     setOnError,
     processNextBlackbird,
     enqueueCardPlayFx,
     trackRivalryFromPlay,
     playCardDraw,
+    consumeReactionEvent,
     resolveDrawFxTarget,
     completeActiveGameFx,
     playInvalidAction,
     activateBlackbirdEvent,
+    shouldProcessBlackbirdEvent,
     recoverSession,
+    enqueueUnifiedGameFx,
     router,
   ]);
 
@@ -1198,7 +1665,35 @@ export default function GamePlayScreen() {
     return () => clearInterval(interval);
   }, [currentPlayer, expectedRoomCode, gameState, isConnected, recoverSession, router]);
 
+  useEffect(() => {
+    if (!gameState || !currentPlayer) {
+      setSelectedReactionTargetUserId(null);
+      return;
+    }
+    const availableTargets = gameState.players.filter(
+      (player) => !player.isEliminated && player.userId !== currentPlayer.userId,
+    );
+    if (availableTargets.length === 0) {
+      setSelectedReactionTargetUserId(null);
+      return;
+    }
+    const currentlyValid = availableTargets.some((player) => player.userId === selectedReactionTargetUserId);
+    if (currentlyValid) return;
+
+    const turnUserId = gameState.players[gameState.currentPlayerIndex]?.userId;
+    const preferred =
+      typeof turnUserId === "number" && turnUserId !== currentPlayer.userId
+        ? turnUserId
+        : availableTargets[0].userId;
+    setSelectedReactionTargetUserId(preferred);
+  }, [
+    gameState,
+    currentPlayer,
+    selectedReactionTargetUserId,
+  ]);
+
   const handleOpenChat = () => {
+    setShowReactionPicker(false);
     setShowChat(true);
     markChatRead();
   };
@@ -1214,6 +1709,30 @@ export default function GamePlayScreen() {
     setChatInput("");
   };
 
+  const handleSendReaction = useCallback((emoji: ReactionEmoji) => {
+    if (!gameState || !currentPlayer || reactionCooldownActive) return;
+    const availableTargets = gameState.players.filter(
+      (player) => !player.isEliminated && player.userId !== currentPlayer.userId,
+    );
+    const selectedTargetIsValid =
+      selectedReactionTargetUserId != null &&
+      availableTargets.some((player) => player.userId === selectedReactionTargetUserId);
+    const targetUserId = selectedTargetIsValid
+      ? selectedReactionTargetUserId ?? undefined
+      : (availableTargets.find((player) => player.userId === gameState.players[gameState.currentPlayerIndex]?.userId)?.userId
+          ?? availableTargets[0]?.userId);
+    sendReaction(gameState.roomId, emoji, targetUserId);
+    setShowReactionPicker(false);
+    setReactionCooldownActive(true);
+    if (reactionCooldownTimerRef.current) {
+      clearTimeout(reactionCooldownTimerRef.current);
+    }
+    reactionCooldownTimerRef.current = setTimeout(() => {
+      reactionCooldownTimerRef.current = null;
+      setReactionCooldownActive(false);
+    }, 1_150);
+  }, [currentPlayer, gameState, reactionCooldownActive, selectedReactionTargetUserId, sendReaction]);
+
   const isMyTurn = Boolean(gameState && currentPlayer && gameState.players[gameState.currentPlayerIndex]?.id === currentPlayer.id);
   const playableCardIds = new Set(gameState?.playableCardIds ?? []);
   const playableCount = gameState && currentPlayer
@@ -1228,7 +1747,6 @@ export default function GamePlayScreen() {
         state: gameState,
         currentPlayer,
         isMyTurn,
-        playableCount,
       })
     : [];
   const hasNoPlayableCards = isMyTurn && playableCount === 0;
@@ -1400,6 +1918,40 @@ export default function GamePlayScreen() {
     processNextCardPlayFx();
   }, [gameState?.discardPile.length, showFlyingCard, processNextCardPlayFx]);
 
+  useEffect(() => {
+    if (hasUnifiedGameFxRef.current) return;
+    if (!gameState || gameState.phase !== "playing") {
+      lastTurnCueRef.current = "";
+      return;
+    }
+    const turnPlayer = gameState.players[gameState.currentPlayerIndex];
+    if (!turnPlayer) return;
+    const cueKey = `${gameState.roomId}:${gameState.roundNumber}:${gameState.currentPlayerIndex}:${gameState.discardPile.length}`;
+    if (!lastTurnCueRef.current) {
+      lastTurnCueRef.current = cueKey;
+      return;
+    }
+    if (lastTurnCueRef.current === cueKey) return;
+    lastTurnCueRef.current = cueKey;
+
+    const myTurn = turnPlayer.userId === user?.id;
+    playTurnShift(myTurn);
+    if (myTurn && Platform.OS !== "web") {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    showMomentBanner(myTurn ? "🎯 Du bist am Zug" : `👉 ${turnPlayer.username} ist am Zug`, 900);
+  }, [
+    gameState?.roomId,
+    gameState?.phase,
+    gameState?.roundNumber,
+    gameState?.currentPlayerIndex,
+    gameState?.discardPile.length,
+    gameState?.players,
+    playTurnShift,
+    showMomentBanner,
+    user?.id,
+  ]);
+
   if (!isConnected || !gameState || !currentPlayer) {
     return (
       <SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1, backgroundColor: DESIGN.tableBase }}>
@@ -1438,43 +1990,25 @@ export default function GamePlayScreen() {
   }
 
   const currentTurnPlayer = gameState.players[gameState.currentPlayerIndex];
-  useEffect(() => {
-    if (hasUnifiedGameFxRef.current) return;
-    if (!gameState || gameState.phase !== "playing") {
-      lastTurnCueRef.current = "";
-      return;
-    }
-    const turnPlayer = gameState.players[gameState.currentPlayerIndex];
-    if (!turnPlayer) return;
-    const cueKey = `${gameState.roomId}:${gameState.roundNumber}:${gameState.currentPlayerIndex}:${gameState.discardPile.length}`;
-    if (!lastTurnCueRef.current) {
-      lastTurnCueRef.current = cueKey;
-      return;
-    }
-    if (lastTurnCueRef.current === cueKey) return;
-    lastTurnCueRef.current = cueKey;
-
-    const myTurn = turnPlayer.userId === user?.id;
-    playTurnShift(myTurn);
-    if (myTurn && Platform.OS !== "web") {
-      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    showMomentBanner(myTurn ? "🎯 Du bist am Zug" : `👉 ${turnPlayer.username} ist am Zug`, 900);
-  }, [
-    gameState?.roomId,
-    gameState?.phase,
-    gameState?.roundNumber,
-    gameState?.currentPlayerIndex,
-    gameState?.discardPile.length,
-    gameState?.players,
-    playTurnShift,
-    showMomentBanner,
-    user?.id,
-  ]);
 
   const opponents = gameState.players
     .filter((p) => p.id !== currentPlayer.id)
     .filter((p) => !p.isEliminated);
+  const reactionTargetPlayers = gameState.players.filter(
+    (player) => !player.isEliminated && player.userId !== currentPlayer.userId,
+  );
+  const reactionAutoTarget = (() => {
+    const turnUserId = gameState.players[gameState.currentPlayerIndex]?.userId;
+    if (typeof turnUserId === "number" && turnUserId !== currentPlayer.userId) {
+      const turnTarget = reactionTargetPlayers.find((player) => player.userId === turnUserId);
+      if (turnTarget) return turnTarget;
+    }
+    return reactionTargetPlayers[0];
+  })();
+  const selectedReactionTarget =
+    selectedReactionTargetUserId == null
+      ? reactionAutoTarget
+      : reactionTargetPlayers.find((player) => player.userId === selectedReactionTargetUserId) ?? reactionAutoTarget;
   const playerCount = gameState.players.length;
   const mySeat = currentPlayer.seatPosition ?? gameState.players.findIndex((p) => p.id === currentPlayer.id);
   const seatAwareOpponents = [...opponents].sort((a, b) => {
@@ -1533,6 +2067,20 @@ export default function GamePlayScreen() {
     const clampedTop = Math.max(2, Math.min(arenaHeight - opponentChipMinHeight - 4, proposed.top));
     return { left: clampedLeft, top: clampedTop };
   });
+  const now = Date.now();
+  const visibleReactions = activeReactions.filter((reaction) => reaction.expiresAt > now);
+  const reactionsBySenderId = new Map<number, ActiveReaction>();
+  const reactionTargetsByPlayerId = new Map<number, ActiveReaction>();
+  for (const reaction of visibleReactions) {
+    if (typeof reaction.playerId === "number") {
+      reactionsBySenderId.set(reaction.playerId, reaction);
+    }
+    if (typeof reaction.targetPlayerId === "number") {
+      reactionTargetsByPlayerId.set(reaction.targetPlayerId, reaction);
+    }
+  }
+  const currentPlayerReaction = reactionsBySenderId.get(currentPlayer.id);
+  const currentPlayerTargetedReaction = reactionTargetsByPlayerId.get(currentPlayer.id);
   const wishSuitLabel = gameState.currentWishSuit
     ? `${gameState.currentWishSuit === "eichel" ? "🌰 Eichel" : gameState.currentWishSuit === "gruen" ? "🍀 Grün" : gameState.currentWishSuit === "rot" ? "❤️ Rot" : "🔔 Schellen"} oder Unter`
     : "";
@@ -1581,8 +2129,9 @@ export default function GamePlayScreen() {
   const centerSpotTop = isCompactHeight ? 268 : 292;
   const tableLogoSize = isSmallPhone ? 132 : 156;
   const tableLogoTop = centerSpotTop + centerSpotSize / 2 - tableLogoSize / 2;
+  const handPanelBottom = Math.max(2, insets.bottom - 2);
   const getRoundStartCards = (lossPoints: number) => Math.max(1, lossPoints + 1);
-  const hasActivePriorityFx = showBlackbird || showDrawFly || showFlyingCard || showWishFx || showRoundGlow;
+  const hasActivePriorityFx = showBlackbird || showDrawFly || showFlyingCard || showWishFx || showRoundGlow || showSpecialCardFx;
   const showSecondaryBanners = shouldShowSecondaryGameBanner({
     isCompactHeight,
     drawChainCount: gameState.drawChainCount,
@@ -1634,7 +2183,7 @@ export default function GamePlayScreen() {
           top: tableLogoTop,
           width: tableLogoSize,
           height: tableLogoSize,
-          opacity: 0.11,
+          opacity: hasActivePriorityFx ? 0.04 : 0.08,
         }}
       >
         <Image
@@ -1651,11 +2200,11 @@ export default function GamePlayScreen() {
           height: centerSpotSize,
           alignSelf: "center",
           top: centerSpotTop,
-          backgroundColor: "rgba(80,200,120,0.12)",
+          backgroundColor: "rgba(80,200,120,0.09)",
           borderRadius: 9999,
           shadowColor: "#66D092",
-          shadowOpacity: 0.12,
-          shadowRadius: 92,
+          shadowOpacity: 0.08,
+          shadowRadius: 70,
         }}
       />
 
@@ -1681,27 +2230,69 @@ export default function GamePlayScreen() {
                 style={[
                   {
                     alignSelf: "flex-start",
-                    backgroundColor: DESIGN.accentPrimary,
+                    backgroundColor: isMyTurn ? DESIGN.accentPrimary : "rgba(19, 30, 40, 0.95)",
                     borderRadius: 999,
-                    paddingHorizontal: 14,
-                    paddingVertical: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: 10,
+                    gap: 8,
                     marginTop: 7,
                     marginLeft: 8,
-                    shadowColor: "#ff9d1a",
-                    shadowRadius: 16,
+                    borderWidth: 1.2,
+                    borderColor: isMyTurn ? "rgba(255, 186, 94, 0.95)" : "rgba(141, 171, 194, 0.52)",
+                    shadowColor: isMyTurn ? "#ff9d1a" : "#0b1722",
+                    shadowOpacity: isMyTurn ? 0.35 : 0.2,
+                    shadowRadius: isMyTurn ? 16 : 10,
+                    elevation: isMyTurn ? 8 : 4,
                   },
                   isMyTurn ? turnChipPulseStyle : null,
                 ]}
               >
-                <Text style={{ color: "#fff", fontWeight: "800", fontSize: 16 }}>
-                  {isMyTurn ? "Dein Zug" : `Am Zug: ${currentTurnPlayer?.username}`}
-                </Text>
-                <Text style={{ color: "rgba(255,255,255,0.82)", fontWeight: "700", fontSize: 13 }}>
-                  R{gameState.roundNumber} · {gameState.players.length}/{gameState.maxPlayers ?? gameState.players.length}
-                </Text>
+                <Animated.View
+                  style={[
+                    {
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      backgroundColor: isMyTurn ? "#fff" : "rgba(171, 196, 215, 0.85)",
+                    },
+                    isMyTurn ? pulseStyle : null,
+                  ]}
+                />
+                <PlayerAvatar
+                  name={currentTurnPlayer?.username ?? "-"}
+                  avatarUrl={currentTurnPlayer?.avatarUrl}
+                  active={isMyTurn}
+                  isBot={Boolean(currentTurnPlayer?.userId != null && currentTurnPlayer.userId < 0)}
+                  size={34}
+                />
+                <View style={{ marginRight: 4 }}>
+                  <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14, letterSpacing: 0.2 }}>
+                    {isMyTurn ? "DEIN ZUG" : (currentTurnPlayer?.username ?? "-")}
+                  </Text>
+                  <Text style={{ color: "rgba(255,255,255,0.84)", fontWeight: "700", fontSize: 11 }}>
+                    {isMyTurn ? "Karte spielen oder ziehen" : "ist jetzt am Zug"}
+                  </Text>
+                </View>
+                <View
+                  style={{
+                    marginLeft: 2,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: "rgba(255,255,255,0.24)",
+                    backgroundColor: "rgba(8, 15, 22, 0.42)",
+                    paddingHorizontal: 7,
+                    paddingVertical: 4,
+                  }}
+                >
+                  <Text style={{ color: "rgba(255,255,255,0.96)", fontWeight: "800", fontSize: 11 }}>
+                    R{gameState.roundNumber}
+                  </Text>
+                  <Text style={{ color: "rgba(224,240,252,0.86)", fontWeight: "700", fontSize: 10 }}>
+                    {gameState.players.length}/{gameState.maxPlayers ?? gameState.players.length}
+                  </Text>
+                </View>
               </Animated.View>
               <View
                 style={{
@@ -1726,48 +2317,182 @@ export default function GamePlayScreen() {
                   ]}
                 />
               </View>
-              <View style={{ position: "absolute", right: 10, top: 10, flexDirection: "row", gap: 10 }}>
-                {currentPlayer.userId === gameState.hostUserId && (
+              <View style={{ position: "absolute", right: 10, top: 10, alignItems: "flex-end", gap: 8 }}>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  {currentPlayer.userId === gameState.hostUserId && (
+                    <Pressable
+                      onPress={() => {
+                        Alert.alert(
+                          "Runde neu starten?",
+                          "Die aktuelle Runde wird abgebrochen und neu ausgeteilt. Verlustpunkte bleiben erhalten.",
+                          [
+                            { text: "Abbrechen", style: "cancel" },
+                            { text: "Neu starten", style: "destructive", onPress: () => sendAction(gameState.roomId, currentPlayer.id, { type: "RESTART_ROUND" }) },
+                          ]
+                        );
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Runde neu starten"
+                      accessibilityHint="Startet die aktuelle Runde neu und behält Verlustpunkte."
+                      style={({ pressed }) => ({
+                        minWidth: 88,
+                        height: 40,
+                        borderRadius: 14,
+                        backgroundColor: pressed ? "rgba(255,157,26,0.34)" : "rgba(10, 19, 28, 0.85)",
+                        borderWidth: 1.2,
+                        borderColor: "rgba(255,157,26,0.8)",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        paddingHorizontal: 10,
+                      })}
+                    >
+                      <Text style={{ color: "#FFD89A", fontSize: 12, fontWeight: "800" }}>Runde neu</Text>
+                    </Pressable>
+                  )}
                   <Pressable
-                    onPress={() => {
-                      Alert.alert(
-                        "Runde neu starten?",
-                        "Die aktuelle Runde wird abgebrochen und neu ausgeteilt. Verlustpunkte bleiben erhalten.",
-                        [
-                          { text: "Abbrechen", style: "cancel" },
-                          { text: "Neu starten", style: "destructive", onPress: () => sendAction(gameState.roomId, currentPlayer.id, { type: "RESTART_ROUND" }) },
-                        ]
-                      );
-                    }}
+                    onPress={() => setShowReactionPicker((prev) => !prev)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Reaktionen öffnen"
+                    accessibilityHint="Schnelle Reaktion an alle Spieler senden."
                     style={({ pressed }) => ({
                       width: 40,
                       height: 40,
                       borderRadius: 20,
-                      backgroundColor: pressed ? "rgba(255,157,26,0.34)" : "rgba(10, 19, 28, 0.85)",
+                      backgroundColor: pressed ? "rgba(60,120,95,0.92)" : "rgba(10, 19, 28, 0.85)",
                       borderWidth: 1.2,
-                      borderColor: "rgba(255,157,26,0.8)",
+                      borderColor: "rgba(110, 240, 175, 0.55)",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      opacity: reactionCooldownActive ? 0.56 : 1,
+                    })}
+                    disabled={reactionCooldownActive}
+                  >
+                    <Text style={{ fontSize: 16 }}>⚡</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={handleOpenChat}
+                    accessibilityRole="button"
+                    accessibilityLabel="Chat öffnen"
+                    accessibilityHint="Öffnet den Raum-Chat."
+                    style={({ pressed }) => ({
+                        width: 40,
+                        height: 40,
+                        borderRadius: 20,
+                      backgroundColor: pressed ? "rgba(80,80,80,0.8)" : "rgba(10, 19, 28, 0.85)",
+                      borderWidth: 1.2,
+                      borderColor: "rgba(255,255,255,0.35)",
                       alignItems: "center",
                       justifyContent: "center",
                     })}
                   >
-                    <Text style={{ fontSize: 16 }}>↻</Text>
+                    <Text style={{ fontSize: 16 }}>💬</Text>
+                    {unreadCount > 0 && (
+                      <View
+                        style={{
+                          position: "absolute",
+                          top: -4,
+                          right: -2,
+                          minWidth: 16,
+                          height: 16,
+                          borderRadius: 8,
+                          backgroundColor: "#DC2626",
+                          borderWidth: 1,
+                          borderColor: "rgba(255,255,255,0.8)",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          paddingHorizontal: 3,
+                        }}
+                      >
+                        <Text style={{ color: "#FFF", fontSize: 9, fontWeight: "800" }}>{Math.min(99, unreadCount)}</Text>
+                      </View>
+                    )}
                   </Pressable>
+                </View>
+
+                {showReactionPicker && (
+                  <View
+                    style={{
+                      gap: 8,
+                      maxWidth: 236,
+                      backgroundColor: "rgba(6, 16, 24, 0.96)",
+                      borderWidth: 1,
+                      borderColor: "rgba(100, 220, 165, 0.42)",
+                      borderRadius: 14,
+                      paddingHorizontal: 8,
+                      paddingVertical: 8,
+                    }}
+                  >
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6 }}>
+                      <Pressable
+                        onPress={() => setSelectedReactionTargetUserId(null)}
+                        style={({ pressed }) => ({
+                          minHeight: 24,
+                          borderRadius: 999,
+                          paddingHorizontal: 8,
+                          paddingVertical: 3,
+                          borderWidth: 1,
+                          borderColor: selectedReactionTargetUserId == null ? "rgba(255, 209, 126, 0.9)" : "rgba(142, 181, 208, 0.45)",
+                          backgroundColor:
+                            selectedReactionTargetUserId == null
+                              ? "rgba(123, 77, 24, 0.92)"
+                              : (pressed ? "rgba(33, 56, 70, 0.92)" : "rgba(19, 33, 42, 0.88)"),
+                        })}
+                      >
+                        <Text style={{ color: "#F6EDD8", fontSize: 10, fontWeight: "800" }}>AUTO</Text>
+                      </Pressable>
+                      {reactionTargetPlayers.map((player) => (
+                        <Pressable
+                          key={player.id}
+                          onPress={() => setSelectedReactionTargetUserId(player.userId)}
+                          style={({ pressed }) => ({
+                            minHeight: 24,
+                            borderRadius: 999,
+                            paddingHorizontal: 8,
+                            paddingVertical: 3,
+                            borderWidth: 1,
+                            borderColor:
+                              selectedReactionTargetUserId === player.userId
+                                ? "rgba(255, 209, 126, 0.9)"
+                                : "rgba(142, 181, 208, 0.45)",
+                            backgroundColor:
+                              selectedReactionTargetUserId === player.userId
+                                ? "rgba(123, 77, 24, 0.92)"
+                                : (pressed ? "rgba(33, 56, 70, 0.92)" : "rgba(19, 33, 42, 0.88)"),
+                          })}
+                        >
+                          <Text style={{ color: "#E5F6FF", fontSize: 10, fontWeight: "800" }}>
+                            {player.username.slice(0, 8)}
+                          </Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <Text style={{ color: "#BDE7D1", fontSize: 10, fontWeight: "700", textAlign: "right", paddingRight: 2 }}>
+                      Ziel: {selectedReactionTarget?.username ?? "kein Ziel"}
+                    </Text>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6 }}>
+                    {QUICK_REACTIONS.map((reaction) => (
+                      <Pressable
+                        key={reaction.emoji}
+                        onPress={() => handleSendReaction(reaction.emoji)}
+                        style={({ pressed }) => ({
+                          width: 34,
+                          height: 34,
+                          borderRadius: 17,
+                          backgroundColor: pressed ? "rgba(72, 153, 112, 0.45)" : "rgba(19, 33, 42, 0.88)",
+                          borderWidth: 1,
+                          borderColor: "rgba(156, 239, 197, 0.45)",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        })}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Reaktion ${reaction.label}`}
+                      >
+                        <Text style={{ fontSize: 18 }}>{reaction.emoji}</Text>
+                      </Pressable>
+                    ))}
+                    </View>
+                  </View>
                 )}
-                <Pressable
-                  onPress={handleOpenChat}
-                  style={({ pressed }) => ({
-                      width: 40,
-                      height: 40,
-                      borderRadius: 20,
-                    backgroundColor: pressed ? "rgba(80,80,80,0.8)" : "rgba(10, 19, 28, 0.85)",
-                    borderWidth: 1.2,
-                    borderColor: "rgba(255,255,255,0.35)",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  })}
-                >
-                  <Text style={{ fontSize: 16 }}>💬</Text>
-                </Pressable>
               </View>
             </View>
 
@@ -1854,7 +2579,7 @@ export default function GamePlayScreen() {
                 onDone={() => setShowRoundGlow(false)}
               />
               <SuitWishBurst
-                visible={showWishFx}
+                visible={showWishFx && !showSpecialCardFx}
                 eventKey={wishFxKey}
                 wishSuit={wishFxSuit}
                 onDone={() => {
@@ -1862,10 +2587,28 @@ export default function GamePlayScreen() {
                   setWishFxSuit(undefined);
                 }}
               />
+              <SpecialCardActionFx
+                visible={showSpecialCardFx}
+                eventKey={specialCardFxKey}
+                rank={specialCardFxRank}
+                wishSuit={specialCardFxWishSuit}
+                direction={specialCardFxDirection}
+                drawChainCount={specialCardFxDrawChain}
+                onDone={() => {
+                  setShowSpecialCardFx(false);
+                  setSpecialCardFxRank(undefined);
+                  setSpecialCardFxWishSuit(undefined);
+                  setSpecialCardFxDirection(undefined);
+                  setSpecialCardFxDrawChain(undefined);
+                }}
+              />
               {seatAwareOpponents.map((player, idx) => {
                 const anchor = anchorsForOpponents[idx] ?? { top: 8, left: arenaInset + idx * 20 };
                 const isActive = gameState.players[gameState.currentPlayerIndex]?.id === player.id;
                 const isLoserPulse = loserPulseName === player.username;
+                const senderReaction = reactionsBySenderId.get(player.id);
+                const targetReaction = reactionTargetsByPlayerId.get(player.id);
+                const isTargeted = Boolean(targetReaction);
                 return (
                   <View
                     key={player.id}
@@ -1890,7 +2633,7 @@ export default function GamePlayScreen() {
                       flexDirection: "column",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      overflow: "hidden",
+                      overflow: "visible",
                       shadowColor: isActive ? "#FFD200" : "#000",
                       shadowOpacity: isActive ? 0.32 : 0.15,
                       shadowRadius: isActive ? 10 : 7,
@@ -1971,6 +2714,71 @@ export default function GamePlayScreen() {
                         ]}
                       />
                     )}
+                    {isTargeted && (
+                      <Animated.View
+                        pointerEvents="none"
+                        style={[
+                          {
+                            position: "absolute",
+                            top: -2,
+                            left: -2,
+                            right: -2,
+                            bottom: -2,
+                            borderRadius: 14,
+                            borderWidth: 1.8,
+                            borderColor: "rgba(255, 174, 66, 0.86)",
+                            backgroundColor: "rgba(190, 92, 12, 0.16)",
+                          },
+                          dangerPulseStyle,
+                        ]}
+                      />
+                    )}
+                    {targetReaction && (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: "absolute",
+                          top: -42,
+                          zIndex: 41,
+                          borderRadius: 999,
+                          backgroundColor: "rgba(43, 21, 10, 0.95)",
+                          borderWidth: 1,
+                          borderColor: "rgba(255, 193, 107, 0.84)",
+                          paddingHorizontal: 8,
+                          paddingVertical: 3,
+                        }}
+                      >
+                        <Text style={{ color: "#FFE9C8", fontSize: 9, fontWeight: "900" }} numberOfLines={1}>
+                          {targetReaction.emoji} von {targetReaction.username}
+                        </Text>
+                      </View>
+                    )}
+                    {senderReaction && (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: "absolute",
+                          top: -24,
+                          zIndex: 40,
+                          borderRadius: 999,
+                          backgroundColor: "rgba(6, 16, 24, 0.95)",
+                          borderWidth: 1,
+                          borderColor: "rgba(148, 228, 190, 0.75)",
+                          paddingHorizontal: 8,
+                          paddingVertical: 4,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 4,
+                        }}
+                      >
+                        <Text style={{ fontSize: 16 }}>{senderReaction.emoji}</Text>
+                        {senderReaction.targetUsername ? (
+                          <Text style={{ color: "#D8FEEA", fontSize: 9, fontWeight: "800" }} numberOfLines={1}>
+                            → {senderReaction.targetUsername}
+                          </Text>
+                        ) : null}
+                      </View>
+                    )}
                     <PlayerAvatar name={player.username} avatarUrl={player.avatarUrl} active={isActive} isBot={Boolean(player.userId != null && player.userId < 0)} size={48} />
                     <Text
                       style={{
@@ -2001,16 +2809,17 @@ export default function GamePlayScreen() {
                   flexDirection: "row",
                   alignItems: "center",
                   gap: isCompactHeight ? 24 : 28,
-                  backgroundColor: "transparent",
-                  borderWidth: 0,
-                  borderColor: "transparent",
-                  borderRadius: 14,
-                  paddingHorizontal: isCompactHeight ? 8 : 10,
-                  paddingVertical: isCompactHeight ? 6 : 8,
-                  shadowColor: "transparent",
-                  shadowOpacity: 0,
-                  shadowRadius: 0,
-                  elevation: 0,
+                  backgroundColor: "rgba(7, 16, 22, 0.48)",
+                  borderWidth: 1,
+                  borderColor: "rgba(142, 181, 208, 0.28)",
+                  borderRadius: 18,
+                  paddingHorizontal: isCompactHeight ? 12 : 14,
+                  paddingVertical: isCompactHeight ? 10 : 11,
+                  shadowColor: "#02060a",
+                  shadowOpacity: 0.34,
+                  shadowRadius: 16,
+                  shadowOffset: { width: 0, height: 8 },
+                  elevation: 8,
                 }}
               >
                 <View className="items-center">
@@ -2018,17 +2827,37 @@ export default function GamePlayScreen() {
                     onPress={handleDrawCard}
                     disabled={!isMyTurn}
                   >
-                    <View
+                    <Animated.View
                       style={{
                         width: 58,
                         height: 85,
-                        shadowColor: "#000",
-                        shadowOffset: { width: 0, height: 6 },
-                        shadowOpacity: 0.28,
-                        shadowRadius: 14,
-                        elevation: 8,
+                        shadowColor: hasNoPlayableCards ? DESIGN.accentPrimary : "#000",
+                        shadowOffset: { width: 0, height: hasNoPlayableCards ? 2 : 6 },
+                        shadowOpacity: hasNoPlayableCards ? 0.62 : 0.28,
+                        shadowRadius: hasNoPlayableCards ? 22 : 14,
+                        elevation: hasNoPlayableCards ? 12 : 8,
+                        transform: [{ scale: hasNoPlayableCards ? 1.06 : 1.02 }],
                       }}
                     >
+                      {hasNoPlayableCards && (
+                        <Animated.View
+                          pointerEvents="none"
+                          style={[
+                            {
+                              position: "absolute",
+                              top: -6,
+                              left: -6,
+                              right: -6,
+                              bottom: -6,
+                              borderRadius: 14,
+                              borderWidth: 2,
+                              borderColor: "rgba(255, 196, 87, 0.95)",
+                              backgroundColor: "rgba(120, 72, 14, 0.2)",
+                            },
+                            dangerPulseStyle,
+                          ]}
+                        />
+                      )}
                       <View style={{ position: "absolute", top: 9, left: 12, opacity: 0.34 }}>
                         <PlayingCard card={{ suit: "eichel", rank: "7", id: "back-stack-3" }} faceDown size="medium" />
                       </View>
@@ -2044,11 +2873,19 @@ export default function GamePlayScreen() {
                       <View style={{ position: "absolute", top: 0, left: 0 }}>
                         <PlayingCard card={{ suit: "eichel", rank: "7", id: "back" }} faceDown size="medium" />
                       </View>
-                    </View>
+                    </Animated.View>
                   </Touchable>
                   {isMyTurn && (
-                    <Text style={{ color: DESIGN.accentSecondary, fontSize: 11, fontWeight: "800", marginTop: 5 }}>
-                      Ziehen
+                    <Text
+                      style={{
+                        color: hasNoPlayableCards ? "#FFE9B8" : DESIGN.accentSecondary,
+                        fontSize: 11,
+                        fontWeight: "900",
+                        marginTop: 5,
+                        letterSpacing: hasNoPlayableCards ? 0.4 : 0,
+                      }}
+                    >
+                      {hasNoPlayableCards ? "JETZT ZIEHEN" : "Ziehen"}
                     </Text>
                   )}
                 </View>
@@ -2068,7 +2905,8 @@ export default function GamePlayScreen() {
                       shadowRadius: effectiveDiscardCard?.rank === "7" && gameState.drawChainCount > 0
                         ? 30 + (gameState.drawChainCount * 10)
                         : 16,
-                      elevation: 8,
+                      elevation: 10,
+                      transform: [{ scale: 1.03 }],
                     }}
                   >
                     <View style={{ width: 58, height: 85 }}>
@@ -2134,21 +2972,89 @@ export default function GamePlayScreen() {
                 position: "absolute",
                 left: 0,
                 right: 0,
-                bottom: -4,
-                backgroundColor: DESIGN.panelGlass,
+                bottom: handPanelBottom,
+                backgroundColor: "rgba(20, 30, 38, 0.95)",
                 borderColor: isCurrentPlayerLoserPulse ? "rgba(255,88,88,0.95)" : (isMyTurn ? DESIGN.lineStrong : DESIGN.lineSoft),
                 borderWidth: isMyTurn ? 1.8 : 1,
-                borderRadius: 18,
-                padding: 10,
-                paddingBottom: isCompactHeight ? 6 : 8,
+                borderRadius: 20,
+                paddingHorizontal: 12,
+                paddingTop: 11,
+                paddingBottom: isCompactHeight ? 10 : 12,
                 shadowColor: isMyTurn ? DESIGN.accentSecondary : "#03070a",
                 shadowOffset: { width: 0, height: -4 },
                 shadowOpacity: isMyTurn ? 0.45 : 0.28,
                 shadowRadius: isMyTurn ? 18 : 9,
                 elevation: isMyTurn ? 13 : 5,
-                minHeight: isMyTurn ? (isCompactHeight ? 132 : 148) : 90,
+                minHeight: isMyTurn ? (isCompactHeight ? 144 : 166) : 100,
+                zIndex: 22,
               }}
             >
+              {currentPlayerReaction && (
+                <View
+                  pointerEvents="none"
+                  style={{
+                    position: "absolute",
+                    top: -24,
+                    alignSelf: "center",
+                    zIndex: 30,
+                    borderRadius: 999,
+                    backgroundColor: "rgba(6, 16, 24, 0.95)",
+                    borderWidth: 1,
+                    borderColor: "rgba(148, 228, 190, 0.75)",
+                    paddingHorizontal: 10,
+                    paddingVertical: 4,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <Text style={{ fontSize: 16 }}>{currentPlayerReaction.emoji}</Text>
+                  {currentPlayerReaction.targetUsername ? (
+                    <Text style={{ color: "#D8FEEA", fontSize: 10, fontWeight: "800" }} numberOfLines={1}>
+                      → {currentPlayerReaction.targetUsername}
+                    </Text>
+                  ) : null}
+                </View>
+              )}
+              {currentPlayerTargetedReaction && (
+                <>
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      {
+                        position: "absolute",
+                        top: -1,
+                        left: -1,
+                        right: -1,
+                        bottom: -1,
+                        borderRadius: 19,
+                        borderWidth: 2,
+                        borderColor: "rgba(255,174,66,0.9)",
+                      },
+                      dangerPulseStyle,
+                    ]}
+                  />
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      position: "absolute",
+                      top: -42,
+                      alignSelf: "center",
+                      zIndex: 32,
+                      borderRadius: 999,
+                      backgroundColor: "rgba(43, 21, 10, 0.95)",
+                      borderWidth: 1,
+                      borderColor: "rgba(255, 193, 107, 0.84)",
+                      paddingHorizontal: 10,
+                      paddingVertical: 4,
+                    }}
+                  >
+                    <Text style={{ color: "#FFE9C8", fontSize: 10, fontWeight: "900" }} numberOfLines={1}>
+                      {currentPlayerTargetedReaction.emoji} von {currentPlayerTargetedReaction.username}
+                    </Text>
+                  </View>
+                </>
+              )}
               {isCurrentPlayerLoserPulse && (
                 <Animated.View
                   pointerEvents="none"
@@ -2197,41 +3103,45 @@ export default function GamePlayScreen() {
                     marginBottom: 6,
                     borderRadius: 10,
                     borderWidth: 1,
-                    borderColor: hasNoPlayableCards ? "rgba(255, 196, 87, 0.7)" : "rgba(90, 230, 160, 0.6)",
-                    backgroundColor: hasNoPlayableCards ? "rgba(120, 72, 14, 0.42)" : "rgba(26, 110, 70, 0.32)",
-                    paddingHorizontal: 10,
-                    paddingVertical: 6,
+                    borderColor: hasNoPlayableCards ? "rgba(255, 196, 87, 0.72)" : "rgba(90, 230, 160, 0.6)",
+                    backgroundColor: hasNoPlayableCards ? "rgba(120, 72, 14, 0.34)" : "rgba(26, 110, 70, 0.32)",
+                    paddingHorizontal: 8,
+                    paddingVertical: 5,
+                    alignSelf: "flex-start",
                   }}
                 >
                   <Text
                     style={{
                       color: hasNoPlayableCards ? "#FFE9B8" : "#DDFBEF",
-                      fontSize: 12,
+                      fontSize: 11,
                       fontWeight: "800",
                     }}
                   >
-                    {hasNoPlayableCards
-                      ? "Keine passende Karte: Ziehe vom Stapel."
-                      : `${playableCount} Karte(n) spielbar: grün hervorgehoben.`}
+                    {hasNoPlayableCards ? "🂠 Ziehstapel aktiv" : `${playableCount} spielbar`}
                   </Text>
                 </View>
               )}
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ minHeight: isMyTurn ? (isCompactHeight ? 72 : 84) : 58 }}>
-                <View style={{ flexDirection: "row", gap: 5, alignItems: "flex-end", paddingBottom: 4 }}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={{ minHeight: isMyTurn ? (isCompactHeight ? 86 : 98) : 62 }}
+                contentContainerStyle={{ paddingHorizontal: 2, paddingTop: 4, paddingBottom: 8 }}
+              >
+                <View style={{ flexDirection: "row", gap: 6, alignItems: "flex-end" }}>
                   {currentPlayer.hand.map((card, index) => {
                     const disabledByServerHint = isMyTurn && Boolean(gameState.playableCardIds) && !playableCardIds.has(card.id);
                     const centerIndex = (currentPlayer.hand.length - 1) / 2;
                     const offset = index - centerIndex;
                     const fanSpread = currentPlayer.hand.length <= 5 ? 10 : 7;
                     const isPlayable = !disabledByServerHint && isMyTurn;
-                    const arcLift = Math.max(0, 10 - Math.abs(offset) * 2.2);
+                    const arcLift = Math.max(0, 8 - Math.abs(offset) * 1.8);
                     return (
                       <View
                         key={card.id}
                         style={{
                           transform: [
                             { rotate: `${offset * fanSpread}deg` },
-                            { translateY: 8 - arcLift + (isPlayable ? -8 : 0) },
+                            { translateY: 9 - arcLift + (isPlayable ? -5 : 0) },
                           ],
                           marginHorizontal: -1,
                           zIndex: 1000 - Math.abs(offset) * 10,
@@ -2239,7 +3149,7 @@ export default function GamePlayScreen() {
                           shadowOpacity: isPlayable ? 0.38 : 0,
                           shadowRadius: isPlayable ? 10 : 0,
                           elevation: isPlayable ? 6 : 0,
-                          opacity: disabledByServerHint ? 0.43 : (isMyTurn ? 1 : 0.92),
+                          opacity: disabledByServerHint ? (hasNoPlayableCards ? 0.34 : 0.43) : (isMyTurn ? 1 : 0.92),
                         }}
                       >
                         {isPlayable && (
@@ -2578,10 +3488,6 @@ export default function GamePlayScreen() {
       </Modal>
       <ComboCounter comboCount={comboCount} playerName={comboPlayer} />
       <DrawChainEscalation drawChainCount={gameState?.drawChainCount ?? 0} />
-      <EmoteSystem
-        playerName={currentPlayer.username}
-        botNames={opponents.filter((p) => p.userId < 0).map((p) => p.username)}
-      />
       <BlackbirdAnimation
         visible={showBlackbird}
         eventId={blackbirdEventId}
@@ -2597,6 +3503,11 @@ export default function GamePlayScreen() {
         phrase={blackbirdPhrase}
         onDone={() => {
           const activeFx = activeGameFxRef.current;
+          showBlackbirdRef.current = false;
+          if (blackbirdVisibilityGuardTimerRef.current) {
+            clearTimeout(blackbirdVisibilityGuardTimerRef.current);
+            blackbirdVisibilityGuardTimerRef.current = null;
+          }
           setShowBlackbird(false);
           setBlackbirdEventId(undefined);
           setBlackbirdLoser(undefined);

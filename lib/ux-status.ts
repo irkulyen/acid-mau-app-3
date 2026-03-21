@@ -140,20 +140,14 @@ export function getGamePriorityPills(params: {
   state: GameState;
   currentPlayer: Player;
   isMyTurn: boolean;
-  playableCount: number;
 }): GamePriorityPill[] {
-  const { state, isMyTurn, playableCount } = params;
+  const { state, isMyTurn } = params;
   const currentTurnPlayer = state.players[state.currentPlayerIndex];
   const pills: GamePriorityPill[] = [];
   pills.push({
     key: "turn",
     tone: isMyTurn ? "success" : "neutral",
     label: isMyTurn ? "Du bist am Zug" : `Am Zug: ${currentTurnPlayer?.username ?? "-"}`,
-  });
-  pills.push({
-    key: "playable",
-    tone: isMyTurn ? (playableCount > 0 ? "success" : "warning") : "neutral",
-    label: isMyTurn ? `Spielbar: ${playableCount}` : "Warte auf deinen Zug",
   });
   if (state.drawChainCount > 0) {
     pills.push({

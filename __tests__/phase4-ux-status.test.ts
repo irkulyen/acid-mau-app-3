@@ -52,7 +52,7 @@ describe("Phase 4 UX status helpers", () => {
     expect(reconnectingInRoom.title).toContain("unterbrochen");
   });
 
-  it("prioritizes draw chain and playable card clarity for active player", () => {
+  it("prioritizes draw chain status for active player", () => {
     const state = createGameState(
       1,
       "ABC123",
@@ -79,11 +79,9 @@ describe("Phase 4 UX status helpers", () => {
       state,
       currentPlayer,
       isMyTurn: true,
-      playableCount,
     });
     expect(pills[0]?.label).toContain("Du bist am Zug");
-    expect(pills[1]?.label).toContain("Spielbar: 1");
-    expect(pills[2]?.label).toContain("Ziehkette +3");
+    expect(pills[1]?.label).toContain("Ziehkette +3");
   });
 
   it("hides secondary banners on compact screens during critical states", () => {

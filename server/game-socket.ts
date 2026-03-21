@@ -1,7 +1,12 @@
 import { Server as SocketIOServer, Socket } from "socket.io";
 import { Server as HTTPServer } from "http";
 import type { GameState, GameAction, Player, Card } from "../shared/game-types";
-import type { GameFxEvent } from "../shared/socket-contract";
+import {
+  REACTION_EMOJIS,
+  type GameFxEvent,
+  type ReactionEmoji,
+  type ReactionEvent,
+} from "../shared/socket-contract";
 import type { SeatDrawResult } from "../shared/game-preparation";
 import { applySeatChoices, drawCardsForPlayers, getSeatPickOrderPlayerIds, performDealerSelectionForPlayers } from "../shared/game-preparation";
 import { createGameState, processAction, startGame } from "../shared/game-engine";
@@ -32,18 +37,20 @@ const SEAT_SELECTION_FAILSAFE_MS = 12_000;
 const turnTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
 const eventRateLimits = new Map<string, { count: number; resetAt: number }>();
 const roomCleanupTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
+const reactionCooldownByRoomUser = new Map<string, number>();
+const reactionLastPayloadByRoomUser = new Map<string, { at: number; emoji: ReactionEmoji; targetUserId?: number }>();
+const reactionHistory = new Map<number, ReactionEvent[]>();
 const blackbirdHistory = new Map<number, BlackbirdEventPayload[]>();
 const gameFxHistory = new Map<number, GameFxEvent[]>();
 const roomFxSequences = new Map<number, number>();
 const roomFxNextStartAt = new Map<number, number>();
 type BlackbirdRuntimeState = {
-  lastAnyAt: number;
-  lastByType: Partial<Record<BlackbirdEventType, number>>;
   lastSignatureAt: Record<string, number>;
   recentPhrases: string[];
 };
 const blackbirdRuntime = new Map<number, BlackbirdRuntimeState>();
 let blackbirdSequenceCounter = 0;
+let reactionSequenceCounter = 0;
 const roomMutationQueues = new Map<number, Promise<void>>();
 const userMutationQueues = new Map<number, Promise<void>>();
 const blockedSocketOrigins = new Set<string>();
@@ -89,45 +96,11 @@ type BlackbirdEventPayload = {
   emittedAt: number;
 };
 
-const BLACKBIRD_GLOBAL_COOLDOWN_MS = 6_000;
-const BLACKBIRD_TYPE_COOLDOWN_MS: Record<BlackbirdEventType, number> = {
-  round_start: 9_000,
-  winner: 1_500,
-  loser: 1_500,
-  draw_chain: 3_000,
-  seven_played: 2_200,
-  direction_shift: 2_800,
-  ass: 8_000,
-  unter: 8_000,
-  invalid: 1_500,
-  mvp: 6_000,
-};
-const BLACKBIRD_TYPE_PRIORITY: Record<BlackbirdEventType, number> = {
-  mvp: 100,
-  loser: 95,
-  winner: 90,
-  seven_played: 85,
-  direction_shift: 83,
-  draw_chain: 80,
-  round_start: 70,
-  ass: 60,
-  unter: 60,
-  invalid: 75,
-};
-const BLACKBIRD_SKIP_CHANCE: Record<BlackbirdEventType, number> = {
-  round_start: 0.7,
-  winner: 0,
-  loser: 0,
-  draw_chain: 0.55,
-  seven_played: 0,
-  direction_shift: 0,
-  ass: 0.22,
-  unter: 0.2,
-  invalid: 0.8,
-  mvp: 0.32,
-};
 const BLACKBIRD_RARE_CHANCE = 0.06;
 const BLACKBIRD_RECENT_PHRASE_WINDOW = 8;
+const REACTION_TTL_MS = 1_650;
+const REACTION_COOLDOWN_MS = 1_100;
+const REACTION_SET = new Set<ReactionEmoji>(REACTION_EMOJIS);
 
 const BB_ROUND_START = [
   "Neue Runde.",
@@ -451,6 +424,82 @@ function isUserConnectedInRoom(roomId: number, userId: number): boolean {
   return false;
 }
 
+function getReactionCooldownKey(roomId: number, userId: number): string {
+  return `${roomId}:${userId}`;
+}
+
+function clearReactionCooldownForRoom(roomId: number) {
+  const prefix = `${roomId}:`;
+  for (const key of reactionCooldownByRoomUser.keys()) {
+    if (key.startsWith(prefix)) {
+      reactionCooldownByRoomUser.delete(key);
+    }
+  }
+  for (const key of reactionLastPayloadByRoomUser.keys()) {
+    if (key.startsWith(prefix)) {
+      reactionLastPayloadByRoomUser.delete(key);
+    }
+  }
+  reactionHistory.delete(roomId);
+}
+
+function pushReactionHistory(roomId: number, event: ReactionEvent) {
+  const now = Date.now();
+  const prev = reactionHistory.get(roomId) || [];
+  const merged = [...prev, event]
+    .filter((entry) => now - entry.createdAt <= 12_000)
+    .slice(-80);
+  reactionHistory.set(roomId, merged);
+}
+
+function replayReactionEventsForSocket(socket: Socket, roomId: number) {
+  const now = Date.now();
+  const replayable = (reactionHistory.get(roomId) || []).filter((event) => now - event.createdAt <= 6_500);
+  if (replayable.length === 0) return;
+  replayable.forEach((event, index) => {
+    socket.emit("reaction:event", {
+      ...event,
+      id: `${event.id}-replay-${index}-${now}`,
+      replay: true,
+      createdAt: event.createdAt,
+      expiresAt: now + Math.min(1_250, REACTION_TTL_MS),
+    });
+  });
+}
+
+function emitReactionEvent(
+  io: SocketIOServer,
+  payload: {
+    roomId: number;
+    userId: number;
+    playerId?: number;
+    username: string;
+    emoji: ReactionEmoji;
+    targetUserId?: number;
+    targetPlayerId?: number;
+    targetUsername?: string;
+    source: "manual" | "special_7" | "special_ass" | "one_card" | "elimination" | "win";
+  },
+) {
+  const createdAt = Date.now();
+  const message = {
+    id: `rx-${payload.roomId}-${++reactionSequenceCounter}`,
+    roomId: payload.roomId,
+    userId: payload.userId,
+    playerId: payload.playerId,
+    username: payload.username,
+    emoji: payload.emoji,
+    createdAt,
+    expiresAt: createdAt + REACTION_TTL_MS,
+    targetUserId: payload.targetUserId,
+    targetPlayerId: payload.targetPlayerId,
+    targetUsername: payload.targetUsername,
+    source: payload.source,
+  };
+  pushReactionHistory(payload.roomId, message);
+  io.to(`room-${payload.roomId}`).emit("reaction:event", message);
+}
+
 function detachSocketFromTrackedRooms(socket: Socket): number[] {
   const detached: number[] = [];
   for (const [roomId, sockets] of roomSockets.entries()) {
@@ -471,6 +520,27 @@ function attachSocketToTrackedRoom(socket: Socket, roomId: number) {
     roomSockets.set(roomId, new Set());
   }
   roomSockets.get(roomId)!.add(socket.id);
+}
+
+function getNextActivePlayerFrom(
+  state: GameState,
+  startIndex: number,
+  steps = 1,
+): Player | undefined {
+  if (state.players.length === 0 || steps <= 0) return undefined;
+  const total = state.players.length;
+  const direction = state.direction === "clockwise" ? 1 : -1;
+  let index = startIndex;
+  let remainingSteps = steps;
+
+  for (let guard = 0; guard < total * 2; guard += 1) {
+    index = (index + direction + total) % total;
+    const candidate = state.players[index];
+    if (!candidate || candidate.isEliminated) continue;
+    remainingSteps -= 1;
+    if (remainingSteps <= 0) return candidate;
+  }
+  return undefined;
 }
 
 function clampIntensity(v: number): 1 | 2 | 3 | 4 | 5 {
@@ -518,8 +588,6 @@ function getBlackbirdRuntime(roomId: number): BlackbirdRuntimeState {
   const existing = blackbirdRuntime.get(roomId);
   if (existing) return existing;
   const created: BlackbirdRuntimeState = {
-    lastAnyAt: 0,
-    lastByType: {},
     lastSignatureAt: {},
     recentPhrases: [],
   };
@@ -530,39 +598,24 @@ function getBlackbirdRuntime(roomId: number): BlackbirdRuntimeState {
 function shouldEmitBlackbirdEvent(roomId: number, event: Omit<BlackbirdEventPayload, "id" | "emittedAt">): boolean {
   const now = Date.now();
   const runtime = getBlackbirdRuntime(roomId);
-  const type = event.type;
-  const typePriority = BLACKBIRD_TYPE_PRIORITY[type];
 
-  const sinceAny = now - runtime.lastAnyAt;
-  if (sinceAny < BLACKBIRD_GLOBAL_COOLDOWN_MS && typePriority < 85) {
-    return false;
-  }
-
-  const lastByType = runtime.lastByType[type] ?? 0;
-  if (now - lastByType < BLACKBIRD_TYPE_COOLDOWN_MS[type] && typePriority < 90) {
-    return false;
-  }
-
-  const signature = `${event.type}:${event.playerName || ""}:${event.drawChainCount || ""}:${event.wishSuit || ""}`;
+  const signature = [
+    event.type,
+    event.playerName || "",
+    event.spotlightPlayerName || "",
+    event.spotlightUserId ?? "",
+    event.drawChainCount || "",
+    event.wishSuit || "",
+    event.variant || "",
+    event.statsText || "",
+  ].join(":");
   const lastSig = runtime.lastSignatureAt[signature] ?? 0;
-  if (now - lastSig < 1_200) {
+  // Keep only ultra-short duplicate protection for accidental double-emits
+  // from the same transition. Longer throttling made Blackbird FX feel random.
+  if (now - lastSig < 160) {
     return false;
   }
 
-  let skipChance = BLACKBIRD_SKIP_CHANCE[type];
-  if (type === "draw_chain") {
-    const chain = event.drawChainCount ?? 0;
-    if (chain >= 7) skipChance = 0;
-    else if (chain >= 5) skipChance = 0.15;
-    else if (chain >= 4) skipChance = 0.35;
-    else skipChance = 0.6;
-  }
-  if (skipChance > 0 && Math.random() < skipChance) {
-    return false;
-  }
-
-  runtime.lastAnyAt = now;
-  runtime.lastByType[type] = now;
   runtime.lastSignatureAt[signature] = now;
   return true;
 }
@@ -767,7 +820,6 @@ function emitStateTransitionFx(
 }
 
 function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<Omit<BlackbirdEventPayload, "id" | "emittedAt">>) {
-  if (!ENV.enableBlackbirdEvents) return;
   if (events.length === 0) return;
   const accepted = events.filter((event) => shouldEmitBlackbirdEvent(roomId, event));
   if (accepted.length === 0) return;
@@ -793,7 +845,11 @@ function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<O
 
   pushBlackbirdHistory(roomId, normalized);
   for (const payload of normalized) {
-    io.to(`room-${roomId}`).emit("blackbird-event", payload);
+    // Legacy dedicated event can stay behind a feature flag.
+    // Unified game-fx blackbird events are always emitted to keep cross-client FX deterministic.
+    if (ENV.enableBlackbirdEvents) {
+      io.to(`room-${roomId}`).emit("blackbird-event", payload);
+    }
     const { emittedAt, ...blackbirdEvent } = payload;
     emitGameFx(io, roomId, {
       type: "blackbird",
@@ -902,6 +958,7 @@ function scheduleRoomCleanup(roomId: number, delayMs = 30 * 60 * 1000) {
     gameFxHistory.delete(roomId);
     roomFxSequences.delete(roomId);
     roomFxNextStartAt.delete(roomId);
+    clearReactionCooldownForRoom(roomId);
 
     // Clear room-related user mappings
     for (const [uid, mappedRoomId] of await realtimeStore.getUserMappings()) {
@@ -1283,7 +1340,6 @@ function detectAndBroadcastBlackbirdEvents(
   oldState: GameState,
   newState: GameState
 ) {
-  if (!ENV.enableBlackbirdEvents) return;
   const events: Array<Omit<BlackbirdEventPayload, "id" | "emittedAt">> = [];
 
   const oldDiscardLen = oldState.discardPile.length;
@@ -1299,9 +1355,15 @@ function detectAndBroadcastBlackbirdEvents(
   if (newDiscardLen > oldDiscardLen && newTopCard) {
     // Detect seven played (client uses this for synchronized impact FX)
     if (newTopCard.rank === "7") {
+      const chain = Math.max(1, newState.drawChainCount);
+      // Always emit a single seven_played blackbird cue for 7 to keep
+      // Amsel visibility deterministic, independent of chain size.
       events.push({
         type: "seven_played",
-        drawChainCount: newState.drawChainCount,
+        drawChainCount: chain,
+        intensity: chain >= 5 ? 5 : chain >= 3 ? 4 : 3,
+        variant: chain >= 4 ? "voltage" : "impact",
+        statsText: `Ziehkette +${chain}`,
         spotlightUserId: actor?.userId,
         spotlightPlayerName: actor?.username,
       });
@@ -1311,6 +1373,8 @@ function detectAndBroadcastBlackbirdEvents(
     if (newTopCard.rank === "ass") {
       events.push({
         type: "ass",
+        intensity: 4,
+        variant: "skip",
         spotlightUserId: actor?.userId,
         spotlightPlayerName: actor?.username,
       });
@@ -1321,6 +1385,9 @@ function detectAndBroadcastBlackbirdEvents(
       events.push({
         type: "unter",
         wishSuit: newState.currentWishSuit,
+        intensity: 3,
+        variant: "wild",
+        statsText: `Wunsch: ${newState.currentWishSuit}`,
         spotlightUserId: actor?.userId,
         spotlightPlayerName: actor?.username,
       });
@@ -1333,7 +1400,8 @@ function detectAndBroadcastBlackbirdEvents(
         spotlightUserId: actor?.userId,
         spotlightPlayerName: actor?.username,
         statsText: newState.direction === "counterclockwise" ? "Gegen den Uhrzeigersinn" : "Im Uhrzeigersinn",
-        intensity: 3,
+        intensity: 4,
+        variant: "spin",
       });
     }
 
@@ -1358,15 +1426,8 @@ function detectAndBroadcastBlackbirdEvents(
     }
   }
 
-  // Detect 7er-Kette escalation (4+ cards in chain)
-  if (newState.drawChainCount >= 4 && newState.drawChainCount > oldState.drawChainCount) {
-    events.push({
-      type: "draw_chain",
-      drawChainCount: newState.drawChainCount,
-      spotlightUserId: actor?.userId,
-      spotlightPlayerName: actor?.username,
-    });
-  }
+  // draw_chain blackbird cues are intentionally not emitted.
+  // Escalation is handled by authoritative game-fx draw_chain + seven_played blackbird.
 
   // Detect round start (new round began)
   if (newState.phase === "playing" && oldState.phase === "round_end" && newState.roundNumber > oldState.roundNumber) {
@@ -1763,6 +1824,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           });
           replayGameFxEventsForSocket(socket, roomId);
           replayBlackbirdEventsForSocket(socket, roomId);
+          replayReactionEventsForSocket(socket, roomId);
 
           // Send chat history
           try {
@@ -2108,6 +2170,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
             replayGameFxEventsForSocket(socket, roomId);
             replayBlackbirdEventsForSocket(socket, roomId);
           }
+          replayReactionEventsForSocket(socket, roomId);
 
           console.log(`[socket] User ${username} (${userId}) joined room ${roomCode} (${roomId})`);
           telemetry.inc(joinResult.playerAdded ? "rooms.joined" : "rooms.join_idempotent");
@@ -2277,18 +2340,25 @@ export function setupGameSocket(httpServer: HTTPServer) {
             // Critical special-card feedback must always be server-authoritative
             // so all clients receive the same dramatic moments, independent of
             // optional blackbird feature flags.
-            if (newTop.rank === "ass" || newTop.rank === "bube" || newTop.rank === "7" || newTop.rank === "8") {
+            const shouldEmitSpecialCardFx =
+              newTop.rank === "ass" ||
+              newTop.rank === "bube" ||
+              newTop.rank === "8" ||
+              (newTop.rank === "7" && newState.drawChainCount < 4);
+            if (shouldEmitSpecialCardFx) {
               emitGameFx(io, roomId, {
                 type: "special_card",
                 playerId: actorPlayerId,
                 userId: actorAfter?.userId,
                 playerName: actorAfter?.username,
                 specialRank: newTop.rank,
+                drawChainCount: newTop.rank === "7" ? newState.drawChainCount : undefined,
+                direction: newTop.rank === "8" ? newState.direction : undefined,
                 wishSuit: newTop.rank === "bube" ? (newState.currentWishSuit ?? undefined) : undefined,
                 startAt: Date.now() + 260,
               }, 120);
             }
-            if (newTop.rank === "7") {
+            if (newTop.rank === "7" && newState.drawChainCount >= 4) {
               emitGameFx(io, roomId, {
                 type: "draw_chain",
                 playerId: actorPlayerId,
@@ -2297,6 +2367,36 @@ export function setupGameSocket(httpServer: HTTPServer) {
                 drawChainCount: newState.drawChainCount,
                 startAt: Date.now() + 230,
               }, 120);
+            }
+
+            if (newTop.rank === "7" && actorAfter) {
+              const hitPlayer = getNextActivePlayerFrom(gameState, gameState.currentPlayerIndex, 1);
+              emitReactionEvent(io, {
+                roomId,
+                userId: actorAfter.userId,
+                playerId: actorAfter.id,
+                username: actorAfter.username,
+                emoji: "😈",
+                targetUserId: hitPlayer?.userId,
+                targetPlayerId: hitPlayer?.id,
+                targetUsername: hitPlayer?.username,
+                source: "special_7",
+              });
+            }
+
+            if (newTop.rank === "ass" && actorAfter) {
+              const skippedPlayer = getNextActivePlayerFrom(gameState, gameState.currentPlayerIndex, 1);
+              emitReactionEvent(io, {
+                roomId,
+                userId: actorAfter.userId,
+                playerId: actorAfter.id,
+                username: actorAfter.username,
+                emoji: "🐦",
+                targetUserId: skippedPlayer?.userId,
+                targetPlayerId: skippedPlayer?.id,
+                targetUsername: skippedPlayer?.username,
+                source: "special_ass",
+              });
             }
           }
         }
@@ -2309,6 +2409,54 @@ export function setupGameSocket(httpServer: HTTPServer) {
             drawCount,
             startAt: Date.now() + 90,
           });
+        }
+
+        if (actorBefore && actorAfter && actorBefore.hand.length > 1 && actorAfter.hand.length === 1) {
+          emitReactionEvent(io, {
+            roomId,
+            userId: actorAfter.userId,
+            playerId: actorAfter.id,
+            username: actorAfter.username,
+            emoji: "👀",
+            targetUserId: actorAfter.userId,
+            targetPlayerId: actorAfter.id,
+            targetUsername: actorAfter.username,
+            source: "one_card",
+          });
+        }
+
+        for (const player of newState.players) {
+          const previousPlayer = gameState.players.find((entry) => entry.id === player.id);
+          if (!previousPlayer) continue;
+          if (previousPlayer.isEliminated || !player.isEliminated) continue;
+          emitReactionEvent(io, {
+            roomId,
+            userId: player.userId,
+            playerId: player.id,
+            username: player.username,
+            emoji: "⚡",
+            targetUserId: player.userId,
+            targetPlayerId: player.id,
+            targetUsername: player.username,
+            source: "elimination",
+          });
+        }
+
+        if (gameState.phase !== "game_end" && newState.phase === "game_end") {
+          const winner = newState.players.find((player) => !player.isEliminated);
+          if (winner) {
+            emitReactionEvent(io, {
+              roomId,
+              userId: winner.userId,
+              playerId: winner.id,
+              username: winner.username,
+              emoji: "🐦",
+              targetUserId: winner.userId,
+              targetPlayerId: winner.id,
+              targetUsername: winner.username,
+              source: "win",
+            });
+          }
         }
 
         // Detect and broadcast blackbird events
@@ -2470,6 +2618,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
             if (!isUserConnectedInRoom(roomId, socketUserId)) {
               await clearUserRoomMappingIfMatches(socketUserId, roomId);
             }
+            const reactionKey = getReactionCooldownKey(roomId, socketUserId);
+            reactionCooldownByRoomUser.delete(reactionKey);
+            reactionLastPayloadByRoomUser.delete(reactionKey);
           }
 
           console.log(`[socket] User ${socketUserId} left room ${roomId}`);
@@ -2625,6 +2776,100 @@ export function setupGameSocket(httpServer: HTTPServer) {
       }
     });
 
+    socket.on(
+      "reaction:send",
+      async (data: { roomId: number; emoji: ReactionEmoji; targetUserId?: number }) => {
+        try {
+          if (isRateLimited(socket.id, "reaction:send", 18, 10_000)) {
+            socket.emit("error", { message: "Zu viele Reaktionen" });
+            return;
+          }
+
+          const roomId = Number(data?.roomId);
+          const emoji = data?.emoji;
+          if (!Number.isInteger(roomId) || roomId <= 0) return;
+          if (!REACTION_SET.has(emoji)) return;
+
+          if (!(await isUserMappedToRoom(authenticatedUserId, roomId))) {
+            socket.emit("error", { message: "Unauthorized room access" });
+            return;
+          }
+
+          const cooldownKey = getReactionCooldownKey(roomId, authenticatedUserId);
+          const now = Date.now();
+          const lastSentAt = reactionCooldownByRoomUser.get(cooldownKey) ?? 0;
+          if (now - lastSentAt < REACTION_COOLDOWN_MS) {
+            return;
+          }
+
+          const gameState = await realtimeStore.getGameState(roomId);
+          if (!gameState) {
+            socket.emit("error", { message: "Game state unavailable" });
+            return;
+          }
+          const sender = gameState.players.find((player) => player.userId === authenticatedUserId);
+          if (!sender) {
+            socket.emit("error", { message: "Player not found in game" });
+            return;
+          }
+          const currentTurnUserId = gameState.players[gameState.currentPlayerIndex]?.userId;
+
+          const target =
+            typeof data.targetUserId === "number" && Number.isInteger(data.targetUserId)
+              ? gameState.players.find(
+                  (player) => player.userId === data.targetUserId && !player.isEliminated && player.userId !== authenticatedUserId,
+                )
+              : undefined;
+          const fallbackTarget =
+            currentTurnUserId === authenticatedUserId
+              ? gameState.players.find((player) => !player.isEliminated && player.userId !== authenticatedUserId)
+              : gameState.players.find(
+                  (player) =>
+                    !player.isEliminated &&
+                    player.userId !== authenticatedUserId &&
+                    player.userId === currentTurnUserId,
+                ) ??
+                gameState.players.find((player) => !player.isEliminated && player.userId !== authenticatedUserId);
+          const resolvedTarget = target ?? fallbackTarget;
+
+          const lastPayload = reactionLastPayloadByRoomUser.get(cooldownKey);
+          const normalizedTargetUserId = resolvedTarget?.userId;
+          if (lastPayload && now - lastPayload.at < 900) {
+            return;
+          }
+          if (
+            lastPayload &&
+            now - lastPayload.at < 3_400 &&
+            lastPayload.emoji === emoji &&
+            (lastPayload.targetUserId ?? null) === (normalizedTargetUserId ?? null)
+          ) {
+            return;
+          }
+
+          reactionCooldownByRoomUser.set(cooldownKey, now);
+          reactionLastPayloadByRoomUser.set(cooldownKey, {
+            at: now,
+            emoji,
+            targetUserId: normalizedTargetUserId,
+          });
+          emitReactionEvent(io, {
+            roomId,
+            userId: authenticatedUserId,
+            playerId: sender.id,
+            username: sender.username,
+            emoji,
+            targetUserId: resolvedTarget?.userId,
+            targetPlayerId: resolvedTarget?.id,
+            targetUsername: resolvedTarget?.username,
+            source: "manual",
+          });
+        } catch (error) {
+          console.error("[socket] Error sending reaction:", error);
+          telemetry.inc("errors.reaction_send");
+        }
+      },
+    );
+
     // Admin helpers
     const clearRoomRuntimeTimers = (roomId: number) => {
       const botTimeout = botTurnTimeouts.get(roomId);
@@ -2642,6 +2887,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
       gameFxHistory.delete(roomId);
       roomFxSequences.delete(roomId);
       roomFxNextStartAt.delete(roomId);
+      clearReactionCooldownForRoom(roomId);
 
       const sockets = roomSockets.get(roomId);
       if (sockets) {
@@ -2697,6 +2943,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
       await realtimeStore.clearAll();
       blackbirdHistory.clear();
       blackbirdRuntime.clear();
+      reactionCooldownByRoomUser.clear();
+      reactionLastPayloadByRoomUser.clear();
+      reactionHistory.clear();
       for (const timeout of roomCleanupTimeouts.values()) {
         clearTimeout(timeout);
       }

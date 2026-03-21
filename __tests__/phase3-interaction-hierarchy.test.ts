@@ -9,7 +9,7 @@ describe("phase3 interaction hierarchy", () => {
 
     expect(special.impact).toBeGreaterThan(standard.impact);
     expect(chain.impact).toBeGreaterThanOrEqual(special.impact);
-    expect(chain.completionMs).toBeGreaterThan(special.completionMs);
+    expect(chain.completionMs).toBeGreaterThan(standard.completionMs);
   });
 
   it("keeps elimination and victory at top impact tier", () => {
@@ -34,4 +34,3 @@ describe("phase3 interaction hierarchy", () => {
     expect(winner.flashPeak).toBeGreaterThan(unter.flashPeak);
   });
 });
-

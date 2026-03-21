@@ -11,6 +11,46 @@ PREWARM_REQUEST_TIMEOUT="${EXPO_PREWARM_REQUEST_TIMEOUT:-300}"
 
 cd "$ROOT_DIR"
 
+ensure_node_tooling() {
+  # Keep common package-manager locations in PATH for non-interactive shells.
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+  # Load NVM explicitly when script is executed outside interactive zsh.
+  if [[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]]; then
+    # shellcheck disable=SC1090
+    source "${NVM_DIR:-$HOME/.nvm}/nvm.sh"
+    if command -v nvm >/dev/null 2>&1; then
+      nvm use --silent default >/dev/null 2>&1 || nvm use --silent --lts >/dev/null 2>&1 || true
+    fi
+  fi
+
+  # Ensure pnpm exists when Node ships with corepack but pnpm is not globally installed.
+  if ! command -v pnpm >/dev/null 2>&1 && command -v corepack >/dev/null 2>&1; then
+    corepack prepare pnpm@9.12.0 --activate >/dev/null 2>&1 || corepack enable >/dev/null 2>&1 || true
+  fi
+
+  local missing=0
+  for bin in node npm npx pnpm curl grep; do
+    if ! command -v "$bin" >/dev/null 2>&1; then
+      echo "[expo:external] Missing tool '$bin' in script context."
+      missing=1
+    fi
+  done
+
+  echo "[expo:external] PATH=$PATH"
+  command -v node >/dev/null 2>&1 && echo "[expo:external] node: $(command -v node) ($(node -v))"
+  command -v npm >/dev/null 2>&1 && echo "[expo:external] npm:  $(command -v npm) ($(npm -v))"
+  command -v npx >/dev/null 2>&1 && echo "[expo:external] npx:  $(command -v npx) ($(npx --version))"
+  command -v pnpm >/dev/null 2>&1 && echo "[expo:external] pnpm: $(command -v pnpm) ($(pnpm -v))"
+
+  if [[ "$missing" -ne 0 ]]; then
+    echo "[expo:external] Node toolchain not fully available. Aborting start."
+    exit 1
+  fi
+}
+
+ensure_node_tooling
+
 if [[ ! -f ".env" ]]; then
   printf "EXPO_PUBLIC_API_URL=%s\n" "$API_URL_DEFAULT" > .env
   echo "[expo:external] Created .env with EXPO_PUBLIC_API_URL=$API_URL_DEFAULT"
@@ -48,13 +88,13 @@ on_terminate() {
 trap on_terminate INT TERM
 
 for _ in $(seq 1 120); do
-  if curl -fsS "http://127.0.0.1:$PORT/status" 2>/dev/null | rg -q "packager-status:running"; then
+  if curl -fsS "http://127.0.0.1:$PORT/status" 2>/dev/null | grep -q "packager-status:running"; then
     break
   fi
   sleep 1
 done
 
-if ! curl -fsS "http://127.0.0.1:$PORT/status" 2>/dev/null | rg -q "packager-status:running"; then
+if ! curl -fsS "http://127.0.0.1:$PORT/status" 2>/dev/null | grep -q "packager-status:running"; then
   echo "[expo:external] Metro did not become ready on port $PORT."
   echo "[expo:external] Tail log:"
   tail -n 80 "$LOG_FILE" || true
