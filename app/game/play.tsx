@@ -19,6 +19,7 @@ import { useAuth } from "@/lib/auth-provider";
 import { useSocket, type PreparationData, type BlackbirdEvent, type CardPlayFxEvent, type DrawCardFxEvent, type GameFxEvent } from "@/lib/socket-provider";
 import { useGameSounds } from "@/hooks/use-game-sounds";
 import { getBotProfileByName } from "@/lib/bot-profiles";
+import { hashString, pickBySeed } from "@/lib/deterministic";
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 /** Mini card backs for opponent hand display */
@@ -214,8 +215,11 @@ export default function GamePlayScreen() {
   const discardAnimationHydratedRef = useRef(false);
   const cardPlayFxQueueRef = useRef<CardPlayFxEvent[]>([]);
   const cardPlayFxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const blackbirdDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const blackbirdNextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gameFxQueueRef = useRef<GameFxEvent[]>([]);
   const gameFxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gameFxCompletionTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const activeGameFxRef = useRef<GameFxEvent | null>(null);
   const hasUnifiedGameFxRef = useRef(false);
   const seenGameFxRef = useRef<Map<string, number>>(new Map());
@@ -303,6 +307,14 @@ export default function GamePlayScreen() {
         clearTimeout(cardPlayFxTimerRef.current);
         cardPlayFxTimerRef.current = null;
       }
+      if (blackbirdDelayTimerRef.current) {
+        clearTimeout(blackbirdDelayTimerRef.current);
+        blackbirdDelayTimerRef.current = null;
+      }
+      if (blackbirdNextTimerRef.current) {
+        clearTimeout(blackbirdNextTimerRef.current);
+        blackbirdNextTimerRef.current = null;
+      }
       if (clutchBannerTimerRef.current) {
         clearTimeout(clutchBannerTimerRef.current);
         clutchBannerTimerRef.current = null;
@@ -323,6 +335,8 @@ export default function GamePlayScreen() {
         clearTimeout(drawFlyFallbackTimerRef.current);
         drawFlyFallbackTimerRef.current = null;
       }
+      gameFxCompletionTimersRef.current.forEach(clearTimeout);
+      gameFxCompletionTimersRef.current = [];
     };
   }, []);
 
@@ -438,7 +452,13 @@ export default function GamePlayScreen() {
 
     const delay = Math.max(0, (event.startAt ?? Date.now()) - Date.now());
     if (delay > 0) {
-      setTimeout(() => activateBlackbirdEvent(event), delay);
+      if (blackbirdDelayTimerRef.current) {
+        clearTimeout(blackbirdDelayTimerRef.current);
+      }
+      blackbirdDelayTimerRef.current = setTimeout(() => {
+        blackbirdDelayTimerRef.current = null;
+        activateBlackbirdEvent(event);
+      }, delay);
     } else {
       activateBlackbirdEvent(event);
     }
@@ -559,11 +579,15 @@ export default function GamePlayScreen() {
         "🔥 Pumuckl im Endspurt: eine Karte ubrig.",
       ],
     };
+    const state = gameStateRef.current;
+    const seed = hashString(
+      `${state?.roomId ?? "room"}:${state?.roundNumber ?? 0}:${state?.discardPile.length ?? 0}:${player.userId}:${normalized}`,
+    );
 
     if (player.userId < 0) {
       const candidate = botLines[normalized];
       if (candidate?.length) {
-        return candidate[Math.floor(Math.random() * candidate.length)];
+        return pickBySeed(candidate, seed, 1);
       }
     }
 
@@ -572,7 +596,7 @@ export default function GamePlayScreen() {
       `🔥 ${player.username} ist im Clutch! Nur noch eine Karte.`,
       `🔥 Matchpoint fur ${player.username}!`,
     ];
-    return generic[Math.floor(Math.random() * generic.length)];
+    return pickBySeed(generic, seed, 2);
   }, []);
 
   const trackRivalryFromPlay = useCallback((playerId?: number) => {
@@ -633,6 +657,20 @@ export default function GamePlayScreen() {
     }, 16);
   }, []);
 
+  const clearGameFxCompletionTimers = useCallback(() => {
+    if (gameFxCompletionTimersRef.current.length === 0) return;
+    gameFxCompletionTimersRef.current.forEach(clearTimeout);
+    gameFxCompletionTimersRef.current = [];
+  }, []);
+
+  const scheduleGameFxCompletion = useCallback((eventId: string, delayMs: number) => {
+    const timer = setTimeout(() => {
+      gameFxCompletionTimersRef.current = gameFxCompletionTimersRef.current.filter((entry) => entry !== timer);
+      completeActiveGameFx(eventId);
+    }, delayMs);
+    gameFxCompletionTimersRef.current.push(timer);
+  }, [completeActiveGameFx]);
+
   const processNextGameFx = useCallback(() => {
     if (activeGameFxRef.current) return;
     if (showFlyingCard) return;
@@ -688,7 +726,7 @@ export default function GamePlayScreen() {
             setAssFlash(true);
             setTimeout(() => setAssFlash(false), 420);
             showMomentBanner(`🂡 ${next.playerName || "Spieler"} spielt Ass`, 1200);
-            setTimeout(() => completeActiveGameFx(next.id), 420);
+            scheduleGameFxCompletion(next.id, 420);
             return;
           }
           if (next.specialRank === "bube") {
@@ -700,12 +738,12 @@ export default function GamePlayScreen() {
               `🂫 ${next.playerName || "Spieler"} wunscht ${next.wishSuit || "eine Farbe"}`,
               1400,
             );
-            setTimeout(() => completeActiveGameFx(next.id), 520);
+            scheduleGameFxCompletion(next.id, 520);
             return;
           }
           if (next.specialRank === "7") {
             playSpecialCard("7");
-            setTimeout(() => completeActiveGameFx(next.id), 440);
+            scheduleGameFxCompletion(next.id, 440);
             return;
           }
           completeActiveGameFx(next.id);
@@ -719,7 +757,7 @@ export default function GamePlayScreen() {
           setDiscardImpactKey((k) => k + 1);
           setShowDiscardImpact(true);
           showMomentBanner(`💥 Ziehkette x${chain}`, 1400);
-          setTimeout(() => completeActiveGameFx(next.id), 560);
+          scheduleGameFxCompletion(next.id, 560);
           return;
         }
         case "blackbird": {
@@ -737,14 +775,14 @@ export default function GamePlayScreen() {
             void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }
           showMomentBanner(myTurn ? "🎯 Du bist am Zug" : `👉 ${next.playerName || "Spieler"} ist am Zug`, 850);
-          setTimeout(() => completeActiveGameFx(next.id), 260);
+          scheduleGameFxCompletion(next.id, 260);
           return;
         }
         case "elimination": {
           playElimination();
           const label = next.eliminatedPlayerName || next.playerName || "Spieler";
           showMomentBanner(`💀 ${label} ist eliminiert`, 2100);
-          setTimeout(() => completeActiveGameFx(next.id), 900);
+          scheduleGameFxCompletion(next.id, 900);
           return;
         }
         case "round_transition": {
@@ -752,14 +790,14 @@ export default function GamePlayScreen() {
           setRoundGlowKey((k) => k + 1);
           setShowRoundGlow(true);
           showMomentBanner(`🎮 Runde ${next.roundNumber ?? "?"} startet`, 1400);
-          setTimeout(() => completeActiveGameFx(next.id), 650);
+          scheduleGameFxCompletion(next.id, 650);
           return;
         }
         case "match_result": {
           const winnerName = next.winnerPlayerName || next.playerName || "Gewinner";
           showMomentBanner(`🏆 ${winnerName} gewinnt das Match`, 2600);
           playVictory();
-          setTimeout(() => completeActiveGameFx(next.id), 900);
+          scheduleGameFxCompletion(next.id, 900);
           return;
         }
         default: {
@@ -787,6 +825,7 @@ export default function GamePlayScreen() {
     playTurnShift,
     playVictory,
     resolveDrawFxTarget,
+    scheduleGameFxCompletion,
     showDrawFly,
     showFlyingCard,
     showMomentBanner,
@@ -847,7 +886,16 @@ export default function GamePlayScreen() {
       clearTimeout(drawFlyFallbackTimerRef.current);
       drawFlyFallbackTimerRef.current = null;
     }
-  }, [gameState?.roomId]);
+    if (blackbirdDelayTimerRef.current) {
+      clearTimeout(blackbirdDelayTimerRef.current);
+      blackbirdDelayTimerRef.current = null;
+    }
+    if (blackbirdNextTimerRef.current) {
+      clearTimeout(blackbirdNextTimerRef.current);
+      blackbirdNextTimerRef.current = null;
+    }
+    clearGameFxCompletionTimers();
+  }, [gameState?.roomId, clearGameFxCompletionTimers]);
 
   useEffect(() => {
     setOnPreparation((data: PreparationData) => {
@@ -2312,7 +2360,11 @@ export default function GamePlayScreen() {
             return;
           }
           // Process next queued event after a short delay
-          setTimeout(() => {
+          if (blackbirdNextTimerRef.current) {
+            clearTimeout(blackbirdNextTimerRef.current);
+          }
+          blackbirdNextTimerRef.current = setTimeout(() => {
+            blackbirdNextTimerRef.current = null;
             if (blackbirdQueueRef.current.length > 0) {
               processNextBlackbird();
             }

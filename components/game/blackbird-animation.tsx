@@ -136,6 +136,8 @@ export function BlackbirdAnimation({
   const [currentEvent, setCurrentEvent] = useState<EventType>("round_start");
   const onDoneRef = useRef<(() => void) | undefined>(onDone);
   const onStartRef = useRef<(() => void) | undefined>(onStart);
+  const animationRunTokenRef = useRef(0);
+  const confettiClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     onDoneRef.current = onDone;
@@ -157,7 +159,7 @@ export function BlackbirdAnimation({
     setTrail((prev) => [...prev.slice(-18), particle]);
   }, []);
 
-  const spawnConfetti = useCallback((centerX: number, centerY: number, seed: number) => {
+  const spawnConfetti = useCallback((centerX: number, centerY: number, seed: number, runToken: number) => {
     const pieces: ConfettiPiece[] = [];
     for (let i = 0; i < 24; i++) {
       const x = centerX + seededRange(seed, -SW * 0.3, SW * 0.3, i * 3 + 1);
@@ -172,15 +174,43 @@ export function BlackbirdAnimation({
       });
     }
     setConfetti(pieces);
-    setTimeout(() => setConfetti([]), 2500);
+    if (confettiClearTimerRef.current) {
+      clearTimeout(confettiClearTimerRef.current);
+      confettiClearTimerRef.current = null;
+    }
+    confettiClearTimerRef.current = setTimeout(() => {
+      if (animationRunTokenRef.current !== runToken) return;
+      setConfetti([]);
+      confettiClearTimerRef.current = null;
+    }, 2500);
+  }, []);
+
+  const fireOnDoneForRun = useCallback((runToken: number) => {
+    if (animationRunTokenRef.current !== runToken) return;
+    fireOnDone();
+  }, [fireOnDone]);
+
+  useEffect(() => {
+    return () => {
+      if (confettiClearTimerRef.current) {
+        clearTimeout(confettiClearTimerRef.current);
+        confettiClearTimerRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
     if (!visible) {
+      animationRunTokenRef.current += 1;
       setTrail([]);
       setConfetti([]);
+      if (confettiClearTimerRef.current) {
+        clearTimeout(confettiClearTimerRef.current);
+        confettiClearTimerRef.current = null;
+      }
       return;
     }
+    const runToken = ++animationRunTokenRef.current;
 
     // Determine event type and phrase
     let evType: EventType = eventType || "round_start";
@@ -349,7 +379,7 @@ export function BlackbirdAnimation({
         withTiming(SW + 140, fast(420), (finished) => {
           if (finished) {
             opacity.value = withTiming(0, { duration: 150 });
-            runOnJS(fireOnDone)();
+            runOnJS(fireOnDoneForRun)(runToken);
           }
         }),
       );
@@ -381,7 +411,7 @@ export function BlackbirdAnimation({
         withTiming(SW + 140, fast(800), (finished) => {
           if (finished) {
             opacity.value = withTiming(0, { duration: 200 });
-            runOnJS(fireOnDone)();
+            runOnJS(fireOnDoneForRun)(runToken);
           }
         }),
       );
@@ -448,7 +478,9 @@ export function BlackbirdAnimation({
     // Speech bubble timing
     const speechDelay = isQuickEvent ? 380 : 900;
     const speechDuration = isQuickEvent ? 850 : 1200;
+    let speechHideTimer: ReturnType<typeof setTimeout> | null = null;
     const speechTimer = setTimeout(() => {
+      if (animationRunTokenRef.current !== runToken) return;
       setSpeechPos({
         x: isQuickEvent ? SW * 0.12 : SW * 0.14,
         y: isQuickEvent ? SH * 0.16 : SH * 0.14,
@@ -458,10 +490,11 @@ export function BlackbirdAnimation({
 
       // Confetti burst for winner/loser
       if (evType === "winner" || evType === "loser") {
-        spawnConfetti(SW * 0.4, SH * 0.26, seedBase + 901);
+        spawnConfetti(SW * 0.4, SH * 0.26, seedBase + 901, runToken);
       }
 
-      setTimeout(() => {
+      speechHideTimer = setTimeout(() => {
+        if (animationRunTokenRef.current !== runToken) return;
         speechOpacity.value = withTiming(0, { duration: 500 });
         speechScale.value = withTiming(0.8, { duration: 500 });
       }, speechDuration);
@@ -484,8 +517,11 @@ export function BlackbirdAnimation({
       intervals.push(timer);
     }
 
-    return () => intervals.forEach(clearTimeout);
-  }, [visible, eventId, eventType, winnerName, loserName, drawChainCount, wishSuit, statsText, phraseFromServer, addTrailParticle, spawnConfetti, intensity, fireOnDone, fireOnStart]);
+    return () => {
+      intervals.forEach(clearTimeout);
+      if (speechHideTimer) clearTimeout(speechHideTimer);
+    };
+  }, [visible, eventId, eventType, winnerName, loserName, drawChainCount, wishSuit, statsText, phraseFromServer, addTrailParticle, spawnConfetti, intensity, fireOnDoneForRun, fireOnStart]);
 
   const containerStyle = useAnimatedStyle(() => ({
     transform: [
