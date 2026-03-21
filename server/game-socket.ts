@@ -1690,7 +1690,19 @@ export function setupGameSocket(httpServer: HTTPServer) {
               await clearUserRoomMappingIfMatches(userId, roomId);
               socket.emit("error", { message: "Game no longer exists" });
             } else {
-              socket.emit("error", { message: "Session temporarily unavailable. Please retry." });
+              const trackedSocketCount = roomSockets.get(roomId)?.size ?? 0;
+              if (trackedSocketCount === 0) {
+                // Deterministic stale-session recovery:
+                // room metadata survived, but realtime game state is gone and no sockets are attached.
+                await clearUserRoomMappingIfMatches(userId, roomId);
+                await roomManager.deleteRoom(roomId).catch((cleanupError) => {
+                  console.warn(`[socket] Failed stale room cleanup during reconnect for room ${roomId}:`, cleanupError);
+                });
+                telemetry.inc("rooms.reconnect_stale_room_cleared");
+                socket.emit("error", { message: "No active session found" });
+              } else {
+                socket.emit("error", { message: "Session temporarily unavailable. Please retry." });
+              }
             }
             return;
           }
@@ -1943,7 +1955,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           }
 
           const avatarUrl = await getUserAvatarUrl(userId);
-          const gameState = await withRoomMutation(roomId, async () => {
+          const joinResult = await withRoomMutation(roomId, async () => {
             const pendingTimeout = disconnectTimeouts.get(userId);
             if (pendingTimeout) {
               clearTimeout(pendingTimeout);
@@ -1952,6 +1964,8 @@ export function setupGameSocket(httpServer: HTTPServer) {
             }
 
             let currentState = await getGameStateWithRetry(roomId, 4, 120);
+            let stateMutated = false;
+            let playerAdded = false;
 
             if (!currentState) {
               const roomCreatedAtMs = new Date(room.createdAt as unknown as string | number | Date).getTime();
@@ -1999,7 +2013,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
                 players: [...currentState.players, newPlayer],
               };
               await realtimeStore.setGameState(roomId, currentState);
-              return currentState;
+              stateMutated = true;
+              playerAdded = true;
+              return { state: currentState, stateMutated, playerAdded };
             }
 
             if ((existingPlayer.username !== username && username) || existingPlayer.avatarUrl !== avatarUrl) {
@@ -2011,10 +2027,12 @@ export function setupGameSocket(httpServer: HTTPServer) {
               };
               await realtimeStore.setGameState(roomId, currentState);
               console.log(`[socket] Updated profile for user ${userId}: ${existingPlayer.username} -> ${username}`);
+              stateMutated = true;
             }
 
-            return currentState;
+            return { state: currentState, stateMutated, playerAdded };
           });
+          const gameState = joinResult.state;
 
           // Join socket room (single tracked room per socket)
           attachSocketToTrackedRoom(socket, roomId);
@@ -2038,8 +2056,11 @@ export function setupGameSocket(httpServer: HTTPServer) {
             socket.emit("game-preparation", toPreparationPayload(prepData as PendingPreparation));
           }
 
-          // Broadcast updated state to all players
-          broadcastFilteredState(io, roomId, gameState);
+          // Broadcast only when room state actually changed (new player/profile update).
+          // Pure duplicate join retries should be idempotent and not fan out noisy snapshots.
+          if (joinResult.stateMutated) {
+            broadcastFilteredState(io, roomId, gameState);
+          }
           // Always send a direct state snapshot to the joining socket.
           // This avoids waiting-screen stalls if room broadcast delivery is delayed.
           socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
@@ -2054,7 +2075,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           }
 
           console.log(`[socket] User ${username} (${userId}) joined room ${roomCode} (${roomId})`);
-          telemetry.inc("rooms.joined");
+          telemetry.inc(joinResult.playerAdded ? "rooms.joined" : "rooms.join_idempotent");
         });
       } catch (error) {
         console.error("[socket] Error joining room:", error);

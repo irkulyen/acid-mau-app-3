@@ -380,9 +380,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         console.log("[socket] Disconnected:", reason);
         setIsConnected(false);
         clearJoinInFlight("disconnect");
-        if (reason !== "io client disconnect") {
-          socket?.connect();
-        }
+        // Let socket.io reconnection strategy handle reconnects deterministically.
       });
 
       socket.on("connect_error", (err) => {

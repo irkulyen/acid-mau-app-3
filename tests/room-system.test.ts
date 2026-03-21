@@ -869,4 +869,138 @@ describe("Multiplayer Room System", () => {
       });
     });
   });
+
+  it("should clear stale reconnect sessions when room metadata exists but realtime state is missing", async () => {
+    const hostUserId = 220;
+    const staleUserId = 221;
+    const hostToken = await createTestToken(hostUserId, "stale-host@test.local");
+    const staleToken = await createTestToken(staleUserId, "stale-user@test.local");
+
+    return new Promise<void>((resolve, reject) => {
+      const hostSocket = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token: hostToken },
+      });
+      const staleSocket = ioClient(API_URL, {
+        path: SOCKET_PATH,
+        transports: ["websocket", "polling"],
+        auth: { token: staleToken },
+      });
+      let reconnectSocket: Socket | null = null;
+      let createdRoomId: number | null = null;
+      let createdRoomCode = "";
+      let stalePlayerId: number | null = null;
+      let finished = false;
+
+      const cleanup = () => {
+        hostSocket.removeAllListeners();
+        staleSocket.removeAllListeners();
+        hostSocket.disconnect();
+        staleSocket.disconnect();
+        if (reconnectSocket) {
+          reconnectSocket.removeAllListeners();
+          reconnectSocket.disconnect();
+        }
+      };
+
+      const finish = (error?: unknown) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        cleanup();
+        if (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        } else {
+          resolve();
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        finish(new Error("Timeout waiting for stale reconnect cleanup"));
+      }, 15000);
+
+      hostSocket.on("connect", () => {
+        hostSocket.emit("create-room", {
+          userId: hostUserId,
+          username: "StaleHost",
+          maxPlayers: 4,
+          isPrivate: true,
+        });
+      });
+
+      hostSocket.on("room-created", (payload) => {
+        createdRoomId = payload.roomId;
+        createdRoomCode = payload.roomCode;
+      });
+
+      staleSocket.on("connect", () => {
+        const tryJoin = () => {
+          if (!createdRoomCode) {
+            setTimeout(tryJoin, 40);
+            return;
+          }
+          staleSocket.emit("join-room", {
+            roomCode: createdRoomCode,
+            userId: staleUserId,
+            username: "StaleUser",
+          });
+        };
+        tryJoin();
+      });
+
+      staleSocket.on("game-state-update", async (state) => {
+        if (!createdRoomId || stalePlayerId) return;
+        stalePlayerId = state.players.find((p: any) => p.userId === staleUserId)?.id ?? null;
+        if (!stalePlayerId) {
+          finish(new Error("Stale user playerId not found"));
+          return;
+        }
+
+        hostSocket.disconnect();
+        staleSocket.disconnect();
+        await new Promise((r) => setTimeout(r, 120));
+
+        await realtimeStore.deleteGameState(createdRoomId);
+        await realtimeStore.setUserRoom(staleUserId, createdRoomId);
+
+        reconnectSocket = ioClient(API_URL, {
+          path: SOCKET_PATH,
+          transports: ["websocket", "polling"],
+          auth: { token: staleToken },
+        });
+
+        reconnectSocket.on("connect", () => {
+          reconnectSocket?.emit("reconnect-room", {
+            userId: staleUserId,
+            roomId: createdRoomId,
+            roomCode: createdRoomCode,
+            playerId: stalePlayerId,
+            username: "StaleUser",
+          });
+        });
+
+        reconnectSocket.on("error", async (payload: { message?: string }) => {
+          try {
+            expect(payload?.message).toBe("No active session found");
+            const mappedRoomId = await realtimeStore.getUserRoom(staleUserId);
+            expect(mappedRoomId).toBeUndefined();
+            finish();
+          } catch (error) {
+            finish(error);
+          }
+        });
+      });
+
+      hostSocket.on("error", (err) => {
+        finish(new Error(`Host socket error: ${err.message}`));
+      });
+      staleSocket.on("error", (err) => {
+        // ignore mirrored errors; reconnect assertion handles the expected branch
+        if (!stalePlayerId) {
+          finish(new Error(`Stale socket error: ${err.message}`));
+        }
+      });
+    });
+  });
 });
