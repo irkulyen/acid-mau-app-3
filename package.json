@@ -19,6 +19,7 @@
     "test:soak": "node scripts/soak-room.mjs",
     "verify:deploy": "node scripts/verify-deploy.mjs",
     "verify:phase1": "node scripts/verify-phase1.mjs",
+    "verify:phase2": "bash scripts/verify-phase2.sh",
     "verify:expo-external": "bash scripts/verify-expo-external.sh",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "android": "expo start --android",
