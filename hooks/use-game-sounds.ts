@@ -142,7 +142,12 @@ export function useGameSounds() {
       player.volume = Math.max(0, Math.min(1, profile.volume));
     }
     if (typeof profile?.playbackRate === "number") {
-      player.playbackRate = Math.max(0.25, Math.min(2, profile.playbackRate));
+      const safeRate = Math.max(0.25, Math.min(2, profile.playbackRate));
+      try {
+        player.setPlaybackRate(safeRate);
+      } catch (error) {
+        console.warn(`[useGameSounds] Failed to set playback rate for ${label}:`, error);
+      }
     }
 
     void player
