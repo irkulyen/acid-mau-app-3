@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { View, Text, StyleSheet, Dimensions } from "react-native";
 import { Image } from "expo-image";
 import Animated, {
@@ -134,6 +134,24 @@ export function BlackbirdAnimation({
   const [phrase, setPhrase] = useState("");
   const [speechPos, setSpeechPos] = useState({ x: 0, y: 0 });
   const [currentEvent, setCurrentEvent] = useState<EventType>("round_start");
+  const onDoneRef = useRef<(() => void) | undefined>(onDone);
+  const onStartRef = useRef<(() => void) | undefined>(onStart);
+
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+
+  useEffect(() => {
+    onStartRef.current = onStart;
+  }, [onStart]);
+
+  const fireOnDone = useCallback(() => {
+    onDoneRef.current?.();
+  }, []);
+
+  const fireOnStart = useCallback(() => {
+    onStartRef.current?.();
+  }, []);
 
   const addTrailParticle = useCallback((particle: TrailParticle) => {
     setTrail((prev) => [...prev.slice(-18), particle]);
@@ -219,7 +237,7 @@ export function BlackbirdAnimation({
     setTrail([]);
     setConfetti([]);
 
-    if (onStart) runOnJS(onStart)();
+    fireOnStart();
 
     // === DRAMATIC ENTRANCE: Screen flash ===
     const isBigEvent = evType === "winner" || evType === "loser" || evType === "round_start" || evType === "mvp";
@@ -331,7 +349,7 @@ export function BlackbirdAnimation({
         withTiming(SW + 140, fast(420), (finished) => {
           if (finished) {
             opacity.value = withTiming(0, { duration: 150 });
-            if (onDone) runOnJS(onDone)();
+            runOnJS(fireOnDone)();
           }
         }),
       );
@@ -363,7 +381,7 @@ export function BlackbirdAnimation({
         withTiming(SW + 140, fast(800), (finished) => {
           if (finished) {
             opacity.value = withTiming(0, { duration: 200 });
-            if (onDone) runOnJS(onDone)();
+            runOnJS(fireOnDone)();
           }
         }),
       );
@@ -467,7 +485,7 @@ export function BlackbirdAnimation({
     }
 
     return () => intervals.forEach(clearTimeout);
-  }, [visible, eventId, eventType, winnerName, loserName, drawChainCount, wishSuit, statsText, phraseFromServer, addTrailParticle, onDone, onStart, spawnConfetti, intensity]);
+  }, [visible, eventId, eventType, winnerName, loserName, drawChainCount, wishSuit, statsText, phraseFromServer, addTrailParticle, spawnConfetti, intensity, fireOnDone, fireOnStart]);
 
   const containerStyle = useAnimatedStyle(() => ({
     transform: [

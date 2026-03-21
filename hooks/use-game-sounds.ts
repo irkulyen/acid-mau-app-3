@@ -19,6 +19,14 @@ type PlayProfile = {
   volume?: number;
   playbackRate?: number;
   cooldownMs?: number;
+  priority?: 1 | 2 | 3 | 4 | 5;
+  holdPriorityMs?: number;
+  bypassGlobalGap?: boolean;
+};
+
+type ScheduledSound = {
+  timer: ReturnType<typeof setTimeout>;
+  priority: 1 | 2 | 3 | 4 | 5;
 };
 
 /**
@@ -34,7 +42,9 @@ export function useGameSounds() {
   const [soundsEnabled, setSoundsEnabled] = useState(true);
   const soundsEnabledRef = useRef(true);
   const lastPlayedAtRef = useRef<Record<string, number>>({});
-  const delayedSoundTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const delayedSoundTimersRef = useRef<ScheduledSound[]>([]);
+  const mixPriorityRef = useRef<{ priority: 1 | 2 | 3 | 4 | 5; until: number }>({ priority: 1, until: 0 });
+  const lastAnySoundAtRef = useRef(0);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
@@ -71,7 +81,7 @@ export function useGameSounds() {
         blackbirdSound.release();
         clutchSound.release();
         rivalrySound.release();
-        delayedSoundTimersRef.current.forEach((timer) => clearTimeout(timer));
+        delayedSoundTimersRef.current.forEach(({ timer }) => clearTimeout(timer));
         delayedSoundTimersRef.current = [];
       } catch (error) {
         // Ignore cleanup errors
@@ -91,10 +101,37 @@ export function useGameSounds() {
   const playFromStart = useCallback((player: AudioPlayer, label: SoundLabel, profile?: PlayProfile) => {
     if (Platform.OS === "web" || !soundsEnabledRef.current) return;
     const now = Date.now();
+    const priority = profile?.priority ?? 2;
+    const holdPriorityMs = profile?.holdPriorityMs ?? (priority >= 4 ? 280 : priority >= 3 ? 200 : 120);
     const cooldownMs = profile?.cooldownMs ?? 0;
     const lastAt = lastPlayedAtRef.current[label] ?? 0;
     if (cooldownMs > 0 && now - lastAt < cooldownMs) return;
+
+    const activeMix = mixPriorityRef.current;
+    if (now < activeMix.until && priority < activeMix.priority) {
+      return;
+    }
+
+    const globalGapMs = priority >= 4 ? 60 : priority >= 3 ? 75 : 95;
+    if (!profile?.bypassGlobalGap && now - lastAnySoundAtRef.current < globalGapMs) {
+      return;
+    }
+
     lastPlayedAtRef.current[label] = now;
+    lastAnySoundAtRef.current = now;
+    mixPriorityRef.current = {
+      priority: priority >= activeMix.priority ? priority : activeMix.priority,
+      until: Math.max(activeMix.until, now + holdPriorityMs),
+    };
+
+    if (priority >= 4 && delayedSoundTimersRef.current.length > 0) {
+      // Prevent low-priority aftershocks from muddying high-impact moments.
+      delayedSoundTimersRef.current = delayedSoundTimersRef.current.filter((entry) => {
+        if (entry.priority >= 4) return true;
+        clearTimeout(entry.timer);
+        return false;
+      });
+    }
 
     if (typeof profile?.volume === "number") {
       player.volume = Math.max(0, Math.min(1, profile.volume));
@@ -115,13 +152,18 @@ export function useGameSounds() {
       });
   }, []);
 
-  const scheduleSound = useCallback((delayMs: number, callback: () => void) => {
+  const scheduleSound = useCallback((delayMs: number, priority: 1 | 2 | 3 | 4 | 5, callback: () => void) => {
     if (!soundsEnabledRef.current || Platform.OS === "web") return;
     const timer = setTimeout(() => {
-      delayedSoundTimersRef.current = delayedSoundTimersRef.current.filter((entry) => entry !== timer);
+      delayedSoundTimersRef.current = delayedSoundTimersRef.current.filter((entry) => entry.timer !== timer);
+      const now = Date.now();
+      const activeMix = mixPriorityRef.current;
+      if (now < activeMix.until && priority < activeMix.priority) {
+        return;
+      }
       callback();
     }, delayMs);
-    delayedSoundTimersRef.current.push(timer);
+    delayedSoundTimersRef.current.push({ timer, priority });
   }, []);
 
   const playCardPlay = (intensity: 1 | 2 | 3 | 4 | 5 = 2) => {
@@ -131,6 +173,7 @@ export function useGameSounds() {
       volume: Math.min(0.95, volume),
       playbackRate: Math.min(1.22, playbackRate),
       cooldownMs: 80,
+      priority: intensity >= 4 ? 3 : 2,
     });
   };
 
@@ -140,20 +183,22 @@ export function useGameSounds() {
       volume: toSelf ? 0.55 : 0.45,
       playbackRate: 1 + Math.min(0.18, normalized * 0.02),
       cooldownMs: 70,
+      priority: normalized >= 4 ? 3 : 2,
     });
     if (normalized >= 3) {
-      scheduleSound(88, () =>
+      scheduleSound(88, 2, () =>
         playFromStart(cardDrawSound, "card-draw", {
           volume: toSelf ? 0.42 : 0.34,
           playbackRate: 0.92,
           cooldownMs: 0,
+          priority: 2,
         })
       );
     }
   };
 
   const playRoundEnd = () => {
-    playFromStart(roundEndSound, "round-end", { volume: 0.72, playbackRate: 1.0, cooldownMs: 600 });
+    playFromStart(roundEndSound, "round-end", { volume: 0.72, playbackRate: 1.0, cooldownMs: 600, priority: 4, holdPriorityMs: 320 });
   };
 
   const playBlackbird = (intensity: 1 | 2 | 3 | 4 | 5 = 3) => {
@@ -161,15 +206,17 @@ export function useGameSounds() {
       volume: Math.min(0.9, 0.34 + intensity * 0.1),
       playbackRate: 0.96 + intensity * 0.03,
       cooldownMs: 260,
+      priority: intensity >= 4 ? 4 : 3,
+      holdPriorityMs: intensity >= 4 ? 340 : 250,
     });
   };
 
   const playClutchCallout = () => {
-    playFromStart(clutchSound, "clutch", { volume: 0.5, playbackRate: 1.08, cooldownMs: 600 });
+    playFromStart(clutchSound, "clutch", { volume: 0.5, playbackRate: 1.08, cooldownMs: 600, priority: 3 });
   };
 
   const playRivalryCallout = () => {
-    playFromStart(rivalrySound, "rivalry", { volume: 0.58, playbackRate: 1.06, cooldownMs: 900 });
+    playFromStart(rivalrySound, "rivalry", { volume: 0.58, playbackRate: 1.06, cooldownMs: 900, priority: 3 });
   };
 
   const playTurnShift = (isMyTurn: boolean) => {
@@ -177,6 +224,7 @@ export function useGameSounds() {
       volume: isMyTurn ? 0.54 : 0.3,
       playbackRate: isMyTurn ? 1.16 : 0.94,
       cooldownMs: 220,
+      priority: isMyTurn ? 3 : 2,
     });
   };
 
@@ -186,12 +234,15 @@ export function useGameSounds() {
         volume: 0.62,
         playbackRate: 1.22,
         cooldownMs: 260,
+        priority: 4,
+        holdPriorityMs: 320,
       });
-      scheduleSound(90, () =>
+      scheduleSound(90, 3, () =>
         playFromStart(cardPlaySound, "card-play", {
           volume: 0.55,
           playbackRate: 0.86,
           cooldownMs: 0,
+          priority: 3,
         })
       );
       return;
@@ -201,6 +252,8 @@ export function useGameSounds() {
         volume: 0.5,
         playbackRate: 0.9,
         cooldownMs: 280,
+        priority: 4,
+        holdPriorityMs: 300,
       });
       return;
     }
@@ -208,6 +261,8 @@ export function useGameSounds() {
       volume: 0.52,
       playbackRate: 1.13,
       cooldownMs: 240,
+      priority: 4,
+      holdPriorityMs: 300,
     });
   };
 
@@ -218,6 +273,8 @@ export function useGameSounds() {
       volume: Math.min(0.9, 0.45 + intensity * 0.08),
       playbackRate: Math.min(1.26, 1 + intensity * 0.06),
       cooldownMs: 260,
+      priority: 4,
+      holdPriorityMs: 340,
     });
   };
 
@@ -226,12 +283,15 @@ export function useGameSounds() {
       volume: 0.82,
       playbackRate: 0.88,
       cooldownMs: 520,
+      priority: 5,
+      holdPriorityMs: 380,
     });
-    scheduleSound(110, () =>
+    scheduleSound(110, 4, () =>
       playFromStart(blackbirdSound, "blackbird", {
         volume: 0.52,
         playbackRate: 0.84,
         cooldownMs: 0,
+        priority: 4,
       })
     );
   };
@@ -241,12 +301,15 @@ export function useGameSounds() {
       volume: 0.9,
       playbackRate: 1.1,
       cooldownMs: 700,
+      priority: 5,
+      holdPriorityMs: 420,
     });
-    scheduleSound(140, () =>
+    scheduleSound(140, 4, () =>
       playFromStart(blackbirdSound, "blackbird", {
         volume: 0.65,
         playbackRate: 1.12,
         cooldownMs: 0,
+        priority: 4,
       })
     );
   };
@@ -256,12 +319,14 @@ export function useGameSounds() {
       volume: 0.46,
       playbackRate: 1.04,
       cooldownMs: 260,
+      priority: 3,
     });
-    scheduleSound(80, () =>
+    scheduleSound(80, 2, () =>
       playFromStart(cardDrawSound, "card-draw", {
         volume: 0.4,
         playbackRate: 1.06,
         cooldownMs: 0,
+        priority: 2,
       })
     );
   };
@@ -271,6 +336,7 @@ export function useGameSounds() {
       volume: 0.22,
       playbackRate: 0.7,
       cooldownMs: 180,
+      priority: 2,
     });
   };
 
