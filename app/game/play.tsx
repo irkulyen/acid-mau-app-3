@@ -20,6 +20,7 @@ import { useSocket, type PreparationData, type BlackbirdEvent, type CardPlayFxEv
 import { useGameSounds } from "@/hooks/use-game-sounds";
 import { getBotProfileByName } from "@/lib/bot-profiles";
 import { hashString, pickBySeed } from "@/lib/deterministic";
+import { getGameFxCueSpec } from "@/lib/game-fx-cue-spec";
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 /** Mini card backs for opponent hand display */
@@ -721,12 +722,13 @@ export default function GamePlayScreen() {
           return;
         }
         case "special_card": {
+          const cue = getGameFxCueSpec(next);
           if (next.specialRank === "ass") {
             playSpecialCard("ass");
             setAssFlash(true);
             setTimeout(() => setAssFlash(false), 420);
             showMomentBanner(`🂡 ${next.playerName || "Spieler"} spielt Ass`, 1200);
-            scheduleGameFxCompletion(next.id, 420);
+            scheduleGameFxCompletion(next.id, cue.completionMs);
             return;
           }
           if (next.specialRank === "bube") {
@@ -738,18 +740,19 @@ export default function GamePlayScreen() {
               `🂫 ${next.playerName || "Spieler"} wunscht ${next.wishSuit || "eine Farbe"}`,
               1400,
             );
-            scheduleGameFxCompletion(next.id, 520);
+            scheduleGameFxCompletion(next.id, cue.completionMs);
             return;
           }
           if (next.specialRank === "7") {
             playSpecialCard("7");
-            scheduleGameFxCompletion(next.id, 440);
+            scheduleGameFxCompletion(next.id, cue.completionMs);
             return;
           }
           completeActiveGameFx(next.id);
           return;
         }
         case "draw_chain": {
+          const cue = getGameFxCueSpec(next);
           const chain = Math.max(2, next.drawChainCount ?? 2);
           playDrawChainAlert(chain);
           const intensity = chain >= 5 ? 5 : chain >= 4 ? 4 : chain >= 3 ? 3 : 2;
@@ -757,7 +760,7 @@ export default function GamePlayScreen() {
           setDiscardImpactKey((k) => k + 1);
           setShowDiscardImpact(true);
           showMomentBanner(`💥 Ziehkette x${chain}`, 1400);
-          scheduleGameFxCompletion(next.id, 560);
+          scheduleGameFxCompletion(next.id, cue.completionMs);
           return;
         }
         case "blackbird": {
@@ -769,35 +772,39 @@ export default function GamePlayScreen() {
           return;
         }
         case "turn_transition": {
+          const cue = getGameFxCueSpec(next);
           const myTurn = next.userId === user?.id;
           playTurnShift(myTurn);
           if (myTurn && Platform.OS !== "web") {
             void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }
           showMomentBanner(myTurn ? "🎯 Du bist am Zug" : `👉 ${next.playerName || "Spieler"} ist am Zug`, 850);
-          scheduleGameFxCompletion(next.id, 260);
+          scheduleGameFxCompletion(next.id, cue.completionMs);
           return;
         }
         case "elimination": {
+          const cue = getGameFxCueSpec(next);
           playElimination();
           const label = next.eliminatedPlayerName || next.playerName || "Spieler";
           showMomentBanner(`💀 ${label} ist eliminiert`, 2100);
-          scheduleGameFxCompletion(next.id, 900);
+          scheduleGameFxCompletion(next.id, cue.completionMs);
           return;
         }
         case "round_transition": {
+          const cue = getGameFxCueSpec(next);
           playRoundTransition();
           setRoundGlowKey((k) => k + 1);
           setShowRoundGlow(true);
           showMomentBanner(`🎮 Runde ${next.roundNumber ?? "?"} startet`, 1400);
-          scheduleGameFxCompletion(next.id, 650);
+          scheduleGameFxCompletion(next.id, cue.completionMs);
           return;
         }
         case "match_result": {
+          const cue = getGameFxCueSpec(next);
           const winnerName = next.winnerPlayerName || next.playerName || "Gewinner";
           showMomentBanner(`🏆 ${winnerName} gewinnt das Match`, 2600);
           playVictory();
-          scheduleGameFxCompletion(next.id, 900);
+          scheduleGameFxCompletion(next.id, cue.completionMs);
           return;
         }
         default: {

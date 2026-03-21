@@ -512,6 +512,161 @@ describe("Multiplayer Room System", () => {
     }
   }, 20000);
 
+  it("should keep game-fx timelines aligned under rapid draw bursts", async () => {
+    let socketError: Error | null = null;
+    const waitFor = async (predicate: () => boolean, timeoutMs: number, label: string) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (socketError) throw socketError;
+        if (predicate()) return;
+        await new Promise((resolve) => setTimeout(resolve, 35));
+      }
+      throw new Error(`Timeout: ${label}`);
+    };
+
+    const hostToken = await createTestToken(211, "fx-burst-host@test.local");
+    const guestToken = await createTestToken(212, "fx-burst-guest@test.local");
+    const hostSocket = ioClient(API_URL, {
+      path: SOCKET_PATH,
+      transports: ["websocket", "polling"],
+      auth: { token: hostToken },
+      autoConnect: false,
+    });
+    const guestSocket = ioClient(API_URL, {
+      path: SOCKET_PATH,
+      transports: ["websocket", "polling"],
+      auth: { token: guestToken },
+      autoConnect: false,
+    });
+
+    const hostFx: Array<{ id: string; sequence: number; type: string; startAt: number; receivedAt: number }> = [];
+    const guestFx: Array<{ id: string; sequence: number; type: string; startAt: number; receivedAt: number }> = [];
+    let hostState: any = null;
+    let guestState: any = null;
+    let localRoomCode = "";
+
+    const cleanup = () => {
+      hostSocket.removeAllListeners();
+      guestSocket.removeAllListeners();
+      hostSocket.disconnect();
+      guestSocket.disconnect();
+    };
+
+    try {
+      hostSocket.on("game-fx", (event) =>
+        hostFx.push({
+          id: event.id,
+          sequence: event.sequence,
+          type: event.type,
+          startAt: event.startAt,
+          receivedAt: Date.now(),
+        })
+      );
+      guestSocket.on("game-fx", (event) =>
+        guestFx.push({
+          id: event.id,
+          sequence: event.sequence,
+          type: event.type,
+          startAt: event.startAt,
+          receivedAt: Date.now(),
+        })
+      );
+      hostSocket.on("game-state-update", (state) => {
+        hostState = state;
+      });
+      guestSocket.on("game-state-update", (state) => {
+        guestState = state;
+      });
+
+      hostSocket.on("connect", () => {
+        hostSocket.emit("create-room", { userId: 211, username: "BurstHost", maxPlayers: 4, isPrivate: true });
+      });
+      hostSocket.on("room-created", (payload) => {
+        localRoomCode = payload.roomCode;
+        if (guestSocket.disconnected) guestSocket.connect();
+      });
+      guestSocket.on("connect", () => {
+        if (!localRoomCode) return;
+        guestSocket.emit("join-room", { roomCode: localRoomCode, userId: 212, username: "BurstGuest" });
+      });
+      hostSocket.on("error", (err) => {
+        socketError = new Error(`Host socket error: ${err.message}`);
+      });
+      guestSocket.on("error", (err) => {
+        socketError = new Error(`Guest socket error: ${err.message}`);
+      });
+
+      hostSocket.connect();
+      await waitFor(() => Boolean(localRoomCode && hostState && guestState), 8000, "initial burst room state");
+
+      const hostPlayer = hostState.players.find((p: any) => p.userId === 211);
+      hostSocket.emit("game-action", {
+        roomId: hostState.roomId,
+        playerId: hostPlayer.id,
+        action: { type: "START_GAME" },
+      });
+      await waitFor(
+        () => hostState?.phase === "playing" && guestState?.phase === "playing",
+        8000,
+        "burst room playing phase",
+      );
+
+      let lastSequence = 0;
+      for (let i = 0; i < 6; i += 1) {
+        const actorUserId = hostState.players[hostState.currentPlayerIndex]?.userId;
+        const actorSocket = actorUserId === 211 ? hostSocket : guestSocket;
+        const actorState = actorUserId === 211 ? hostState : guestState;
+        const actorPlayer = actorState.players.find((p: any) => p.userId === actorUserId);
+        actorSocket.emit("game-action", {
+          roomId: actorState.roomId,
+          playerId: actorPlayer.id,
+          action: { type: "DRAW_CARD" },
+        });
+        await waitFor(
+          () =>
+            hostFx.some((event) => event.sequence > lastSequence) &&
+            guestFx.some((event) => event.sequence > lastSequence),
+          8000,
+          `burst draw fx seq > ${lastSequence}`,
+        );
+        const latestHostSeq = Math.max(...hostFx.map((event) => event.sequence));
+        const latestGuestSeq = Math.max(...guestFx.map((event) => event.sequence));
+        lastSequence = Math.min(latestHostSeq, latestGuestSeq);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      expect(hostFx.length).toBeGreaterThanOrEqual(6);
+      expect(guestFx.length).toBeGreaterThanOrEqual(6);
+
+      const hostSorted = [...hostFx].sort((a, b) => a.sequence - b.sequence);
+      const guestSorted = [...guestFx].sort((a, b) => a.sequence - b.sequence);
+
+      for (let i = 1; i < hostSorted.length; i += 1) {
+        expect(hostSorted[i].sequence).toBeGreaterThan(hostSorted[i - 1].sequence);
+      }
+      for (let i = 1; i < guestSorted.length; i += 1) {
+        expect(guestSorted[i].sequence).toBeGreaterThan(guestSorted[i - 1].sequence);
+      }
+
+      const guestBySequence = new Map(guestSorted.map((event) => [event.sequence, event]));
+      const skewSamples: number[] = [];
+      for (const hostEvent of hostSorted) {
+        const peer = guestBySequence.get(hostEvent.sequence);
+        if (!peer) continue;
+        expect(peer.id).toBe(hostEvent.id);
+        expect(peer.type).toBe(hostEvent.type);
+        expect(peer.startAt).toBe(hostEvent.startAt);
+        skewSamples.push(Math.abs(peer.receivedAt - hostEvent.receivedAt));
+      }
+      expect(skewSamples.length).toBeGreaterThanOrEqual(6);
+      const maxSkewMs = Math.max(...skewSamples);
+      expect(maxSkewMs).toBeLessThanOrEqual(450);
+    } finally {
+      cleanup();
+    }
+  }, 25000);
+
   it("should prevent joining a non-existent room", async () => {
     const token = await createTestToken(4, "invalid@test.local");
     return new Promise<void>((resolve, reject) => {
