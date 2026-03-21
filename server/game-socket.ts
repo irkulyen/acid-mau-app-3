@@ -745,6 +745,22 @@ function emitStateTransitionFx(
     }, 240);
   }
 
+  if (
+    oldState.phase === "playing" &&
+    newState.phase === "playing" &&
+    oldState.currentPlayerIndex !== newState.currentPlayerIndex
+  ) {
+    const turnPlayer = newState.players[newState.currentPlayerIndex];
+    emitGameFx(io, roomId, {
+      type: "turn_transition",
+      roundNumber: newState.roundNumber,
+      playerId: turnPlayer?.id,
+      userId: turnPlayer?.userId,
+      playerName: turnPlayer?.username,
+      startAt: Date.now() + 170,
+    }, 100);
+  }
+
   if (oldState.phase !== "game_end" && newState.phase === "game_end") {
     const winner = newState.players.find((player) => !player.isEliminated);
     emitGameFx(io, roomId, {
@@ -2240,30 +2256,29 @@ export function setupGameSocket(httpServer: HTTPServer) {
               startAt: Date.now() + 150,
             });
 
-            // Keep critical special-card feedback server-authoritative even when
-            // optional blackbird events are disabled in the environment.
-            if (!ENV.enableBlackbirdEvents) {
-              if (newTop.rank === "ass" || newTop.rank === "bube") {
-                emitGameFx(io, roomId, {
-                  type: "special_card",
-                  playerId: actorPlayerId,
-                  userId: actorAfter?.userId,
-                  playerName: actorAfter?.username,
-                  specialRank: newTop.rank,
-                  wishSuit: newTop.rank === "bube" ? (newState.currentWishSuit ?? undefined) : undefined,
-                  startAt: Date.now() + 260,
-                }, 120);
-              }
-              if (newTop.rank === "7") {
-                emitGameFx(io, roomId, {
-                  type: "draw_chain",
-                  playerId: actorPlayerId,
-                  userId: actorAfter?.userId,
-                  playerName: actorAfter?.username,
-                  drawChainCount: newState.drawChainCount,
-                  startAt: Date.now() + 230,
-                }, 120);
-              }
+            // Critical special-card feedback must always be server-authoritative
+            // so all clients receive the same dramatic moments, independent of
+            // optional blackbird feature flags.
+            if (newTop.rank === "ass" || newTop.rank === "bube") {
+              emitGameFx(io, roomId, {
+                type: "special_card",
+                playerId: actorPlayerId,
+                userId: actorAfter?.userId,
+                playerName: actorAfter?.username,
+                specialRank: newTop.rank,
+                wishSuit: newTop.rank === "bube" ? (newState.currentWishSuit ?? undefined) : undefined,
+                startAt: Date.now() + 260,
+              }, 120);
+            }
+            if (newTop.rank === "7") {
+              emitGameFx(io, roomId, {
+                type: "draw_chain",
+                playerId: actorPlayerId,
+                userId: actorAfter?.userId,
+                playerName: actorAfter?.username,
+                drawChainCount: newState.drawChainCount,
+                startAt: Date.now() + 230,
+              }, 120);
             }
           }
         }

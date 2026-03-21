@@ -1,6 +1,25 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { setAudioModeAsync, setIsAudioActiveAsync, useAudioPlayer, type AudioPlayer } from "expo-audio";
 import { Platform } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+export const GAME_SFX_ENABLED_KEY = "acid-mau:sfx-enabled";
+
+type SoundLabel =
+  | "card-play"
+  | "card-draw"
+  | "round-end"
+  | "blackbird"
+  | "clutch"
+  | "rivalry"
+  | "turn-shift"
+  | "invalid";
+
+type PlayProfile = {
+  volume?: number;
+  playbackRate?: number;
+  cooldownMs?: number;
+};
 
 /**
  * Hook for playing game sound effects
@@ -12,12 +31,21 @@ export function useGameSounds() {
   const blackbirdSound = useAudioPlayer(require("@/assets/sounds/blackbird.mp3"));
   const clutchSound = useAudioPlayer(require("@/assets/sounds/round-end.wav"));
   const rivalrySound = useAudioPlayer(require("@/assets/sounds/blackbird.mp3"));
+  const [soundsEnabled, setSoundsEnabled] = useState(true);
+  const soundsEnabledRef = useRef(true);
+  const lastPlayedAtRef = useRef<Record<string, number>>({});
+  const delayedSoundTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
 
     void (async () => {
       try {
+        const fromStorage = await AsyncStorage.getItem(GAME_SFX_ENABLED_KEY);
+        const envDisabled = process.env.EXPO_PUBLIC_DISABLE_GAME_SFX === "1";
+        const enabled = !envDisabled && fromStorage !== "0";
+        soundsEnabledRef.current = enabled;
+        setSoundsEnabled(enabled);
         await setAudioModeAsync({
           playsInSilentMode: true,
           interruptionMode: "duckOthers",
@@ -43,6 +71,8 @@ export function useGameSounds() {
         blackbirdSound.release();
         clutchSound.release();
         rivalrySound.release();
+        delayedSoundTimersRef.current.forEach((timer) => clearTimeout(timer));
+        delayedSoundTimersRef.current = [];
       } catch (error) {
         // Ignore cleanup errors
         console.warn("[useGameSounds] Cleanup error:", error);
@@ -50,8 +80,29 @@ export function useGameSounds() {
     };
   }, [cardPlaySound, cardDrawSound, roundEndSound, blackbirdSound, clutchSound, rivalrySound]);
 
-  const playFromStart = (player: AudioPlayer, label: string) => {
-    if (Platform.OS === "web") return;
+  const persistSoundsEnabled = useCallback((value: boolean) => {
+    soundsEnabledRef.current = value;
+    setSoundsEnabled(value);
+    void AsyncStorage.setItem(GAME_SFX_ENABLED_KEY, value ? "1" : "0").catch((error) => {
+      console.warn("[useGameSounds] Failed to persist sound preference:", error);
+    });
+  }, []);
+
+  const playFromStart = useCallback((player: AudioPlayer, label: SoundLabel, profile?: PlayProfile) => {
+    if (Platform.OS === "web" || !soundsEnabledRef.current) return;
+    const now = Date.now();
+    const cooldownMs = profile?.cooldownMs ?? 0;
+    const lastAt = lastPlayedAtRef.current[label] ?? 0;
+    if (cooldownMs > 0 && now - lastAt < cooldownMs) return;
+    lastPlayedAtRef.current[label] = now;
+
+    if (typeof profile?.volume === "number") {
+      player.volume = Math.max(0, Math.min(1, profile.volume));
+    }
+    if (typeof profile?.playbackRate === "number") {
+      player.playbackRate = Math.max(0.25, Math.min(2, profile.playbackRate));
+    }
+
     void player
       .seekTo(0)
       .then(() => player.play())
@@ -62,38 +113,182 @@ export function useGameSounds() {
           console.warn(`[useGameSounds] Failed to play ${label} sound:`, fallbackError ?? error);
         }
       });
+  }, []);
+
+  const scheduleSound = useCallback((delayMs: number, callback: () => void) => {
+    if (!soundsEnabledRef.current || Platform.OS === "web") return;
+    const timer = setTimeout(() => {
+      delayedSoundTimersRef.current = delayedSoundTimersRef.current.filter((entry) => entry !== timer);
+      callback();
+    }, delayMs);
+    delayedSoundTimersRef.current.push(timer);
+  }, []);
+
+  const playCardPlay = (intensity: 1 | 2 | 3 | 4 | 5 = 2) => {
+    const volume = 0.3 + intensity * 0.1;
+    const playbackRate = 0.95 + intensity * 0.05;
+    playFromStart(cardPlaySound, "card-play", {
+      volume: Math.min(0.95, volume),
+      playbackRate: Math.min(1.22, playbackRate),
+      cooldownMs: 80,
+    });
   };
 
-  const playCardPlay = () => {
-    playFromStart(cardPlaySound, "card-play");
-  };
-
-  const playCardDraw = () => {
-    playFromStart(cardDrawSound, "card-draw");
+  const playCardDraw = (drawCount = 1, toSelf = false) => {
+    const normalized = Math.max(1, Math.min(8, drawCount));
+    playFromStart(cardDrawSound, "card-draw", {
+      volume: toSelf ? 0.55 : 0.45,
+      playbackRate: 1 + Math.min(0.18, normalized * 0.02),
+      cooldownMs: 70,
+    });
+    if (normalized >= 3) {
+      scheduleSound(88, () =>
+        playFromStart(cardDrawSound, "card-draw", {
+          volume: toSelf ? 0.42 : 0.34,
+          playbackRate: 0.92,
+          cooldownMs: 0,
+        })
+      );
+    }
   };
 
   const playRoundEnd = () => {
-    playFromStart(roundEndSound, "round-end");
+    playFromStart(roundEndSound, "round-end", { volume: 0.72, playbackRate: 1.0, cooldownMs: 600 });
   };
 
-  const playBlackbird = () => {
-    playFromStart(blackbirdSound, "blackbird");
+  const playBlackbird = (intensity: 1 | 2 | 3 | 4 | 5 = 3) => {
+    playFromStart(blackbirdSound, "blackbird", {
+      volume: Math.min(0.9, 0.34 + intensity * 0.1),
+      playbackRate: 0.96 + intensity * 0.03,
+      cooldownMs: 260,
+    });
   };
 
   const playClutchCallout = () => {
-    playFromStart(clutchSound, "clutch");
+    playFromStart(clutchSound, "clutch", { volume: 0.5, playbackRate: 1.08, cooldownMs: 600 });
   };
 
   const playRivalryCallout = () => {
-    playFromStart(rivalrySound, "rivalry");
+    playFromStart(rivalrySound, "rivalry", { volume: 0.58, playbackRate: 1.06, cooldownMs: 900 });
+  };
+
+  const playTurnShift = (isMyTurn: boolean) => {
+    playFromStart(cardPlaySound, "turn-shift", {
+      volume: isMyTurn ? 0.54 : 0.3,
+      playbackRate: isMyTurn ? 1.16 : 0.94,
+      cooldownMs: 220,
+    });
+  };
+
+  const playSpecialCard = (rank: "ass" | "bube" | "7") => {
+    if (rank === "7") {
+      playFromStart(roundEndSound, "round-end", {
+        volume: 0.62,
+        playbackRate: 1.22,
+        cooldownMs: 260,
+      });
+      scheduleSound(90, () =>
+        playFromStart(cardPlaySound, "card-play", {
+          volume: 0.55,
+          playbackRate: 0.86,
+          cooldownMs: 0,
+        })
+      );
+      return;
+    }
+    if (rank === "ass") {
+      playFromStart(blackbirdSound, "blackbird", {
+        volume: 0.5,
+        playbackRate: 0.9,
+        cooldownMs: 280,
+      });
+      return;
+    }
+    playFromStart(blackbirdSound, "blackbird", {
+      volume: 0.52,
+      playbackRate: 1.13,
+      cooldownMs: 240,
+    });
+  };
+
+  const playDrawChainAlert = (drawChainCount: number) => {
+    const chain = Math.max(2, drawChainCount);
+    const intensity = Math.min(5, Math.floor(chain / 2) + 2);
+    playFromStart(roundEndSound, "round-end", {
+      volume: Math.min(0.9, 0.45 + intensity * 0.08),
+      playbackRate: Math.min(1.26, 1 + intensity * 0.06),
+      cooldownMs: 260,
+    });
+  };
+
+  const playElimination = () => {
+    playFromStart(roundEndSound, "round-end", {
+      volume: 0.82,
+      playbackRate: 0.88,
+      cooldownMs: 520,
+    });
+    scheduleSound(110, () =>
+      playFromStart(blackbirdSound, "blackbird", {
+        volume: 0.52,
+        playbackRate: 0.84,
+        cooldownMs: 0,
+      })
+    );
+  };
+
+  const playVictory = () => {
+    playFromStart(roundEndSound, "round-end", {
+      volume: 0.9,
+      playbackRate: 1.1,
+      cooldownMs: 700,
+    });
+    scheduleSound(140, () =>
+      playFromStart(blackbirdSound, "blackbird", {
+        volume: 0.65,
+        playbackRate: 1.12,
+        cooldownMs: 0,
+      })
+    );
+  };
+
+  const playRoundTransition = () => {
+    playFromStart(cardPlaySound, "card-play", {
+      volume: 0.46,
+      playbackRate: 1.04,
+      cooldownMs: 260,
+    });
+    scheduleSound(80, () =>
+      playFromStart(cardDrawSound, "card-draw", {
+        volume: 0.4,
+        playbackRate: 1.06,
+        cooldownMs: 0,
+      })
+    );
+  };
+
+  const playInvalidAction = () => {
+    playFromStart(cardPlaySound, "invalid", {
+      volume: 0.22,
+      playbackRate: 0.7,
+      cooldownMs: 180,
+    });
   };
 
   return {
+    soundsEnabled,
+    setSoundsEnabled: persistSoundsEnabled,
     playCardPlay,
     playCardDraw,
     playRoundEnd,
     playBlackbird,
     playClutchCallout,
     playRivalryCallout,
+    playTurnShift,
+    playSpecialCard,
+    playDrawChainAlert,
+    playElimination,
+    playVictory,
+    playRoundTransition,
+    playInvalidAction,
   };
 }

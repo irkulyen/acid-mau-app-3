@@ -11,8 +11,8 @@ import Animated, {
   withSpring,
   Easing,
   runOnJS,
-  interpolateColor,
 } from "react-native-reanimated";
+import { hashString, pickBySeed, seededRange } from "@/lib/deterministic";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 
@@ -90,6 +90,7 @@ interface ConfettiPiece {
 
 interface BlackbirdAnimationProps {
   visible: boolean;
+  eventId?: string;
   loserName?: string;
   winnerName?: string;
   eventType?: EventType;
@@ -104,14 +105,10 @@ interface BlackbirdAnimationProps {
   onStart?: () => void;
 }
 
-function pickRandom<T>(arr: T[]): T {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
 const CONFETTI_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEAA7", "#DDA0DD", "#FF8C00", "#00FF88", "#FF69B4", "#7B68EE"];
 
 export function BlackbirdAnimation({
-  visible, loserName, winnerName, eventType, drawChainCount, wishSuit, intensity = 3, spotlightPlayerName, statsText, variant, phrase: phraseFromServer, onDone, onStart,
+  visible, eventId, loserName, winnerName, eventType, drawChainCount, wishSuit, intensity = 3, spotlightPlayerName, statsText, variant, phrase: phraseFromServer, onDone, onStart,
 }: BlackbirdAnimationProps) {
   const translateX = useSharedValue(-120);
   const translateY = useSharedValue(SH * 0.42);
@@ -138,21 +135,22 @@ export function BlackbirdAnimation({
   const [speechPos, setSpeechPos] = useState({ x: 0, y: 0 });
   const [currentEvent, setCurrentEvent] = useState<EventType>("round_start");
 
-  const addTrailParticle = useCallback((x: number, y: number) => {
-    const emoji = pickRandom(TRAIL_EMOJIS);
-    setTrail((prev) => [...prev.slice(-18), { id: Date.now() + Math.random(), emoji, x, y }]);
+  const addTrailParticle = useCallback((particle: TrailParticle) => {
+    setTrail((prev) => [...prev.slice(-18), particle]);
   }, []);
 
-  const spawnConfetti = useCallback((centerX: number, centerY: number) => {
+  const spawnConfetti = useCallback((centerX: number, centerY: number, seed: number) => {
     const pieces: ConfettiPiece[] = [];
     for (let i = 0; i < 24; i++) {
+      const x = centerX + seededRange(seed, -SW * 0.3, SW * 0.3, i * 3 + 1);
+      const y = centerY + seededRange(seed, -SH * 0.16, SH * 0.16, i * 3 + 2);
       pieces.push({
-        id: Date.now() + i + Math.random(),
-        x: centerX + (Math.random() - 0.5) * SW * 0.6,
-        y: centerY + (Math.random() - 0.5) * SH * 0.3,
-        color: pickRandom(CONFETTI_COLORS),
-        size: 6 + Math.random() * 10,
-        angle: Math.random() * 360,
+        id: seed * 100 + i,
+        x,
+        y,
+        color: pickBySeed(CONFETTI_COLORS, seed, i * 3 + 4),
+        size: seededRange(seed, 6, 16, i * 3 + 5),
+        angle: seededRange(seed, 0, 360, i * 3 + 6),
       });
     }
     setConfetti(pieces);
@@ -169,25 +167,28 @@ export function BlackbirdAnimation({
     // Determine event type and phrase
     let evType: EventType = eventType || "round_start";
     let selectedPhrase: string;
+    const seedBase = hashString(
+      `${eventId || ""}:${eventType || ""}:${winnerName || ""}:${loserName || ""}:${drawChainCount || 0}:${wishSuit || ""}:${statsText || ""}`,
+    );
 
     if (winnerName) {
       evType = "winner";
-      selectedPhrase = pickRandom(WINNER_PHRASES)(winnerName);
+      selectedPhrase = pickBySeed(WINNER_PHRASES, seedBase, 1)(winnerName);
     } else if (loserName) {
       evType = "loser";
-      selectedPhrase = pickRandom(LOSER_PHRASES)(loserName);
+      selectedPhrase = pickBySeed(LOSER_PHRASES, seedBase, 2)(loserName);
     } else if (eventType === "seven_played") {
-      selectedPhrase = pickRandom(SEVEN_PLAYED_PHRASES)(drawChainCount || 1);
+      selectedPhrase = pickBySeed(SEVEN_PLAYED_PHRASES, seedBase, 3)(drawChainCount || 1);
     } else if (eventType === "draw_chain" && drawChainCount) {
-      selectedPhrase = pickRandom(DRAW_CHAIN_PHRASES)(drawChainCount);
+      selectedPhrase = pickBySeed(DRAW_CHAIN_PHRASES, seedBase, 4)(drawChainCount);
     } else if (eventType === "ass") {
-      selectedPhrase = pickRandom(ASS_PHRASES);
+      selectedPhrase = pickBySeed(ASS_PHRASES, seedBase, 5);
     } else if (eventType === "unter" && wishSuit) {
-      selectedPhrase = pickRandom(UNTER_PHRASES)();
+      selectedPhrase = pickBySeed(UNTER_PHRASES, seedBase, 6)();
     } else if (eventType === "mvp" && statsText) {
-      selectedPhrase = pickRandom(MVP_PHRASES)(statsText);
+      selectedPhrase = pickBySeed(MVP_PHRASES, seedBase, 7)(statsText);
     } else {
-      selectedPhrase = pickRandom(ROUND_START_PHRASES);
+      selectedPhrase = pickBySeed(ROUND_START_PHRASES, seedBase, 8);
     }
 
     if (phraseFromServer && phraseFromServer.trim().length > 0) {
@@ -439,7 +440,7 @@ export function BlackbirdAnimation({
 
       // Confetti burst for winner/loser
       if (evType === "winner" || evType === "loser") {
-        runOnJS(spawnConfetti)(SW * 0.4, SH * 0.26);
+        spawnConfetti(SW * 0.4, SH * 0.26, seedBase + 901);
       }
 
       setTimeout(() => {
@@ -456,13 +457,17 @@ export function BlackbirdAnimation({
       const t = (totalTime / trailCount) * (i + 0.5);
       const progress = t / totalTime;
       const x = SW * (0.05 + progress * 0.85);
-      const y = SH * (0.28 + Math.sin(progress * Math.PI * 3) * 0.1 + Math.random() * 0.06);
-      const timer = setTimeout(() => runOnJS(addTrailParticle)(x, y), t);
+      const y = SH * (0.28 + Math.sin(progress * Math.PI * 3) * 0.1 + seededRange(seedBase, 0, 0.06, i + 1));
+      const emoji = pickBySeed(TRAIL_EMOJIS, seedBase, i + 11);
+      const timer = setTimeout(
+        () => addTrailParticle({ id: seedBase * 100 + i, emoji, x, y }),
+        t,
+      );
       intervals.push(timer);
     }
 
     return () => intervals.forEach(clearTimeout);
-  }, [visible, phraseFromServer]);
+  }, [visible, eventId, eventType, winnerName, loserName, drawChainCount, wishSuit, statsText, phraseFromServer, addTrailParticle, onDone, onStart, spawnConfetti, intensity]);
 
   const containerStyle = useAnimatedStyle(() => ({
     transform: [
@@ -564,7 +569,7 @@ export function BlackbirdAnimation({
 
       {/* Trail particles */}
       {trail.map((p) => (
-        <TrailParticle key={p.id} emoji={p.emoji} x={p.x} y={p.y} />
+        <TrailParticle key={p.id} particleId={p.id} emoji={p.emoji} x={p.x} y={p.y} />
       ))}
 
       {/* Speech bubble – larger, more dramatic */}
@@ -691,7 +696,7 @@ export function BlackbirdAnimation({
             ]}
           >
             <Image
-              source={require("@/assets/images/game-logo.png")}
+              source={require("@/assets/images/acid-mau-logo.png")}
               style={{ width: "100%", height: "100%" }}
               contentFit="contain"
             />
@@ -936,7 +941,7 @@ export function BlackbirdAnimation({
             ]}
           >
             <Image
-              source={require("@/assets/images/game-logo.png")}
+              source={require("@/assets/images/acid-mau-logo.png")}
               style={{ width: "100%", height: "100%" }}
               contentFit="contain"
             />
@@ -947,18 +952,19 @@ export function BlackbirdAnimation({
   );
 }
 
-function TrailParticle({ emoji, x, y }: { emoji: string; x: number; y: number }) {
+function TrailParticle({ particleId, emoji, x, y }: { particleId: number; emoji: string; x: number; y: number }) {
   const opacity = useSharedValue(1);
   const scale = useSharedValue(0.2);
   const rotate = useSharedValue(0);
   const translateY = useSharedValue(0);
 
   useEffect(() => {
+    const seed = hashString(`${particleId}:${emoji}:${x}:${y}`);
     scale.value = withSpring(1.8, { damping: 8, stiffness: 180 });
-    rotate.value = withTiming(Math.random() * 60 - 30, { duration: 500 });
-    translateY.value = withTiming(-20 + Math.random() * -30, { duration: 800, easing: Easing.out(Easing.ease) });
+    rotate.value = withTiming(seededRange(seed, -30, 30, 1), { duration: 500 });
+    translateY.value = withTiming(seededRange(seed, -48, -20, 2), { duration: 800, easing: Easing.out(Easing.ease) });
     opacity.value = withDelay(400, withTiming(0, { duration: 800 }));
-  }, []);
+  }, [particleId, emoji, x, y]);
 
   const style = useAnimatedStyle(() => ({
     opacity: opacity.value,
@@ -983,14 +989,15 @@ function ConfettiPiece({ x, y, color, size, angle }: { x: number; y: number; col
   const rotate = useSharedValue(0);
 
   useEffect(() => {
+    const seed = hashString(`${x}:${y}:${size}:${angle}`);
     opacity.value = withSequence(
       withTiming(1, { duration: 150 }),
       withDelay(1200, withTiming(0, { duration: 800 })),
     );
     scale.value = withSpring(1, { damping: 6, stiffness: 200 });
-    translateY.value = withTiming(80 + Math.random() * 120, { duration: 2000, easing: Easing.in(Easing.ease) });
-    rotate.value = withTiming(angle + 360 + Math.random() * 720, { duration: 2000, easing: Easing.out(Easing.ease) });
-  }, []);
+    translateY.value = withTiming(seededRange(seed, 80, 200, 1), { duration: 2000, easing: Easing.in(Easing.ease) });
+    rotate.value = withTiming(angle + seededRange(seed, 360, 1080, 2), { duration: 2000, easing: Easing.out(Easing.ease) });
+  }, [x, y, size, angle]);
 
   const style = useAnimatedStyle(() => ({
     opacity: opacity.value,

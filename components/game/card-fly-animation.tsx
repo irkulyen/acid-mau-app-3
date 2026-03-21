@@ -10,6 +10,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { PlayingCard } from "./playing-card";
 import type { Card } from "@/shared/game-types";
+import { hashString, seededRange } from "@/lib/deterministic";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 
@@ -36,6 +37,8 @@ export function CardFlyAnimation({ card, visible, onDone }: CardFlyAnimationProp
   useEffect(() => {
     if (!visible || !card) return;
 
+    const seed = hashString(card.id);
+
     // Start position: bottom center (player's hand area)
     const startX = SW * 0.5 - 29; // half card width
     const startY = SH * 0.78;
@@ -43,8 +46,10 @@ export function CardFlyAnimation({ card, visible, onDone }: CardFlyAnimationProp
     const endX = SW * 0.5 - 29;
     const endY = SH * 0.35;
 
-    // Random slight rotation for natural feel
-    const randomRotation = (Math.random() - 0.5) * 20; // -10 to +10 degrees
+    // Deterministic variation keeps all clients visually in sync for the same card event.
+    const rotation = seededRange(seed, -12, 12, 1);
+    const arcOffsetX = seededRange(seed, -18, 18, 2);
+    const arcLift = seededRange(seed, 12, 26, 3);
 
     translateX.value = startX;
     translateY.value = startY;
@@ -58,18 +63,19 @@ export function CardFlyAnimation({ card, visible, onDone }: CardFlyAnimationProp
     // Scale up slightly during flight, then back to normal
     scale.value = withSequence(
       withTiming(1.08, { duration: 120, easing: Easing.out(Easing.cubic) }),
-      withTiming(1.0, { duration: 110, easing: Easing.inOut(Easing.ease) }),
+      withTiming(0.98, { duration: 100, easing: Easing.inOut(Easing.ease) }),
+      withTiming(1.0, { duration: 90, easing: Easing.inOut(Easing.ease) }),
     );
 
-    // Fly to center with slight arc
-    const midX = endX + (Math.random() - 0.5) * 30;
+    // Fly to center with slight deterministic arc
+    const midX = endX + arcOffsetX;
     translateX.value = withSequence(
       withTiming(midX, { duration: 130, easing: Easing.out(Easing.cubic) }),
       withTiming(endX, { duration: 110, easing: Easing.inOut(Easing.ease) }),
     );
 
     translateY.value = withSequence(
-      withTiming(endY - 16, { duration: 130, easing: Easing.out(Easing.cubic) }),
+      withTiming(endY - arcLift, { duration: 130, easing: Easing.out(Easing.cubic) }),
       withTiming(endY, {
         duration: 110,
         easing: Easing.inOut(Easing.ease),
@@ -82,7 +88,7 @@ export function CardFlyAnimation({ card, visible, onDone }: CardFlyAnimationProp
     );
 
     // Rotate during flight
-    rotate.value = withTiming(randomRotation, {
+    rotate.value = withTiming(rotation, {
       duration: 230,
       easing: Easing.out(Easing.cubic),
     });

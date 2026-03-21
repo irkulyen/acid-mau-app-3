@@ -72,7 +72,7 @@ export default function HomeScreen() {
           {/* Hero Section */}
           <View className="items-center gap-3 mt-4">
             <Image
-              source={require("@/assets/images/game-logo.png")}
+              source={require("@/assets/images/acid-mau-logo.png")}
               style={{ width: 120, height: 120, borderRadius: 20 }}
               contentFit="cover"
             />

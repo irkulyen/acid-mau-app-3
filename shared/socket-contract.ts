@@ -77,6 +77,7 @@ export type GameFxEventType =
   | "special_card"
   | "draw_chain"
   | "blackbird"
+  | "turn_transition"
   | "elimination"
   | "round_transition"
   | "match_result";

@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { ScrollView, Text, View, Alert } from "react-native";
+import { ScrollView, Text, View, Alert, Switch } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Touchable } from "@/components/ui/button";
 import { ScreenContainer } from "@/components/screen-container";
 import { useAuth } from "@/lib/auth-provider";
 import { trpc } from "@/lib/trpc";
 import { useRouter } from "expo-router";
 import { useSocket } from "@/lib/socket-provider";
+import { GAME_SFX_ENABLED_KEY } from "@/hooks/use-game-sounds";
 
 export default function SettingsScreen() {
   const { user, logout } = useAuth();
@@ -15,6 +17,7 @@ export default function SettingsScreen() {
   const { closeAllRooms, closeEmptyRooms, isConnected, socket } = useSocket();
   const [closingRooms, setClosingRooms] = useState(false);
   const [closingEmptyRooms, setClosingEmptyRooms] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(true);
   const normalizeAdminName = (value: string | null | undefined) =>
     (value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
   const isNamedAdmin = useMemo(() => {
@@ -22,6 +25,22 @@ export default function SettingsScreen() {
     return names.includes("admin") || names.includes("irkulyen");
   }, [profile?.username, user?.name]);
   const isAdmin = isNamedAdmin;
+
+  useEffect(() => {
+    let mounted = true;
+    void AsyncStorage.getItem(GAME_SFX_ENABLED_KEY)
+      .then((value) => {
+        if (!mounted) return;
+        setSoundEnabled(value !== "0");
+      })
+      .catch(() => {
+        if (!mounted) return;
+        setSoundEnabled(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!socket) return;
@@ -95,12 +114,23 @@ export default function SettingsScreen() {
               <Text className="text-muted text-sm mt-1">Deutsch</Text>
             </Touchable>
             
-            <Touchable className="p-4 active:opacity-80">
-              <Text className="text-foreground font-semibold">Ton & Musik</Text>
-              <Text className="text-muted text-sm mt-1">
-                Soundeffekte und Hintergrundmusik
-              </Text>
-            </Touchable>
+            <View className="p-4 flex-row items-center justify-between">
+              <View style={{ flex: 1, paddingRight: 12 }}>
+                <Text className="text-foreground font-semibold">Soundeffekte</Text>
+                <Text className="text-muted text-sm mt-1">
+                  Aktiviert Spiel-SFX fur Karten, Spezialmomente und Amsel
+                </Text>
+              </View>
+              <Switch
+                value={soundEnabled}
+                onValueChange={(value) => {
+                  setSoundEnabled(value);
+                  void AsyncStorage.setItem(GAME_SFX_ENABLED_KEY, value ? "1" : "0");
+                }}
+                trackColor={{ false: "#6b7280", true: "#22c55e" }}
+                thumbColor={soundEnabled ? "#f4fff8" : "#f4f4f5"}
+              />
+            </View>
           </View>
 
           {/* Game Settings */}
