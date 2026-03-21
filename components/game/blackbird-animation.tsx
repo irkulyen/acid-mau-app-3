@@ -13,64 +13,11 @@ import Animated, {
   runOnJS,
 } from "react-native-reanimated";
 import { hashString, pickBySeed, seededRange } from "@/lib/deterministic";
+import { resolveBlackbirdPresentation, type BlackbirdEventType } from "./blackbird-presentation";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 
 const TRAIL_EMOJIS = ["⭐", "💫", "✨", "🌟", "💥", "🎵", "🎶", "❗", "❓", "🔥", "💀", "🃏"];
-
-const ROUND_START_PHRASES = [
-  "Na gut… neue Runde.",
-  "Mal sehen, wer diesmal abstürzt.",
-  "Konzentriert euch. Oder versucht es zumindest.",
-  "Auf geht’s.",
-];
-
-const WINNER_PHRASES = [
-  (n: string) => `${n} ist durch.`,
-  (n: string) => `${n} legt die letzte Karte.`,
-  (n: string) => "Und weg ist er.",
-  () => "Nicht schlecht.",
-  () => "Sauber gespielt.",
-];
-
-const LOSER_PHRASES = [
-  (n: string) => `Autsch, ${n}.`,
-  () => "Das tat weh.",
-  () => "Das war wohl nichts.",
-];
-
-const DRAW_CHAIN_PHRASES = [
-  (count: number) => `Oh oh… das wird teuer (+${count}).`,
-  () => "Zieh mal schön Karten.",
-  () => "Das eskaliert gerade.",
-  () => "Ich glaube, das tut gleich weh.",
-];
-
-const SEVEN_PLAYED_PHRASES = [
-  (count: number) => count > 1 ? `Sieben gelegt. Ziehkette bei ${count}.` : "Sieben gelegt.",
-  () => "Oh oh… das wird teuer.",
-  () => "Das eskaliert gerade.",
-];
-
-const ASS_PHRASES = [
-  "Pause für dich.",
-  "Du setzt aus.",
-  "Kurz zuschauen.",
-];
-
-const UNTER_PHRASES = [
-  () => "Neue Farbe.",
-  () => "Interessante Wahl.",
-  () => "Mal sehen, ob das funktioniert.",
-];
-
-const MVP_PHRASES = [
-  (s: string) => `Highlight: ${s}`,
-  (s: string) => `MVP: ${s}`,
-  (s: string) => `Starker Moment: ${s}`,
-];
-
-type EventType = "round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "ass" | "unter" | "mvp";
 
 interface TrailParticle {
   id: number;
@@ -93,7 +40,7 @@ interface BlackbirdAnimationProps {
   eventId?: string;
   loserName?: string;
   winnerName?: string;
-  eventType?: EventType;
+  eventType?: BlackbirdEventType;
   drawChainCount?: number;
   wishSuit?: string;
   intensity?: 1 | 2 | 3 | 4 | 5;
@@ -133,7 +80,7 @@ export function BlackbirdAnimation({
   const [confetti, setConfetti] = useState<ConfettiPiece[]>([]);
   const [phrase, setPhrase] = useState("");
   const [speechPos, setSpeechPos] = useState({ x: 0, y: 0 });
-  const [currentEvent, setCurrentEvent] = useState<EventType>("round_start");
+  const [currentEvent, setCurrentEvent] = useState<BlackbirdEventType>("round_start");
   const onDoneRef = useRef<(() => void) | undefined>(onDone);
   const onStartRef = useRef<(() => void) | undefined>(onStart);
   const animationRunTokenRef = useRef(0);
@@ -212,38 +159,19 @@ export function BlackbirdAnimation({
     }
     const runToken = ++animationRunTokenRef.current;
 
-    // Determine event type and phrase
-    let evType: EventType = eventType || "round_start";
-    let selectedPhrase: string;
-    const seedBase = hashString(
-      `${eventId || ""}:${eventType || ""}:${winnerName || ""}:${loserName || ""}:${drawChainCount || 0}:${wishSuit || ""}:${statsText || ""}`,
-    );
-
-    if (winnerName) {
-      evType = "winner";
-      selectedPhrase = pickBySeed(WINNER_PHRASES, seedBase, 1)(winnerName);
-    } else if (loserName) {
-      evType = "loser";
-      selectedPhrase = pickBySeed(LOSER_PHRASES, seedBase, 2)(loserName);
-    } else if (eventType === "seven_played") {
-      selectedPhrase = pickBySeed(SEVEN_PLAYED_PHRASES, seedBase, 3)(drawChainCount || 1);
-    } else if (eventType === "draw_chain" && drawChainCount) {
-      selectedPhrase = pickBySeed(DRAW_CHAIN_PHRASES, seedBase, 4)(drawChainCount);
-    } else if (eventType === "ass") {
-      selectedPhrase = pickBySeed(ASS_PHRASES, seedBase, 5);
-    } else if (eventType === "unter" && wishSuit) {
-      selectedPhrase = pickBySeed(UNTER_PHRASES, seedBase, 6)();
-    } else if (eventType === "mvp" && statsText) {
-      selectedPhrase = pickBySeed(MVP_PHRASES, seedBase, 7)(statsText);
-    } else {
-      selectedPhrase = pickBySeed(ROUND_START_PHRASES, seedBase, 8);
-    }
-
-    if (phraseFromServer && phraseFromServer.trim().length > 0) {
-      selectedPhrase = phraseFromServer.trim();
-    }
-
-    setPhrase(selectedPhrase);
+    const presentation = resolveBlackbirdPresentation({
+      eventId,
+      eventType,
+      winnerName,
+      loserName,
+      drawChainCount,
+      wishSuit,
+      statsText,
+      phraseFromServer,
+    });
+    const evType = presentation.eventType;
+    const seedBase = presentation.seedBase;
+    setPhrase(presentation.phrase);
     setCurrentEvent(evType);
 
     // Reset all

@@ -2,6 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { setAudioModeAsync, setIsAudioActiveAsync, useAudioPlayer, type AudioPlayer } from "expo-audio";
 import { Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  computeNextMixState,
+  filterScheduledByPriority,
+  getHoldPriorityMs,
+  isBlockedByCooldown,
+  isBlockedByGlobalGap,
+  isBlockedByPriorityWindow,
+  type SoundPriority,
+} from "./game-sound-policy";
 
 export const GAME_SFX_ENABLED_KEY = "acid-mau:sfx-enabled";
 
@@ -26,7 +35,7 @@ type PlayProfile = {
 
 type ScheduledSound = {
   timer: ReturnType<typeof setTimeout>;
-  priority: 1 | 2 | 3 | 4 | 5;
+  priority: SoundPriority;
 };
 
 /**
@@ -43,7 +52,7 @@ export function useGameSounds() {
   const soundsEnabledRef = useRef(true);
   const lastPlayedAtRef = useRef<Record<string, number>>({});
   const delayedSoundTimersRef = useRef<ScheduledSound[]>([]);
-  const mixPriorityRef = useRef<{ priority: 1 | 2 | 3 | 4 | 5; until: number }>({ priority: 1, until: 0 });
+  const mixPriorityRef = useRef<{ priority: SoundPriority; until: number }>({ priority: 1, until: 0 });
   const lastAnySoundAtRef = useRef(0);
 
   useEffect(() => {
@@ -101,33 +110,29 @@ export function useGameSounds() {
   const playFromStart = useCallback((player: AudioPlayer, label: SoundLabel, profile?: PlayProfile) => {
     if (Platform.OS === "web" || !soundsEnabledRef.current) return;
     const now = Date.now();
-    const priority = profile?.priority ?? 2;
-    const holdPriorityMs = profile?.holdPriorityMs ?? (priority >= 4 ? 280 : priority >= 3 ? 200 : 120);
+    const priority: SoundPriority = profile?.priority ?? 2;
+    const holdPriorityMs = getHoldPriorityMs(priority, profile?.holdPriorityMs);
     const cooldownMs = profile?.cooldownMs ?? 0;
     const lastAt = lastPlayedAtRef.current[label] ?? 0;
-    if (cooldownMs > 0 && now - lastAt < cooldownMs) return;
+    if (isBlockedByCooldown(now, lastAt, cooldownMs)) return;
 
     const activeMix = mixPriorityRef.current;
-    if (now < activeMix.until && priority < activeMix.priority) {
+    if (isBlockedByPriorityWindow(now, priority, activeMix)) {
       return;
     }
 
-    const globalGapMs = priority >= 4 ? 60 : priority >= 3 ? 75 : 95;
-    if (!profile?.bypassGlobalGap && now - lastAnySoundAtRef.current < globalGapMs) {
+    if (isBlockedByGlobalGap(now, priority, lastAnySoundAtRef.current, profile?.bypassGlobalGap)) {
       return;
     }
 
     lastPlayedAtRef.current[label] = now;
     lastAnySoundAtRef.current = now;
-    mixPriorityRef.current = {
-      priority: priority >= activeMix.priority ? priority : activeMix.priority,
-      until: Math.max(activeMix.until, now + holdPriorityMs),
-    };
+    mixPriorityRef.current = computeNextMixState(now, priority, activeMix, holdPriorityMs);
 
     if (priority >= 4 && delayedSoundTimersRef.current.length > 0) {
       // Prevent low-priority aftershocks from muddying high-impact moments.
       delayedSoundTimersRef.current = delayedSoundTimersRef.current.filter((entry) => {
-        if (entry.priority >= 4) return true;
+        if (filterScheduledByPriority([entry], priority).length > 0) return true;
         clearTimeout(entry.timer);
         return false;
       });
@@ -152,7 +157,7 @@ export function useGameSounds() {
       });
   }, []);
 
-  const scheduleSound = useCallback((delayMs: number, priority: 1 | 2 | 3 | 4 | 5, callback: () => void) => {
+  const scheduleSound = useCallback((delayMs: number, priority: SoundPriority, callback: () => void) => {
     if (!soundsEnabledRef.current || Platform.OS === "web") return;
     const timer = setTimeout(() => {
       delayedSoundTimersRef.current = delayedSoundTimersRef.current.filter((entry) => entry.timer !== timer);
