@@ -139,6 +139,22 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       normalized.includes("not playable")
     );
   }, []);
+  const isExpectedRoomFlowError = useCallback((message: string) => {
+    const normalized = (message || "").toLowerCase();
+    return (
+      normalized.includes("failed to create room") ||
+      normalized.includes("session temporarily unavailable") ||
+      normalized.includes("room not found") ||
+      normalized.includes("invalid room code") ||
+      normalized.includes("room is full") ||
+      normalized.includes("game already in progress") ||
+      normalized.includes("game already started") ||
+      normalized.includes("user already has an active room session") ||
+      normalized.includes("user already in another active room") ||
+      normalized.includes("too many join attempts") ||
+      normalized.includes("too many room create attempts")
+    );
+  }, []);
   const emitErrorDeduped = useCallback((message: string) => {
     const now = Date.now();
     if (
@@ -618,7 +634,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           recoverBlockedUntilRef.current = Date.now() + 30_000;
           return;
         }
-        console.error("[socket] Error:", data.message);
+        if (isExpectedRoomFlowError(data.message)) {
+          console.log("[socket] handled error:", data.message);
+        } else {
+          console.error("[socket] Error:", data.message);
+        }
         emitErrorDeduped(data.message);
       });
     };
@@ -655,6 +675,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     persistSessionHints,
     recoverSessionOnSocket,
     isExpectedMoveValidationError,
+    isExpectedRoomFlowError,
   ]);
 
   useEffect(() => {

@@ -38,6 +38,23 @@ class RealtimeStore {
     }
   }
 
+  private markRedisUnavailable(operation: string, error: unknown) {
+    this.redisReady = false;
+    let detail = "";
+    if (error instanceof Error) {
+      detail = error.message;
+    } else if (typeof error === "string") {
+      detail = error;
+    } else {
+      try {
+        detail = JSON.stringify(error);
+      } catch {
+        detail = String(error);
+      }
+    }
+    console.warn(`[realtime-store] Redis ${operation} failed, falling back to in-memory: ${detail}`);
+  }
+
   private keyGameState(roomId: number) {
     return `${this.keyPrefix}:game-state:${roomId}`;
   }
@@ -64,14 +81,23 @@ class RealtimeStore {
 
   private async redisSetJson(key: string, value: unknown) {
     if (!this.redis || !this.redisReady) return;
-    await this.redis.set(key, JSON.stringify(value));
+    try {
+      await this.redis.set(key, JSON.stringify(value));
+    } catch (error) {
+      this.markRedisUnavailable("set", error);
+    }
   }
 
   private async redisGetJson<T>(key: string): Promise<T | null> {
     if (!this.redis || !this.redisReady) return null;
-    const raw = await this.redis.get(key);
-    if (!raw) return null;
-    return JSON.parse(raw) as T;
+    try {
+      const raw = await this.redis.get(key);
+      if (!raw) return null;
+      return JSON.parse(raw) as T;
+    } catch (error) {
+      this.markRedisUnavailable("get", error);
+      return null;
+    }
   }
 
   async getGameState(roomId: number): Promise<GameState | undefined> {
@@ -80,6 +106,9 @@ class RealtimeStore {
       if (fromRedis) {
         this.gameStates.set(roomId, fromRedis);
         return fromRedis;
+      }
+      if (!this.redisReady) {
+        return this.gameStates.get(roomId);
       }
       this.gameStates.delete(roomId);
       return undefined;
@@ -94,15 +123,23 @@ class RealtimeStore {
     this.gameStates.set(roomId, state);
     await this.redisSetJson(this.keyGameState(roomId), state);
     if (this.redis && this.redisReady) {
-      await this.redis.sAdd(this.keyRoomIds(), String(roomId));
+      try {
+        await this.redis.sAdd(this.keyRoomIds(), String(roomId));
+      } catch (error) {
+        this.markRedisUnavailable("sAdd(room-ids)", error);
+      }
     }
   }
 
   async deleteGameState(roomId: number): Promise<void> {
     this.gameStates.delete(roomId);
     if (this.redis && this.redisReady) {
-      await this.redis.del(this.keyGameState(roomId));
-      await this.redis.sRem(this.keyRoomIds(), String(roomId));
+      try {
+        await this.redis.del(this.keyGameState(roomId));
+        await this.redis.sRem(this.keyRoomIds(), String(roomId));
+      } catch (error) {
+        this.markRedisUnavailable("delete(game-state)", error);
+      }
     }
   }
 
@@ -111,20 +148,29 @@ class RealtimeStore {
     if (!this.redis || !this.redisReady) {
       return memoryIds;
     }
-    const redisIds = await this.redis.sMembers(this.keyRoomIds());
-    const merged = new Set<number>(memoryIds);
-    for (const id of redisIds) {
-      const parsed = Number(id);
-      if (Number.isFinite(parsed)) merged.add(parsed);
+    try {
+      const redisIds = await this.redis.sMembers(this.keyRoomIds());
+      const merged = new Set<number>(memoryIds);
+      for (const id of redisIds) {
+        const parsed = Number(id);
+        if (Number.isFinite(parsed)) merged.add(parsed);
+      }
+      return Array.from(merged);
+    } catch (error) {
+      this.markRedisUnavailable("sMembers(room-ids)", error);
+      return memoryIds;
     }
-    return Array.from(merged);
   }
 
   async setUserRoom(userId: number, roomId: number): Promise<void> {
     this.userRoomMapping.set(userId, roomId);
     await this.redisSetJson(this.keyUserRoom(userId), roomId);
     if (this.redis && this.redisReady) {
-      await this.redis.sAdd(this.keyUserIds(), String(userId));
+      try {
+        await this.redis.sAdd(this.keyUserIds(), String(userId));
+      } catch (error) {
+        this.markRedisUnavailable("sAdd(user-ids)", error);
+      }
     }
   }
 
@@ -134,6 +180,9 @@ class RealtimeStore {
       if (typeof fromRedis === "number") {
         this.userRoomMapping.set(userId, fromRedis);
         return fromRedis;
+      }
+      if (!this.redisReady) {
+        return this.userRoomMapping.get(userId);
       }
       this.userRoomMapping.delete(userId);
       return undefined;
@@ -147,31 +196,44 @@ class RealtimeStore {
   async deleteUserRoom(userId: number): Promise<void> {
     this.userRoomMapping.delete(userId);
     if (this.redis && this.redisReady) {
-      await this.redis.del(this.keyUserRoom(userId));
-      await this.redis.sRem(this.keyUserIds(), String(userId));
+      try {
+        await this.redis.del(this.keyUserRoom(userId));
+        await this.redis.sRem(this.keyUserIds(), String(userId));
+      } catch (error) {
+        this.markRedisUnavailable("delete(user-room)", error);
+      }
     }
   }
 
   async getUserMappings(): Promise<Array<[number, number]>> {
     const entries = Array.from(this.userRoomMapping.entries());
     if (!this.redis || !this.redisReady) return entries;
-    const userIds = await this.redis.sMembers(this.keyUserIds());
-    for (const uid of userIds) {
-      const userId = Number(uid);
-      if (!Number.isFinite(userId)) continue;
-      if (!this.userRoomMapping.has(userId)) {
-        const roomId = await this.getUserRoom(userId);
-        if (roomId !== undefined) entries.push([userId, roomId]);
+    try {
+      const userIds = await this.redis.sMembers(this.keyUserIds());
+      for (const uid of userIds) {
+        const userId = Number(uid);
+        if (!Number.isFinite(userId)) continue;
+        if (!this.userRoomMapping.has(userId)) {
+          const roomId = await this.getUserRoom(userId);
+          if (roomId !== undefined) entries.push([userId, roomId]);
+        }
       }
+      return entries;
+    } catch (error) {
+      this.markRedisUnavailable("sMembers(user-ids)", error);
+      return entries;
     }
-    return entries;
   }
 
   async setPreparation(roomId: number, data: PreparationData): Promise<void> {
     this.pendingPreparation.set(roomId, data);
     await this.redisSetJson(this.keyPreparation(roomId), data);
     if (this.redis && this.redisReady) {
-      await this.redis.sAdd(this.keyPreparationRoomIds(), String(roomId));
+      try {
+        await this.redis.sAdd(this.keyPreparationRoomIds(), String(roomId));
+      } catch (error) {
+        this.markRedisUnavailable("sAdd(prep-room-ids)", error);
+      }
     }
   }
 
@@ -181,6 +243,9 @@ class RealtimeStore {
       if (fromRedis) {
         this.pendingPreparation.set(roomId, fromRedis);
         return fromRedis;
+      }
+      if (!this.redisReady) {
+        return this.pendingPreparation.get(roomId);
       }
       this.pendingPreparation.delete(roomId);
       return undefined;
@@ -194,14 +259,24 @@ class RealtimeStore {
   async hasPreparation(roomId: number): Promise<boolean> {
     if (this.pendingPreparation.has(roomId)) return true;
     if (!this.redis || !this.redisReady) return false;
-    return this.redis.exists(this.keyPreparation(roomId)).then((n) => n > 0);
+    try {
+      const exists = await this.redis.exists(this.keyPreparation(roomId));
+      return exists > 0;
+    } catch (error) {
+      this.markRedisUnavailable("exists(preparation)", error);
+      return false;
+    }
   }
 
   async deletePreparation(roomId: number): Promise<void> {
     this.pendingPreparation.delete(roomId);
     if (this.redis && this.redisReady) {
-      await this.redis.del(this.keyPreparation(roomId));
-      await this.redis.sRem(this.keyPreparationRoomIds(), String(roomId));
+      try {
+        await this.redis.del(this.keyPreparation(roomId));
+        await this.redis.sRem(this.keyPreparationRoomIds(), String(roomId));
+      } catch (error) {
+        this.markRedisUnavailable("delete(preparation)", error);
+      }
     }
   }
 
@@ -211,11 +286,19 @@ class RealtimeStore {
     this.pendingPreparation.clear();
     if (!this.redis || !this.redisReady) return;
 
-    const [roomIds, userIds, prepRoomIds] = await Promise.all([
-      this.redis.sMembers(this.keyRoomIds()),
-      this.redis.sMembers(this.keyUserIds()),
-      this.redis.sMembers(this.keyPreparationRoomIds()),
-    ]);
+    let roomIds: string[] = [];
+    let userIds: string[] = [];
+    let prepRoomIds: string[] = [];
+    try {
+      [roomIds, userIds, prepRoomIds] = await Promise.all([
+        this.redis.sMembers(this.keyRoomIds()),
+        this.redis.sMembers(this.keyUserIds()),
+        this.redis.sMembers(this.keyPreparationRoomIds()),
+      ]);
+    } catch (error) {
+      this.markRedisUnavailable("sMembers(clearAll)", error);
+      return;
+    }
 
     const keys: string[] = [];
     for (const roomId of roomIds) keys.push(this.keyGameState(Number(roomId)));
@@ -224,7 +307,11 @@ class RealtimeStore {
     keys.push(this.keyRoomIds(), this.keyUserIds(), this.keyPreparationRoomIds());
 
     if (keys.length > 0) {
-      await this.redis.del(keys);
+      try {
+        await this.redis.del(keys);
+      } catch (error) {
+        this.markRedisUnavailable("del(clearAll)", error);
+      }
     }
   }
 }
