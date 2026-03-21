@@ -14,6 +14,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { hashString, pickBySeed, seededRange } from "@/lib/deterministic";
 import { resolveBlackbirdPresentation, type BlackbirdEventType } from "./blackbird-presentation";
+import { getBlackbirdMotionProfile } from "./blackbird-motion-profile";
 
 const { width: SW, height: SH } = Dimensions.get("window");
 
@@ -197,20 +198,20 @@ export function BlackbirdAnimation({
 
     fireOnStart();
 
-    // === DRAMATIC ENTRANCE: Screen flash ===
-    const isBigEvent = evType === "winner" || evType === "loser" || evType === "round_start" || evType === "mvp";
-    if (isBigEvent) {
-      const power = Math.max(1, intensity);
+    const motion = getBlackbirdMotionProfile(evType, intensity, variant);
+
+    // === Event entrance: controlled flash/shake profile ===
+    if (motion.flashPeak > 0.2) {
       flashOpacity.value = withSequence(
-        withTiming(Math.min(0.2 + power * 0.08, 0.6), { duration: 80 }),
+        withTiming(motion.flashPeak, { duration: 80 }),
         withTiming(0, { duration: 400, easing: Easing.out(Easing.ease) }),
       );
       // Screen shake
       shakeX.value = withSequence(
-        withTiming(4 + power, { duration: 40 }),
-        withTiming(-(4 + power), { duration: 40 }),
-        withTiming(3 + Math.floor(power / 2), { duration: 40 }),
-        withTiming(-2 - Math.floor(power / 3), { duration: 40 }),
+        withTiming(motion.shakeAmplitude, { duration: 40 }),
+        withTiming(-motion.shakeAmplitude, { duration: 40 }),
+        withTiming(Math.max(1, motion.shakeAmplitude - 2), { duration: 40 }),
+        withTiming(Math.min(-1, -(motion.shakeAmplitude - 3)), { duration: 40 }),
         withTiming(0, { duration: 60 }),
       );
     }
@@ -224,7 +225,7 @@ export function BlackbirdAnimation({
         withTiming(1, { duration: 280, easing: Easing.inOut(Easing.ease) }),
         withTiming(0.2, { duration: 280, easing: Easing.inOut(Easing.ease) }),
       ),
-      14,
+      motion.glowCycles,
       false,
     );
 
@@ -266,7 +267,7 @@ export function BlackbirdAnimation({
     );
 
     // Event-based flights
-    const isQuickEvent = evType !== "mvp";
+    const isQuickEvent = motion.quickEvent;
 
     // Sprite breathing / premium "alive" feel
     spritePulse.value = withRepeat(
@@ -274,7 +275,7 @@ export function BlackbirdAnimation({
         withTiming(1, { duration: 460, easing: Easing.inOut(Easing.ease) }),
         withTiming(0.1, { duration: 460, easing: Easing.inOut(Easing.ease) }),
       ),
-      isQuickEvent ? 10 : 22,
+      motion.spriteCycles,
       false,
     );
     spriteBob.value = withRepeat(
@@ -282,7 +283,7 @@ export function BlackbirdAnimation({
         withTiming(1, { duration: 320, easing: Easing.inOut(Easing.ease) }),
         withTiming(0, { duration: 320, easing: Easing.inOut(Easing.ease) }),
       ),
-      isQuickEvent ? 16 : 34,
+      isQuickEvent ? motion.spriteCycles + 2 : motion.spriteCycles + 10,
       false,
     );
     spriteTilt.value = withRepeat(
@@ -290,12 +291,12 @@ export function BlackbirdAnimation({
         withTiming(1, { duration: 260, easing: Easing.inOut(Easing.ease) }),
         withTiming(0, { duration: 260, easing: Easing.inOut(Easing.ease) }),
       ),
-      isQuickEvent ? 14 : 30,
+      isQuickEvent ? motion.spriteCycles : motion.spriteCycles + 8,
       false,
     );
 
-    const dur = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.inOut(Easing.ease) });
-    const fast = (ms: number) => ({ duration: isQuickEvent ? ms * 0.6 : ms, easing: Easing.out(Easing.cubic) });
+    const dur = (ms: number) => ({ duration: ms * motion.timingScale, easing: Easing.inOut(Easing.ease) });
+    const fast = (ms: number) => ({ duration: ms * motion.timingScale, easing: Easing.out(Easing.cubic) });
 
     if (isQuickEvent) {
       // Quick fly-by
@@ -399,13 +400,13 @@ export function BlackbirdAnimation({
         withTiming(1, { duration: 90, easing: Easing.linear }),
         withTiming(0, { duration: 90, easing: Easing.linear }),
       ),
-      isQuickEvent ? 18 : 36,
+      isQuickEvent ? 18 : 32,
       false,
     );
 
     // Speech bubble timing
-    const speechDelay = isQuickEvent ? 380 : 900;
-    const speechDuration = isQuickEvent ? 850 : 1200;
+    const speechDelay = motion.speechDelayMs;
+    const speechDuration = motion.speechDurationMs;
     let speechHideTimer: ReturnType<typeof setTimeout> | null = null;
     const speechTimer = setTimeout(() => {
       if (animationRunTokenRef.current !== runToken) return;
@@ -430,8 +431,8 @@ export function BlackbirdAnimation({
 
     // Trail particles
     const intervals: ReturnType<typeof setTimeout>[] = [speechTimer];
-    const trailCount = isQuickEvent ? 5 : 10;
-    const totalTime = isQuickEvent ? 1900 : 3600;
+    const trailCount = motion.trailCount;
+    const totalTime = motion.totalTrailTimeMs;
     for (let i = 0; i < trailCount; i++) {
       const t = (totalTime / trailCount) * (i + 0.5);
       const progress = t / totalTime;

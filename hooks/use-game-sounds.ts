@@ -46,8 +46,8 @@ export function useGameSounds() {
   const cardDrawSound = useAudioPlayer(require("@/assets/sounds/card-draw.wav"));
   const roundEndSound = useAudioPlayer(require("@/assets/sounds/round-end.wav"));
   const blackbirdSound = useAudioPlayer(require("@/assets/sounds/blackbird.mp3"));
-  const clutchSound = useAudioPlayer(require("@/assets/sounds/round-end.wav"));
-  const rivalrySound = useAudioPlayer(require("@/assets/sounds/blackbird.mp3"));
+  const clutchSound = useAudioPlayer(require("@/assets/sounds/clutch-callout.wav"));
+  const rivalrySound = useAudioPlayer(require("@/assets/sounds/rivalry-callout.wav"));
   const [soundsEnabled, setSoundsEnabled] = useState(true);
   const soundsEnabledRef = useRef(true);
   const lastPlayedAtRef = useRef<Record<string, number>>({});
@@ -217,11 +217,23 @@ export function useGameSounds() {
   };
 
   const playClutchCallout = () => {
-    playFromStart(clutchSound, "clutch", { volume: 0.5, playbackRate: 1.08, cooldownMs: 600, priority: 3 });
+    playFromStart(clutchSound, "clutch", {
+      volume: 0.56,
+      playbackRate: 1.02,
+      cooldownMs: 1100,
+      priority: 4,
+      holdPriorityMs: 280,
+    });
   };
 
   const playRivalryCallout = () => {
-    playFromStart(rivalrySound, "rivalry", { volume: 0.58, playbackRate: 1.06, cooldownMs: 900, priority: 3 });
+    playFromStart(rivalrySound, "rivalry", {
+      volume: 0.44,
+      playbackRate: 0.98,
+      cooldownMs: 1200,
+      priority: 3,
+      holdPriorityMs: 220,
+    });
   };
 
   const playTurnShift = (isMyTurn: boolean) => {
