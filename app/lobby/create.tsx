@@ -6,6 +6,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { useAuth } from "@/lib/auth-provider";
 import { useSocket } from "@/lib/socket-provider";
 import { trpc } from "@/lib/trpc";
+import { getRoomFlowStatus, toFriendlyRoomError } from "@/lib/ux-status";
 
 export default function CreateRoomScreen() {
   const router = useRouter();
@@ -18,6 +19,11 @@ export default function CreateRoomScreen() {
 
   const { isConnected, gameState, createRoom, leaveRoom, recoverSession, setOnRoomCreated, setOnError } = useSocket();
   const canCreateRoom = Boolean(user && profile) && !isCreating;
+  const flowStatus = getRoomFlowStatus({
+    isConnected,
+    isJoining: false,
+    hasRoomState: Boolean(gameState),
+  });
 
   // Register callbacks only while this screen is focused.
   // Prevents background screens from overriding active room/join handlers.
@@ -69,7 +75,7 @@ export default function CreateRoomScreen() {
         );
         return;
       }
-      Alert.alert("Fehler", error);
+      Alert.alert("Fehler", toFriendlyRoomError(error));
     });
 
     return () => {
@@ -96,7 +102,13 @@ export default function CreateRoomScreen() {
 
     if (!isConnected) {
       setIsCreating(true);
-      await recoverSession();
+      try {
+        await recoverSession();
+      } catch {
+        setIsCreating(false);
+        Alert.alert("Verbindung fehlgeschlagen", "Server aktuell nicht erreichbar. Bitte erneut versuchen.");
+        return;
+      }
       createRoom(user.id, profile.username, maxPlayers, isPrivate);
       return;
     }
@@ -123,6 +135,26 @@ export default function CreateRoomScreen() {
 
           {/* Settings */}
           <View className="gap-6">
+            <View
+              style={{
+                borderRadius: 14,
+                paddingHorizontal: 14,
+                paddingVertical: 12,
+                borderWidth: 1,
+                borderColor:
+                  flowStatus.tone === "success"
+                    ? "rgba(34,139,34,0.55)"
+                    : "rgba(234,179,8,0.55)",
+                backgroundColor:
+                  flowStatus.tone === "success"
+                    ? "rgba(34,139,34,0.12)"
+                    : "rgba(234,179,8,0.12)",
+              }}
+            >
+              <Text className="text-foreground font-semibold">{flowStatus.title}</Text>
+              <Text className="text-muted text-sm mt-1">{flowStatus.detail}</Text>
+            </View>
+
             {/* Privacy Setting */}
             <View className="bg-surface rounded-2xl p-6 border border-border">
               <View className="flex-row justify-between items-center">
@@ -238,7 +270,7 @@ export default function CreateRoomScreen() {
 
             {!isConnected && (
               <Text className="text-muted text-center text-sm">
-                Verbinde mit Server... (du kannst trotzdem tippen, wir versuchen Reconnect)
+                Noch keine Verbindung. Du kannst tippen, wir senden automatisch sobald der Server erreichbar ist.
               </Text>
             )}
           </View>

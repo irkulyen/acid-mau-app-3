@@ -29,6 +29,7 @@ import {
   shouldWarnStartDrift,
 } from "@/lib/game-fx-performance-budget";
 import { getGameFxUiPlan } from "@/lib/game-fx-ui-plan";
+import { getGamePriorityPills, getPlayableCount, shouldShowSecondaryGameBanner } from "@/lib/ux-status";
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 /** Mini card backs for opponent hand display */
@@ -169,7 +170,9 @@ export default function GamePlayScreen() {
   const [showBlackbird, setShowBlackbird] = useState(false);
   const [blackbirdLoser, setBlackbirdLoser] = useState<string | undefined>(undefined);
   const [blackbirdWinner, setBlackbirdWinner] = useState<string | undefined>(undefined);
-  const [blackbirdEvent, setBlackbirdEvent] = useState<"round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "ass" | "unter" | "mvp" | undefined>(undefined);
+  const [blackbirdEvent, setBlackbirdEvent] = useState<
+    "round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "direction_shift" | "ass" | "unter" | "invalid" | "mvp" | undefined
+  >(undefined);
   const [blackbirdEventId, setBlackbirdEventId] = useState<string | undefined>(undefined);
   const [blackbirdDrawChain, setBlackbirdDrawChain] = useState<number | undefined>(undefined);
   const [blackbirdWishSuit, setBlackbirdWishSuit] = useState<string | undefined>(undefined);
@@ -186,12 +189,10 @@ export default function GamePlayScreen() {
     playClutchCallout,
     playRivalryCallout,
     playTurnShift,
-    playSpecialCard,
     playDrawChainAlert,
-    playElimination,
-    playVictory,
     playRoundTransition,
     playInvalidAction,
+    playAmselSignature,
   } = useGameSounds();
   const [comboCount, setComboCount] = useState(0);
   const [comboPlayer, setComboPlayer] = useState("");
@@ -255,6 +256,7 @@ export default function GamePlayScreen() {
   const loaderEscalatedRef = useRef(false);
   const lastRecoverAttemptAtRef = useRef(0);
   const [loaderMessage, setLoaderMessage] = useState("Lade Spiel...");
+  const lastInvalidBlackbirdAtRef = useRef(0);
   const lastTurnCueRef = useRef<string>("");
   const gameFxPerfWarnRef = useRef<{ depthAt: number; lagAt: number; driftAt: number }>({
     depthAt: 0,
@@ -378,6 +380,15 @@ export default function GamePlayScreen() {
       Vibration.vibrate([160, 70, 170, 70, 260]);
       return;
     }
+    if (event.type === "direction_shift") {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      Vibration.vibrate([70, 50, 70]);
+      return;
+    }
+    if (event.type === "invalid") {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      return;
+    }
     if (event.type === "winner") {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       return;
@@ -414,6 +425,19 @@ export default function GamePlayScreen() {
       setWishFxSuit(event.wishSuit);
       setWishFxKey((k) => k + 1);
       setShowWishFx(true);
+      return;
+    }
+
+    if (event.type === "direction_shift") {
+      setDiscardImpactIntensity(Math.min(4, Math.max(2, event.intensity ?? 3)) as 1 | 2 | 3 | 4 | 5);
+      setDiscardImpactKey((k) => k + 1);
+      setShowDiscardImpact(true);
+      return;
+    }
+
+    if (event.type === "invalid") {
+      setAssFlash(true);
+      setTimeout(() => setAssFlash(false), 260);
       return;
     }
 
@@ -517,6 +541,38 @@ export default function GamePlayScreen() {
       momentBannerTimerRef.current = null;
     }, duration);
   }, []);
+
+  const playBlackbirdForEvent = useCallback(
+    (eventType?: "round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "direction_shift" | "ass" | "unter" | "invalid" | "mvp", intensity: 1 | 2 | 3 | 4 | 5 = 3) => {
+      switch (eventType) {
+        case "winner":
+          playAmselSignature("WIN", intensity);
+          return;
+        case "loser":
+          playAmselSignature("ELIMINATION", intensity);
+          return;
+        case "draw_chain":
+        case "seven_played":
+          playDrawChainAlert(Math.max(2, blackbirdDrawChain ?? intensity));
+          return;
+        case "ass":
+          playAmselSignature("SPECIAL_A", intensity);
+          return;
+        case "unter":
+          playAmselSignature("SPECIAL_U", intensity);
+          return;
+        case "direction_shift":
+          playAmselSignature("SPECIAL_8", intensity);
+          return;
+        case "invalid":
+          playAmselSignature("ERROR_INVALID", intensity);
+          return;
+        default:
+          playBlackbird(intensity);
+      }
+    },
+    [blackbirdDrawChain, playAmselSignature, playBlackbird, playDrawChainAlert],
+  );
 
   const resolveDrawFxTarget = useCallback((playerId?: number) => {
     const fallback = { x: 0.5, y: 0.26, isSelf: false };
@@ -711,6 +767,9 @@ export default function GamePlayScreen() {
           if (next.card) {
             const intensity = next.card.rank === "7" ? 4 : next.card.rank === "bube" || next.card.rank === "ass" ? 3 : 2;
             playCardPlay(intensity as 1 | 2 | 3 | 4 | 5);
+            if (next.card.rank !== "7" && next.card.rank !== "ass" && next.card.rank !== "bube" && next.card.rank !== "8") {
+              playAmselSignature("CARD_PLAY", 2);
+            }
             lastAnimatedDiscardCardIdRef.current = next.card.id;
             setFlyingCard(next.card);
             setShowFlyingCard(true);
@@ -724,6 +783,7 @@ export default function GamePlayScreen() {
           const drawCount = Math.max(1, next.drawCount ?? 1);
           const drawTarget = resolveDrawFxTarget(next.playerId);
           playCardDraw(drawCount, drawTarget.isSelf);
+          playAmselSignature("DRAW", drawCount >= 4 ? 3 : 2);
           setDrawFlyFx({
             targetX: drawTarget.x,
             targetY: drawTarget.y,
@@ -746,8 +806,14 @@ export default function GamePlayScreen() {
         }
         case "special_card": {
           const cue = getGameFxCueSpec(next);
+          if (next.specialRank === "7") {
+            playAmselSignature("SPECIAL_7", 4);
+            showMomentBanner(`🂧 ${next.playerName || "Spieler"} startet die Ziehkette`, 1200);
+            scheduleGameFxCompletion(next.id, cue.completionMs);
+            return;
+          }
           if (next.specialRank === "ass") {
-            playSpecialCard("ass");
+            playAmselSignature("SPECIAL_A", 4);
             setAssFlash(true);
             setTimeout(() => setAssFlash(false), 420);
             showMomentBanner(`🂡 ${next.playerName || "Spieler"} spielt Ass`, 1200);
@@ -755,7 +821,7 @@ export default function GamePlayScreen() {
             return;
           }
           if (next.specialRank === "bube") {
-            playSpecialCard("bube");
+            playAmselSignature("SPECIAL_U", 4);
             setWishFxSuit(next.wishSuit);
             setWishFxKey((k) => k + 1);
             setShowWishFx(true);
@@ -766,8 +832,9 @@ export default function GamePlayScreen() {
             scheduleGameFxCompletion(next.id, cue.completionMs);
             return;
           }
-          if (next.specialRank === "7") {
-            playSpecialCard("7");
+          if (next.specialRank === "8") {
+            playAmselSignature("SPECIAL_8", 3);
+            showMomentBanner(`🂨 ${next.playerName || "Spieler"} dreht die Richtung`, 1300);
             scheduleGameFxCompletion(next.id, cue.completionMs);
             return;
           }
@@ -808,7 +875,7 @@ export default function GamePlayScreen() {
         case "elimination": {
           const plan = getGameFxUiPlan(next);
           if (plan?.sound === "elimination") {
-            playElimination();
+            playAmselSignature("ELIMINATION", 5);
           }
           if (plan?.banner) {
             showMomentBanner(plan.banner, plan.bannerDurationMs);
@@ -831,7 +898,7 @@ export default function GamePlayScreen() {
             showMomentBanner(plan.banner, plan.bannerDurationMs);
           }
           if (plan?.sound === "victory") {
-            playVictory();
+            playAmselSignature("WIN", 5);
           }
           scheduleGameFxCompletion(next.id, plan?.completionMs ?? getGameFxCueSpec(next).completionMs);
           return;
@@ -855,11 +922,9 @@ export default function GamePlayScreen() {
     playCardDraw,
     playCardPlay,
     playDrawChainAlert,
-    playElimination,
     playRoundTransition,
-    playSpecialCard,
     playTurnShift,
-    playVictory,
+    playAmselSignature,
     resolveDrawFxTarget,
     scheduleGameFxCompletion,
     showDrawFly,
@@ -1022,7 +1087,18 @@ export default function GamePlayScreen() {
     setOnError((error: string) => {
       if (/Karte passt nicht|gleiche Farbe oder Rang erforderlich|Ungültiger Zug|Ungueltiger Zug|Invalid move|not playable/i.test(error)) {
         // Keep gameplay fluid: these are expected server-side validations in race conditions.
-        playInvalidAction();
+        const now = Date.now();
+        if (now - lastInvalidBlackbirdAtRef.current > 1_800) {
+          lastInvalidBlackbirdAtRef.current = now;
+          activateBlackbirdEvent({
+            type: "invalid",
+            intensity: 1,
+            phrase: "Nicht spielbar.",
+            startAt: now,
+          });
+        } else {
+          playInvalidAction();
+        }
         setShowFlyingCard(false);
         setFlyingCard(null);
         const activeFx = activeGameFxRef.current;
@@ -1063,6 +1139,7 @@ export default function GamePlayScreen() {
     resolveDrawFxTarget,
     completeActiveGameFx,
     playInvalidAction,
+    activateBlackbirdEvent,
     recoverSession,
     router,
   ]);
@@ -1139,6 +1216,22 @@ export default function GamePlayScreen() {
 
   const isMyTurn = Boolean(gameState && currentPlayer && gameState.players[gameState.currentPlayerIndex]?.id === currentPlayer.id);
   const playableCardIds = new Set(gameState?.playableCardIds ?? []);
+  const playableCount = gameState && currentPlayer
+    ? getPlayableCount({
+        state: gameState,
+        currentPlayer,
+        isMyTurn,
+      })
+    : 0;
+  const decisionPills = gameState && currentPlayer
+    ? getGamePriorityPills({
+        state: gameState,
+        currentPlayer,
+        isMyTurn,
+        playableCount,
+      })
+    : [];
+  const hasNoPlayableCards = isMyTurn && playableCount === 0;
   const displayCard = gameState?.discardPile[gameState.discardPile.length - 1];
 
   useEffect(() => {
@@ -1443,6 +1536,28 @@ export default function GamePlayScreen() {
   const wishSuitLabel = gameState.currentWishSuit
     ? `${gameState.currentWishSuit === "eichel" ? "🌰 Eichel" : gameState.currentWishSuit === "gruen" ? "🍀 Grün" : gameState.currentWishSuit === "rot" ? "❤️ Rot" : "🔔 Schellen"} oder Unter`
     : "";
+  const pillPalette: Record<string, { bg: string; border: string; text: string }> = {
+    success: {
+      bg: "rgba(26, 110, 70, 0.86)",
+      border: "rgba(90, 230, 160, 0.9)",
+      text: "#E9FFF4",
+    },
+    warning: {
+      bg: "rgba(120, 72, 14, 0.9)",
+      border: "rgba(255, 196, 87, 0.9)",
+      text: "#FFF3D6",
+    },
+    danger: {
+      bg: "rgba(120, 26, 26, 0.9)",
+      border: "rgba(255, 110, 110, 0.9)",
+      text: "#FFE8E8",
+    },
+    neutral: {
+      bg: "rgba(16, 26, 34, 0.9)",
+      border: "rgba(128, 164, 191, 0.65)",
+      text: "#E3EEF7",
+    },
+  };
   const suitIcon: Record<CardSuit, string> = {
     eichel: "🌰",
     gruen: "🍀",
@@ -1467,6 +1582,16 @@ export default function GamePlayScreen() {
   const tableLogoSize = isSmallPhone ? 132 : 156;
   const tableLogoTop = centerSpotTop + centerSpotSize / 2 - tableLogoSize / 2;
   const getRoundStartCards = (lossPoints: number) => Math.max(1, lossPoints + 1);
+  const hasActivePriorityFx = showBlackbird || showDrawFly || showFlyingCard || showWishFx || showRoundGlow;
+  const showSecondaryBanners = shouldShowSecondaryGameBanner({
+    isCompactHeight,
+    drawChainCount: gameState.drawChainCount,
+    hasWishSuit: Boolean(gameState.currentWishSuit),
+    hasNoPlayableCards,
+    hasActiveFx: hasActivePriorityFx,
+  });
+  const showClutchOrRivalryBanner = showSecondaryBanners && Boolean(clutchBanner || rivalryBanner);
+  const showMomentStatusBanner = showSecondaryBanners && Boolean(momentBanner);
 
   return (
     <View style={{ flex: 1, backgroundColor: DESIGN.tableBase }}>
@@ -1646,26 +1771,34 @@ export default function GamePlayScreen() {
               </View>
             </View>
 
-            {(gameState.currentWishSuit || gameState.drawChainCount > 0) && (
-              <View
-                style={{
-                  marginTop: 24,
-                  marginBottom: 12,
-                  alignSelf: "center",
-                  backgroundColor: "rgba(7, 15, 14, 0.74)",
-                  borderRadius: 14,
-                  paddingHorizontal: 12,
-                  paddingVertical: 6,
-                  borderWidth: 1,
-                  borderColor: gameState.drawChainCount > 0 ? "rgba(255, 157, 26, 0.72)" : "rgba(46, 224, 128, 0.5)",
-                }}
-              >
-                <Text style={{ color: DESIGN.textMain, fontSize: 12, fontWeight: "700" }}>
-                  {gameState.drawChainCount > 0 ? `⚠️ Ziehkette +${gameState.drawChainCount}` : `Wunschfarbe: ${wishSuitLabel}`}
-                </Text>
-              </View>
+            <View style={{ marginTop: 12, marginBottom: 10, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+              {decisionPills.map((pill) => {
+                const palette = pillPalette[pill.tone] ?? pillPalette.neutral;
+                return (
+                  <View
+                    key={pill.key}
+                    style={{
+                      borderRadius: 999,
+                      borderWidth: 1,
+                      borderColor: palette.border,
+                      backgroundColor: palette.bg,
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                    }}
+                  >
+                    <Text style={{ color: palette.text, fontSize: 12, fontWeight: "800" }}>
+                      {pill.label}
+                    </Text>
+                  </View>
+                );
+              })}
+            </View>
+            {gameState.currentWishSuit && (
+              <Text style={{ color: "rgba(226, 244, 236, 0.9)", fontSize: 11, fontWeight: "700", marginTop: -3, marginBottom: 6 }}>
+                Aktiv: {wishSuitLabel}
+              </Text>
             )}
-            {(clutchBanner || rivalryBanner) && (
+            {showClutchOrRivalryBanner && (
               <View style={{ alignItems: "center", marginTop: 8, marginBottom: 8, gap: 6 }}>
                 {clutchBanner && (
                   <View
@@ -1697,7 +1830,7 @@ export default function GamePlayScreen() {
                 )}
               </View>
             )}
-            {momentBanner && (
+            {showMomentStatusBanner && (
               <View style={{ alignItems: "center", marginTop: 6, marginBottom: 6 }}>
                 <View
                   style={{
@@ -2058,6 +2191,31 @@ export default function GamePlayScreen() {
                   Warte auf deinen Zug
                 </Text>
               )}
+              {isMyTurn && (
+                <View
+                  style={{
+                    marginBottom: 6,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: hasNoPlayableCards ? "rgba(255, 196, 87, 0.7)" : "rgba(90, 230, 160, 0.6)",
+                    backgroundColor: hasNoPlayableCards ? "rgba(120, 72, 14, 0.42)" : "rgba(26, 110, 70, 0.32)",
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: hasNoPlayableCards ? "#FFE9B8" : "#DDFBEF",
+                      fontSize: 12,
+                      fontWeight: "800",
+                    }}
+                  >
+                    {hasNoPlayableCards
+                      ? "Keine passende Karte: Ziehe vom Stapel."
+                      : `${playableCount} Karte(n) spielbar: grün hervorgehoben.`}
+                  </Text>
+                </View>
+              )}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ minHeight: isMyTurn ? (isCompactHeight ? 72 : 84) : 58 }}>
                 <View style={{ flexDirection: "row", gap: 5, alignItems: "flex-end", paddingBottom: 4 }}>
                   {currentPlayer.hand.map((card, index) => {
@@ -2084,6 +2242,48 @@ export default function GamePlayScreen() {
                           opacity: disabledByServerHint ? 0.43 : (isMyTurn ? 1 : 0.92),
                         }}
                       >
+                        {isPlayable && (
+                          <View
+                            pointerEvents="none"
+                            style={{
+                              position: "absolute",
+                              top: -18,
+                              alignSelf: "center",
+                              zIndex: 30,
+                              borderRadius: 999,
+                              borderWidth: 1,
+                              borderColor: "rgba(90,230,160,0.95)",
+                              backgroundColor: "rgba(26,110,70,0.9)",
+                              paddingHorizontal: 7,
+                              paddingVertical: 2,
+                            }}
+                          >
+                            <Text style={{ color: "#EAFFF5", fontSize: isCompactHeight ? 10 : 9, fontWeight: "900", letterSpacing: isCompactHeight ? 0 : 0.4 }}>
+                              {isCompactHeight ? "✓" : "SPIELBAR"}
+                            </Text>
+                          </View>
+                        )}
+                        {disabledByServerHint && (
+                          <View
+                            pointerEvents="none"
+                            style={{
+                              position: "absolute",
+                              top: 2,
+                              right: 2,
+                              zIndex: 25,
+                              width: 16,
+                              height: 16,
+                              borderRadius: 8,
+                              backgroundColor: "rgba(40, 12, 12, 0.88)",
+                              borderWidth: 1,
+                              borderColor: "rgba(255,115,115,0.8)",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
+                            <Text style={{ color: "#FFB4B4", fontWeight: "900", fontSize: 10 }}>×</Text>
+                          </View>
+                        )}
                         <PlayingCard
                           card={card}
                           onPress={() => handlePlayCard(card)}
@@ -2424,7 +2624,7 @@ export default function GamePlayScreen() {
             }
           }, 300);
         }}
-        onStart={() => playBlackbird(blackbirdIntensity ?? 3)}
+        onStart={() => playBlackbirdForEvent(blackbirdEvent, blackbirdIntensity ?? 3)}
       />
       <DrawCardAnimation
         visible={showDrawFly}

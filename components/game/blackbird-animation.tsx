@@ -299,33 +299,125 @@ export function BlackbirdAnimation({
     const fast = (ms: number) => ({ duration: ms * motion.timingScale, easing: Easing.out(Easing.cubic) });
 
     if (isQuickEvent) {
-      // Quick fly-by
-      translateX.value = withSequence(
-        withTiming(SW * 0.15, dur(380)),
-        withTiming(SW * 0.35, dur(240)),
-        withTiming(SW * 0.35, { duration: 480 }),
-        withTiming(SW * 0.55, dur(220)),
-        withTiming(SW + 140, fast(420), (finished) => {
-          if (finished) {
-            opacity.value = withTiming(0, { duration: 150 });
-            runOnJS(fireOnDoneForRun)(runToken);
-          }
-        }),
-      );
-      translateY.value = withSequence(
-        withTiming(SH * 0.36, dur(380)),
-        withTiming(SH * 0.32, dur(240)),
-        withTiming(SH * 0.32, { duration: 480 }),
-        withTiming(SH * 0.39, dur(220)),
-        withTiming(SH * 0.28, fast(420)),
-      );
-      rotate.value = withSequence(
-        withTiming(-10, dur(380)),
-        withTiming(5, dur(240)),
-        withTiming(0, { duration: 480 }),
-        withTiming(10, dur(220)),
-        withTiming(-5, fast(420)),
-      );
+      if (motion.flightPattern === "zigzag_surge") {
+        translateX.value = withSequence(
+          withTiming(SW * 0.12, dur(250)),
+          withTiming(SW * 0.28, dur(180)),
+          withTiming(SW * 0.2, dur(150)),
+          withTiming(SW * 0.42, dur(180)),
+          withTiming(SW * 0.34, dur(140)),
+          withTiming(SW * 0.58, dur(180)),
+          withTiming(SW + 140, fast(330), (finished) => {
+            if (finished) {
+              opacity.value = withTiming(0, { duration: 130 });
+              runOnJS(fireOnDoneForRun)(runToken);
+            }
+          }),
+        );
+        translateY.value = withSequence(
+          withTiming(SH * 0.35, dur(250)),
+          withTiming(SH * 0.3, dur(180)),
+          withTiming(SH * 0.37, dur(150)),
+          withTiming(SH * 0.29, dur(180)),
+          withTiming(SH * 0.36, dur(140)),
+          withTiming(SH * 0.27, dur(180)),
+          withTiming(SH * 0.33, fast(330)),
+        );
+        rotate.value = withSequence(
+          withTiming(-14, dur(250)),
+          withTiming(10, dur(180)),
+          withTiming(-8, dur(150)),
+          withTiming(12, dur(180)),
+          withTiming(-10, dur(140)),
+          withTiming(8, dur(180)),
+          withTiming(-4, fast(330)),
+        );
+      } else if (motion.flightPattern === "shake_reject") {
+        translateX.value = withSequence(
+          withTiming(SW * 0.2, dur(180)),
+          withTiming(SW * 0.27, dur(120)),
+          withTiming(SW * 0.18, dur(110)),
+          withTiming(SW * 0.24, dur(110)),
+          withTiming(-140, fast(260), (finished) => {
+            if (finished) {
+              opacity.value = withTiming(0, { duration: 120 });
+              runOnJS(fireOnDoneForRun)(runToken);
+            }
+          }),
+        );
+        translateY.value = withSequence(
+          withTiming(SH * 0.34, dur(180)),
+          withTiming(SH * 0.31, dur(120)),
+          withTiming(SH * 0.37, dur(110)),
+          withTiming(SH * 0.33, dur(110)),
+          withTiming(SH * 0.35, fast(260)),
+        );
+        rotate.value = withSequence(
+          withTiming(-6, dur(180)),
+          withTiming(10, dur(120)),
+          withTiming(-12, dur(110)),
+          withTiming(8, dur(110)),
+          withTiming(-2, fast(260)),
+        );
+      } else if (motion.flightPattern === "precision_curve") {
+        translateX.value = withSequence(
+          withTiming(SW * 0.18, dur(320)),
+          withTiming(SW * 0.36, dur(250)),
+          withTiming(SW * 0.5, dur(240)),
+          withTiming(SW * 0.5, { duration: 420 }),
+          withTiming(SW * 0.66, dur(220)),
+          withTiming(SW + 140, fast(360), (finished) => {
+            if (finished) {
+              opacity.value = withTiming(0, { duration: 140 });
+              runOnJS(fireOnDoneForRun)(runToken);
+            }
+          }),
+        );
+        translateY.value = withSequence(
+          withTiming(SH * 0.35, dur(320)),
+          withTiming(SH * 0.31, dur(250)),
+          withTiming(SH * 0.28, dur(240)),
+          withTiming(SH * 0.28, { duration: 420 }),
+          withTiming(SH * 0.34, dur(220)),
+          withTiming(SH * 0.3, fast(360)),
+        );
+        rotate.value = withSequence(
+          withTiming(-8, dur(320)),
+          withTiming(4, dur(250)),
+          withTiming(-2, dur(240)),
+          withTiming(0, { duration: 420 }),
+          withTiming(9, dur(220)),
+          withTiming(-5, fast(360)),
+        );
+      } else {
+        // Quick fly-by
+        translateX.value = withSequence(
+          withTiming(SW * 0.15, dur(380)),
+          withTiming(SW * 0.35, dur(240)),
+          withTiming(SW * 0.35, { duration: 480 }),
+          withTiming(SW * 0.55, dur(220)),
+          withTiming(SW + 140, fast(420), (finished) => {
+            if (finished) {
+              opacity.value = withTiming(0, { duration: 150 });
+              runOnJS(fireOnDoneForRun)(runToken);
+            }
+          }),
+        );
+        translateY.value = withSequence(
+          withTiming(SH * 0.36, dur(380)),
+          withTiming(SH * 0.32, dur(240)),
+          withTiming(SH * 0.32, { duration: 480 }),
+          withTiming(SH * 0.39, dur(220)),
+          withTiming(SH * 0.28, fast(420)),
+        );
+        rotate.value = withSequence(
+          withTiming(-10, dur(380)),
+          withTiming(5, dur(240)),
+          withTiming(0, { duration: 480 }),
+          withTiming(10, dur(220)),
+          withTiming(-5, fast(420)),
+        );
+      }
     } else {
       // Full dramatic flight: ~6.5 seconds with dive-bomb and loop
       translateX.value = withSequence(
@@ -397,8 +489,8 @@ export function BlackbirdAnimation({
     // Wing flapping – faster for dramatic effect
     wingPhase.value = withRepeat(
       withSequence(
-        withTiming(1, { duration: 90, easing: Easing.linear }),
-        withTiming(0, { duration: 90, easing: Easing.linear }),
+        withTiming(1, { duration: motion.wingBeatMs, easing: Easing.linear }),
+        withTiming(0, { duration: motion.wingBeatMs, easing: Easing.linear }),
       ),
       isQuickEvent ? 18 : 32,
       false,
@@ -526,8 +618,10 @@ export function BlackbirdAnimation({
       case "loser": return { bubble: "rgba(30, 5, 5, 0.97)", border: "#FF4444", text: "#FF6B6B", tail: "#FF4444", glow: "#FF0000", body: "#330000" };
       case "draw_chain": return { bubble: "rgba(30, 15, 0, 0.97)", border: "#FF8C00", text: "#FFB347", tail: "#FF8C00", glow: "#FF6600", body: "#331A00" };
       case "seven_played": return { bubble: "rgba(20, 30, 0, 0.97)", border: "#F59E0B", text: "#FCD34D", tail: "#F59E0B", glow: "#F59E0B", body: "#2A2200" };
+      case "direction_shift": return { bubble: "rgba(0, 24, 30, 0.98)", border: "#22D3EE", text: "#A5F3FC", tail: "#22D3EE", glow: "#0891B2", body: "#04212A" };
       case "ass": return { bubble: "rgba(20, 0, 30, 0.97)", border: "#A855F7", text: "#C084FC", tail: "#A855F7", glow: "#9333EA", body: "#1A0033" };
       case "unter": return { bubble: "rgba(0, 15, 25, 0.97)", border: "#06B6D4", text: "#67E8F9", tail: "#06B6D4", glow: "#0891B2", body: "#001A26" };
+      case "invalid": return { bubble: "rgba(35, 10, 10, 0.98)", border: "#FB7185", text: "#FECACA", tail: "#FB7185", glow: "#BE123C", body: "#2B080F" };
       case "mvp": return { bubble: "rgba(35, 25, 0, 0.98)", border: "#FFD700", text: "#FFE066", tail: "#FFD700", glow: "#FFC700", body: "#3D3000" };
       default: return { bubble: "rgba(255, 255, 255, 0.97)", border: "#FFD700", text: "#111", tail: "#FFD700", glow: "#FFD700", body: "#332B00" };
     }
@@ -815,8 +909,8 @@ export function BlackbirdAnimation({
               borderRadius: 2,
               position: "absolute", top: 3, left: 6,
             }} />
-            {/* Red eye reflection for loser/draw events */}
-            {(currentEvent === "loser" || currentEvent === "draw_chain" || currentEvent === "seven_played") && (
+            {/* Red eye reflection for high tension / reject events */}
+            {(currentEvent === "loser" || currentEvent === "draw_chain" || currentEvent === "seven_played" || currentEvent === "invalid") && (
               <View style={{
                 width: 2, height: 2,
                 backgroundColor: "#FF0000",

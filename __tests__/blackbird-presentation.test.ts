@@ -57,5 +57,20 @@ describe("blackbird presentation", () => {
     });
     expect(explicit.phrase).toBe("Server says sit tight");
   });
-});
 
+  it("supports direction and invalid cues as first-class event types", () => {
+    const direction = resolveBlackbirdPresentation({
+      eventId: "evt-direction",
+      eventType: "direction_shift",
+    });
+    expect(direction.eventType).toBe("direction_shift");
+    expect(direction.phrase.length).toBeGreaterThan(0);
+
+    const invalid = resolveBlackbirdPresentation({
+      eventId: "evt-invalid",
+      eventType: "invalid",
+    });
+    expect(invalid.eventType).toBe("invalid");
+    expect(invalid.phrase.length).toBeGreaterThan(0);
+  });
+});

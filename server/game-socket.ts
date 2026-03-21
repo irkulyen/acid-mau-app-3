@@ -58,7 +58,17 @@ function shuffleArray<T>(items: T[]): T[] {
   return copy;
 }
 
-type BlackbirdEventType = "ass" | "unter" | "draw_chain" | "winner" | "loser" | "round_start" | "seven_played" | "mvp";
+type BlackbirdEventType =
+  | "ass"
+  | "unter"
+  | "draw_chain"
+  | "winner"
+  | "loser"
+  | "round_start"
+  | "seven_played"
+  | "direction_shift"
+  | "invalid"
+  | "mvp";
 type BlackbirdEventPayload = {
   id: string;
   type: BlackbirdEventType;
@@ -86,8 +96,10 @@ const BLACKBIRD_TYPE_COOLDOWN_MS: Record<BlackbirdEventType, number> = {
   loser: 1_500,
   draw_chain: 3_000,
   seven_played: 2_200,
+  direction_shift: 2_800,
   ass: 8_000,
   unter: 8_000,
+  invalid: 1_500,
   mvp: 6_000,
 };
 const BLACKBIRD_TYPE_PRIORITY: Record<BlackbirdEventType, number> = {
@@ -95,10 +107,12 @@ const BLACKBIRD_TYPE_PRIORITY: Record<BlackbirdEventType, number> = {
   loser: 95,
   winner: 90,
   seven_played: 85,
+  direction_shift: 83,
   draw_chain: 80,
   round_start: 70,
   ass: 60,
   unter: 60,
+  invalid: 75,
 };
 const BLACKBIRD_SKIP_CHANCE: Record<BlackbirdEventType, number> = {
   round_start: 0.7,
@@ -106,9 +120,11 @@ const BLACKBIRD_SKIP_CHANCE: Record<BlackbirdEventType, number> = {
   loser: 0,
   draw_chain: 0.55,
   seven_played: 0,
-  ass: 0.7,
-  unter: 0.7,
-  mvp: 0.6,
+  direction_shift: 0,
+  ass: 0.22,
+  unter: 0.2,
+  invalid: 0.8,
+  mvp: 0.32,
 };
 const BLACKBIRD_RARE_CHANCE = 0.06;
 const BLACKBIRD_RECENT_PHRASE_WINDOW = 8;
@@ -157,6 +173,17 @@ const BB_UNTER = [
   () => "Mal sehen, ob das klug war.",
   () => "Interessante Wahl.",
   () => "Mutig.",
+];
+const BB_DIRECTION_SHIFT = [
+  () => "Richtung gedreht.",
+  () => "Jetzt andersrum.",
+  () => "Umdrehen. Sofort.",
+  () => "Richtungswechsel.",
+];
+const BB_INVALID = [
+  () => "Ungultig.",
+  () => "Das zahlt nicht.",
+  () => "Nicht spielbar.",
 ];
 const BB_RARE = [
   "Ich habe schon bessere Spiele gesehen.",
@@ -457,6 +484,8 @@ function deriveEventIntensity(event: Omit<BlackbirdEventPayload, "id" | "emitted
       return clampIntensity(2 + Math.floor((event.drawChainCount || 0) / 2));
     case "draw_chain":
       return clampIntensity(2 + Math.floor((event.drawChainCount || 0) / 2));
+    case "direction_shift":
+      return 3;
     case "winner":
     case "loser":
       return 4;
@@ -466,6 +495,7 @@ function deriveEventIntensity(event: Omit<BlackbirdEventPayload, "id" | "emitted
       return 3;
     case "ass":
     case "unter":
+    case "invalid":
     default:
       return 2;
   }
@@ -474,11 +504,13 @@ function deriveEventIntensity(event: Omit<BlackbirdEventPayload, "id" | "emitted
 function deriveVariant(event: Omit<BlackbirdEventPayload, "id" | "emittedAt">): string {
   if (event.type === "seven_played") return "impact";
   if (event.type === "draw_chain") return "voltage";
+  if (event.type === "direction_shift") return "spin";
   if (event.type === "loser") return "drama";
   if (event.type === "winner") return "victory";
   if (event.type === "mvp") return "legendary";
   if (event.type === "unter") return "wild";
   if (event.type === "ass") return "skip";
+  if (event.type === "invalid") return "reject";
   return "default";
 }
 
@@ -567,6 +599,10 @@ function buildBlackbirdPhrase(roomId: number, event: Omit<BlackbirdEventPayload,
       return pickNonRepeatingPhrase(roomId, BB_ASS.map((f) => f()));
     case "unter":
       return pickNonRepeatingPhrase(roomId, BB_UNTER.map((f) => f()));
+    case "direction_shift":
+      return pickNonRepeatingPhrase(roomId, BB_DIRECTION_SHIFT.map((f) => f()));
+    case "invalid":
+      return pickNonRepeatingPhrase(roomId, BB_INVALID.map((f) => f()));
     case "mvp":
       return pickNonRepeatingPhrase(roomId, [`Highlight: ${event.statsText || "Starker Moment."}`]);
     case "round_start":
@@ -1290,6 +1326,17 @@ function detectAndBroadcastBlackbirdEvents(
       });
     }
 
+    // Detect direction shift from Schellen-8.
+    if (newTopCard.rank === "8" && oldState.direction !== newState.direction) {
+      events.push({
+        type: "direction_shift",
+        spotlightUserId: actor?.userId,
+        spotlightPlayerName: actor?.username,
+        statsText: newState.direction === "counterclockwise" ? "Gegen den Uhrzeigersinn" : "Im Uhrzeigersinn",
+        intensity: 3,
+      });
+    }
+
     // Detect player finished (hand empty, not eliminated, still playing phase)
     if (newState.phase === "playing" || newState.phase === "round_end") {
       const finishedPlayer = newState.players.find(
@@ -1877,6 +1924,21 @@ export function setupGameSocket(httpServer: HTTPServer) {
       } catch (error) {
         console.error("[socket] Error creating room:", error);
         telemetry.inc("errors.create_room");
+        const rawMessage =
+          error instanceof Error ? error.message : typeof error === "string" ? error : "";
+        const normalized = rawMessage.toLowerCase();
+        if (
+          normalized.includes("database not available") ||
+          normalized.includes("timeout") ||
+          normalized.includes("econnrefused") ||
+          normalized.includes("connect") ||
+          normalized.includes("er_no_such_table") ||
+          normalized.includes("unknown column")
+        ) {
+          telemetry.inc("errors.create_room.session_unavailable");
+          socket.emit("error", { message: "Session temporarily unavailable. Please retry." });
+          return;
+        }
         socket.emit("error", { message: "Failed to create room" });
       }
     });
@@ -2215,7 +2277,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
             // Critical special-card feedback must always be server-authoritative
             // so all clients receive the same dramatic moments, independent of
             // optional blackbird feature flags.
-            if (newTop.rank === "ass" || newTop.rank === "bube") {
+            if (newTop.rank === "ass" || newTop.rank === "bube" || newTop.rank === "7" || newTop.rank === "8") {
               emitGameFx(io, roomId, {
                 type: "special_card",
                 playerId: actorPlayerId,

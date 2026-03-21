@@ -3,10 +3,13 @@ import { getGameFxCueSpec } from "../lib/game-fx-cue-spec";
 describe("game fx cue spec", () => {
   it("assigns stronger impact to special cards than default transitions", () => {
     const special7 = getGameFxCueSpec({ type: "special_card", specialRank: "7" });
+    const special8 = getGameFxCueSpec({ type: "special_card", specialRank: "8" });
     const turnTransition = getGameFxCueSpec({ type: "turn_transition" });
 
     expect(special7.impact).toBeGreaterThan(turnTransition.impact);
     expect(special7.completionMs).toBeGreaterThan(turnTransition.completionMs);
+    expect(special8.impact).toBeGreaterThanOrEqual(special7.impact);
+    expect(special8.completionMs).toBeGreaterThanOrEqual(special7.completionMs);
   });
 
   it("escalates draw-chain impact with larger chains", () => {
@@ -27,4 +30,3 @@ describe("game fx cue spec", () => {
     expect(matchResult.completionMs).toBeGreaterThanOrEqual(900);
   });
 });
-

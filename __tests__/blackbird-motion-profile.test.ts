@@ -23,6 +23,17 @@ describe("blackbird motion profile", () => {
     expect(heavy.trailCount).toBeGreaterThanOrEqual(base.trailCount);
   });
 
+  it("uses distinct quick profiles for direction shift vs invalid", () => {
+    const direction = getBlackbirdMotionProfile("direction_shift", 3);
+    const invalid = getBlackbirdMotionProfile("invalid", 1);
+
+    expect(direction.quickEvent).toBe(true);
+    expect(invalid.quickEvent).toBe(true);
+    expect(direction.flightPattern).toBe("precision_curve");
+    expect(invalid.flightPattern).toBe("shake_reject");
+    expect(direction.wingBeatMs).toBeLessThan(invalid.wingBeatMs);
+  });
+
   it("boosts legendary winner profile without changing event semantics", () => {
     const normal = getBlackbirdMotionProfile("winner", 3);
     const legendary = getBlackbirdMotionProfile("winner", 3, "legendary");
@@ -33,4 +44,3 @@ describe("blackbird motion profile", () => {
     expect(legendary.spriteCycles).toBeGreaterThanOrEqual(normal.spriteCycles);
   });
 });
-

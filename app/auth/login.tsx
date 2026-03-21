@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { View, Text, TextInput, ActivityIndicator, Platform, Pressable } from "react-native";
 import { useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
@@ -16,6 +16,13 @@ export default function LoginScreen() {
   const [error, setError] = useState("");
 
   const loginMutation = trpc.auth.login.useMutation();
+  const loginApiTarget = useMemo(() => {
+    try {
+      return getApiBaseUrl();
+    } catch {
+      return "(nicht konfiguriert)";
+    }
+  }, []);
   const toFriendlyAuthError = (err: unknown): string => {
     const raw =
       err && typeof err === "object" && "message" in err
@@ -30,7 +37,16 @@ export default function LoginScreen() {
     ) {
       return "Zu viele Anfragen. Bitte 30-60 Sekunden warten und erneut anmelden.";
     }
-    return raw || "Unbekannter Fehler";
+    if (normalized.includes("timed out") || normalized.includes("timeout")) {
+      return "Server antwortet zu langsam. Bitte Verbindung prüfen und erneut versuchen.";
+    }
+    if (normalized.includes("network request failed") || normalized.includes("failed to fetch")) {
+      return "Server nicht erreichbar. Bitte Internet/Server prüfen und erneut versuchen.";
+    }
+    if (normalized.includes("ungültige anmeldedaten") || normalized.includes("invalid credentials")) {
+      return "E-Mail oder Passwort ist falsch.";
+    }
+    return "Anmeldung aktuell nicht möglich. Bitte erneut versuchen.";
   };
 
   const handleEmailLogin = async () => {
@@ -131,6 +147,10 @@ export default function LoginScreen() {
             <Text style={{ color: '#DC143C', fontWeight: '600' }}>{error}</Text>
           </View>
         ) : null}
+        <View style={{ backgroundColor: 'rgba(34,139,34,0.1)', borderWidth: 1, borderColor: 'rgba(34,139,34,0.4)', borderRadius: 12, padding: 12, marginBottom: 16 }}>
+          <Text style={{ color: '#264531', fontWeight: '600' }}>Login-Server</Text>
+          <Text style={{ color: '#4B6A56', fontSize: 12, marginTop: 2 }}>{loginApiTarget}</Text>
+        </View>
 
         <View style={{ marginBottom: 16 }}>
           <TextInput
@@ -142,12 +162,12 @@ export default function LoginScreen() {
             autoCapitalize="none"
             editable={!isLoading}
             style={{
-              backgroundColor: '#2A2A2A',
+              backgroundColor: '#FFFFFF',
               borderWidth: 1,
-              borderColor: '#444',
+              borderColor: '#D1D5DB',
               borderRadius: 12,
               padding: 16,
-              color: '#FFF',
+              color: '#111827',
               fontSize: 16,
             }}
           />
@@ -162,12 +182,12 @@ export default function LoginScreen() {
             secureTextEntry
             editable={!isLoading}
             style={{
-              backgroundColor: '#2A2A2A',
+              backgroundColor: '#FFFFFF',
               borderWidth: 1,
-              borderColor: '#444',
+              borderColor: '#D1D5DB',
               borderRadius: 12,
               padding: 16,
-              color: '#FFF',
+              color: '#111827',
               fontSize: 16,
             }}
           />

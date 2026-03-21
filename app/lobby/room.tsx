@@ -9,6 +9,7 @@ import { getApiBaseUrl } from "@/constants/oauth";
 import { GamePreparationScreen, type PreparationDrawData } from "@/components/game/game-preparation-screen";
 import { getBotProfileByName } from "@/lib/bot-profiles";
 import { trpc } from "@/lib/trpc";
+import { getRoomFlowStatus, toFriendlyRoomError } from "@/lib/ux-status";
 
 export default function RoomScreen() {
   const router = useRouter();
@@ -20,6 +21,7 @@ export default function RoomScreen() {
   const [botsAdded, setBotsAdded] = useState(false);
   const [isStartingGame, setIsStartingGame] = useState(false);
   const [joinAttempt, setJoinAttempt] = useState(0);
+  const [lastJoinError, setLastJoinError] = useState<string | null>(null);
   const normalizedCode = useMemo(() => (code || "").toUpperCase(), [code]);
   const joinUsername = useMemo(() => {
     const preferred = (profile?.username || "").trim();
@@ -62,11 +64,18 @@ export default function RoomScreen() {
   }, []);
   const roomStateMatchesCode = Boolean(gameState && gameState.roomCode.toUpperCase() === normalizedCode);
   const activeGameState = roomStateMatchesCode ? gameState : null;
+  const flowStatus = getRoomFlowStatus({
+    isConnected,
+    isJoining,
+    hasRoomState: Boolean(activeGameState),
+    joinAttempt,
+  });
 
   // Registriere Callbacks
   useEffect(() => {
     setOnRoomJoined((data) => {
       if (isJoining && data.roomCode.toUpperCase() === normalizedCode) {
+        setLastJoinError(null);
         // If room-joined arrives before/without a state packet, force recovery.
         void recoverSession();
         setTimeout(() => void recoverSession(), 700);
@@ -86,7 +95,9 @@ export default function RoomScreen() {
 
     setOnError((error: string) => {
       setIsStartingGame(false);
-      Alert.alert("Fehler", error);
+      const friendlyError = toFriendlyRoomError(error);
+      setLastJoinError(friendlyError);
+      Alert.alert("Fehler", friendlyError);
       if (isJoining && /Room not found|Invalid room code|User already in another active room|Game session unavailable|Room is full|Game already in progress|Too many join attempts|Failed to join|Socket-Verbindung blockiert|Server nicht erreichbar|Socket-Verbindung fehlgeschlagen/i.test(error)) {
         setIsJoining(false);
         router.replace("/lobby/join" as any);
@@ -114,7 +125,9 @@ export default function RoomScreen() {
     const timeout = setTimeout(() => {
       if (joinAttempt >= 6) {
         setIsJoining(false);
-        Alert.alert("Verbindung fehlgeschlagen", "Konnte dem Raum nicht beitreten. Bitte erneut versuchen.");
+        const timeoutMessage = "Beitritt hat zu lange gedauert. Bitte erneut versuchen.";
+        setLastJoinError(timeoutMessage);
+        Alert.alert("Verbindung fehlgeschlagen", timeoutMessage);
         router.replace("/lobby/join" as any);
         return;
       }
@@ -207,6 +220,7 @@ export default function RoomScreen() {
   // Navigate to game when it starts AND preparation is done
   useEffect(() => {
     if (gameState && gameState.roomCode.toUpperCase() === normalizedCode) {
+      setLastJoinError(null);
       setIsJoining(false);
     }
   }, [gameState, normalizedCode]);
@@ -223,6 +237,7 @@ export default function RoomScreen() {
   const isHost = activeGameState && user && activeGameState.hostUserId === user.id;
   const canStart = activeGameState && activeGameState.players.length >= 2;
   const roomMaxPlayers = activeGameState?.maxPlayers ?? 5;
+  const isActionBlocked = !isConnected;
   const myPreparationUserId = user?.id ?? activeGameState?.players.find((p) => profile?.username && p.username === profile.username)?.userId;
 
   // Show preparation screen
@@ -249,13 +264,16 @@ export default function RoomScreen() {
     );
   }
 
-  if (!isConnected || !activeGameState) {
+  if (!activeGameState) {
     return (
       <ScreenContainer className="p-6">
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator size="large" color="#228B22" />
           <Text className="text-foreground text-lg mt-4">
-            {!isConnected ? "Verbinde mit Server..." : "Trete Spielraum bei..."}
+            {flowStatus.title}
+          </Text>
+          <Text className="text-muted text-sm mt-2 text-center">
+            {lastJoinError ?? flowStatus.detail}
           </Text>
           <Text className="text-muted text-xs mt-2 text-center">
             Backend: {backendUrl}
@@ -274,6 +292,26 @@ export default function RoomScreen() {
           <View className="flex-row items-center gap-2 mt-2">
             <Text className="text-muted">Raum-Code:</Text>
             <Text className="text-primary text-xl font-bold">{activeGameState.roomCode}</Text>
+          </View>
+          <View
+            style={{
+              marginTop: 10,
+              borderRadius: 12,
+              borderWidth: 1,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
+              borderColor:
+                flowStatus.tone === "success"
+                  ? "rgba(34,139,34,0.55)"
+                  : "rgba(234,179,8,0.55)",
+              backgroundColor:
+                flowStatus.tone === "success"
+                  ? "rgba(34,139,34,0.12)"
+                  : "rgba(234,179,8,0.12)",
+            }}
+          >
+            <Text className="text-foreground font-semibold">{flowStatus.title}</Text>
+            <Text className="text-muted text-sm mt-1">{lastJoinError ?? flowStatus.detail}</Text>
           </View>
         </View>
 
@@ -312,9 +350,17 @@ export default function RoomScreen() {
                   <Text className="text-foreground font-semibold">
                     {player.username}
                   </Text>
-                  {player.userId === activeGameState.hostUserId && (
-                    <Text className="text-warning text-sm">Host</Text>
-                  )}
+                  <View className="flex-row items-center gap-2 mt-1">
+                    {player.userId === activeGameState.hostUserId && (
+                      <Text className="text-warning text-sm">Host</Text>
+                    )}
+                    {player.userId === user?.id && (
+                      <Text className="text-primary text-sm font-semibold">Du</Text>
+                    )}
+                    {player.userId < 0 && (
+                      <Text className="text-muted text-sm">KI</Text>
+                    )}
+                  </View>
                 </View>
                 {player.isReady && (
                   <View className="bg-success px-3 py-1 rounded-full">
@@ -329,11 +375,16 @@ export default function RoomScreen() {
         {/* Info Box */}
         <View className="bg-surface rounded-2xl p-4 border border-border mb-6">
           <Text className="text-muted text-center">
-            {canStart
+            {isActionBlocked
+              ? "Verbindung unterbrochen. Aktionen werden automatisch wieder aktiviert."
+              : canStart
               ? isHost
                 ? "Du kannst das Spiel starten"
                 : "Warte auf den Host, um das Spiel zu starten"
               : "Mindestens 2 Spieler benötigt"}
+          </Text>
+          <Text className="text-muted text-center text-xs mt-2">
+            Spieler im Raum: {activeGameState.players.length}/{roomMaxPlayers}
           </Text>
         </View>
 
@@ -343,13 +394,13 @@ export default function RoomScreen() {
             <>
               <Pressable
                 onPress={handleStartGame}
-                disabled={!canStart || isStartingGame}
+                disabled={!canStart || isStartingGame || isActionBlocked}
                 style={({ pressed }) => [{
                   backgroundColor: '#228B22',
                   paddingHorizontal: 32,
                   paddingVertical: 20,
                   borderRadius: 16,
-                  opacity: (!canStart || isStartingGame) ? 0.5 : pressed ? 0.8 : 1,
+                  opacity: (!canStart || isStartingGame || isActionBlocked) ? 0.5 : pressed ? 0.8 : 1,
                 }]}
               >
                 <Text className="text-background text-xl font-bold text-center">
@@ -359,13 +410,13 @@ export default function RoomScreen() {
 
               <Pressable
                 onPress={handleAddBot}
-                disabled={Boolean(activeGameState && activeGameState.players.length >= roomMaxPlayers)}
+                disabled={Boolean(isActionBlocked || (activeGameState && activeGameState.players.length >= roomMaxPlayers))}
                 style={({ pressed }) => [{
                   backgroundColor: '#0a7ea4',
                   paddingHorizontal: 32,
                   paddingVertical: 16,
                   borderRadius: 16,
-                  opacity: (activeGameState && activeGameState.players.length >= roomMaxPlayers) ? 0.5 : pressed ? 0.8 : 1,
+                  opacity: (isActionBlocked || (activeGameState && activeGameState.players.length >= roomMaxPlayers)) ? 0.5 : pressed ? 0.8 : 1,
                 }]}
               >
                 <Text className="text-background text-lg font-semibold text-center">
@@ -395,13 +446,13 @@ export default function RoomScreen() {
           {isHost && (
             <Pressable
               onPress={handleDeleteRoom}
-                disabled={deleteRoomMutation.isPending}
+                disabled={deleteRoomMutation.isPending || isActionBlocked}
                 style={({ pressed }) => [{
                 backgroundColor: '#EF4444',
                 paddingHorizontal: 32,
                 paddingVertical: 16,
                 borderRadius: 16,
-                opacity: deleteRoomMutation.isPending ? 0.5 : pressed ? 0.8 : 1,
+                opacity: (deleteRoomMutation.isPending || isActionBlocked) ? 0.5 : pressed ? 0.8 : 1,
               }]}
             >
               <Text className="text-background text-lg font-semibold text-center">

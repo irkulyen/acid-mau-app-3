@@ -38,6 +38,17 @@ type ScheduledSound = {
   priority: SoundPriority;
 };
 
+export type AmselSoundEvent =
+  | "CARD_PLAY"
+  | "DRAW"
+  | "SPECIAL_7"
+  | "SPECIAL_U"
+  | "SPECIAL_A"
+  | "SPECIAL_8"
+  | "ELIMINATION"
+  | "WIN"
+  | "ERROR_INVALID";
+
 /**
  * Hook for playing game sound effects
  */
@@ -250,7 +261,7 @@ export function useGameSounds() {
     });
   };
 
-  const playSpecialCard = (rank: "ass" | "bube" | "7") => {
+  const playSpecialCard = (rank: "ass" | "bube" | "7" | "8") => {
     if (rank === "7") {
       playFromStart(roundEndSound, "round-end", {
         volume: 0.62,
@@ -263,6 +274,24 @@ export function useGameSounds() {
         playFromStart(cardPlaySound, "card-play", {
           volume: 0.55,
           playbackRate: 0.86,
+          cooldownMs: 0,
+          priority: 3,
+        })
+      );
+      return;
+    }
+    if (rank === "8") {
+      playFromStart(blackbirdSound, "blackbird", {
+        volume: 0.5,
+        playbackRate: 1.05,
+        cooldownMs: 240,
+        priority: 4,
+        holdPriorityMs: 290,
+      });
+      scheduleSound(95, 3, () =>
+        playFromStart(cardPlaySound, "card-play", {
+          volume: 0.4,
+          playbackRate: 0.92,
           cooldownMs: 0,
           priority: 3,
         })
@@ -362,6 +391,51 @@ export function useGameSounds() {
     });
   };
 
+  const playAmselSignature = useCallback((event: AmselSoundEvent, intensity: 1 | 2 | 3 | 4 | 5 = 3) => {
+    switch (event) {
+      case "CARD_PLAY":
+        playBlackbird(Math.max(1, Math.min(3, intensity)) as 1 | 2 | 3 | 4 | 5);
+        return;
+      case "DRAW":
+        playFromStart(blackbirdSound, "blackbird", {
+          volume: 0.28,
+          playbackRate: 1.08,
+          cooldownMs: 180,
+          priority: 2,
+        });
+        return;
+      case "SPECIAL_7":
+        playSpecialCard("7");
+        return;
+      case "SPECIAL_U":
+        playSpecialCard("bube");
+        return;
+      case "SPECIAL_A":
+        playSpecialCard("ass");
+        return;
+      case "SPECIAL_8":
+        playSpecialCard("8");
+        return;
+      case "ELIMINATION":
+        playElimination();
+        return;
+      case "WIN":
+        playVictory();
+        return;
+      case "ERROR_INVALID":
+        playInvalidAction();
+        playFromStart(blackbirdSound, "blackbird", {
+          volume: 0.22,
+          playbackRate: 0.82,
+          cooldownMs: 300,
+          priority: 2,
+        });
+        return;
+      default:
+        return;
+    }
+  }, [blackbirdSound, playBlackbird, playElimination, playFromStart, playInvalidAction, playSpecialCard, playVictory]);
+
   return {
     soundsEnabled,
     setSoundsEnabled: persistSoundsEnabled,
@@ -378,5 +452,6 @@ export function useGameSounds() {
     playVictory,
     playRoundTransition,
     playInvalidAction,
+    playAmselSignature,
   };
 }

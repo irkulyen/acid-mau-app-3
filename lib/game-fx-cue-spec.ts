@@ -10,9 +10,10 @@ type CueInput = Pick<GameFxEvent, "type" | "specialRank" | "drawChainCount">;
 export function getGameFxCueSpec(event: CueInput): GameFxCueSpec {
   switch (event.type) {
     case "special_card": {
-      if (event.specialRank === "7") return { completionMs: 440, impact: 4 };
+      if (event.specialRank === "7") return { completionMs: 460, impact: 4 };
       if (event.specialRank === "ass") return { completionMs: 420, impact: 4 };
       if (event.specialRank === "bube") return { completionMs: 520, impact: 4 };
+      if (event.specialRank === "8") return { completionMs: 500, impact: 4 };
       return { completionMs: 420, impact: 3 };
     }
     case "draw_chain": {

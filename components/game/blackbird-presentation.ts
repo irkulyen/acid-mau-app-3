@@ -1,6 +1,16 @@
 import { hashString, pickBySeed } from "../../lib/deterministic";
 
-export type BlackbirdEventType = "round_start" | "winner" | "loser" | "draw_chain" | "seven_played" | "ass" | "unter" | "mvp";
+export type BlackbirdEventType =
+  | "round_start"
+  | "winner"
+  | "loser"
+  | "draw_chain"
+  | "seven_played"
+  | "direction_shift"
+  | "ass"
+  | "unter"
+  | "invalid"
+  | "mvp";
 
 const ROUND_START_PHRASES = [
   "Na gut… neue Runde.",
@@ -36,6 +46,12 @@ const SEVEN_PLAYED_PHRASES = [
   () => "Das eskaliert gerade.",
 ];
 
+const DIRECTION_SHIFT_PHRASES = [
+  () => "Richtung gedreht.",
+  () => "Drehung. Jetzt andersrum.",
+  () => "Die Runde kippt.",
+];
+
 const ASS_PHRASES = [
   "Pause für dich.",
   "Du setzt aus.",
@@ -52,6 +68,12 @@ const MVP_PHRASES = [
   (s: string) => `Highlight: ${s}`,
   (s: string) => `MVP: ${s}`,
   (s: string) => `Starker Moment: ${s}`,
+];
+
+const INVALID_PHRASES = [
+  () => "Nicht spielbar.",
+  () => "Der Zug zählt nicht.",
+  () => "Das passt nicht.",
 ];
 
 export type BlackbirdPresentationInput = {
@@ -87,12 +109,16 @@ export function resolveBlackbirdPresentation(input: BlackbirdPresentationInput):
     phrase = pickBySeed(LOSER_PHRASES, seedBase, 2)(input.loserName);
   } else if (input.eventType === "seven_played") {
     phrase = pickBySeed(SEVEN_PLAYED_PHRASES, seedBase, 3)(input.drawChainCount || 1);
+  } else if (input.eventType === "direction_shift") {
+    phrase = pickBySeed(DIRECTION_SHIFT_PHRASES, seedBase, 33)();
   } else if (input.eventType === "draw_chain" && input.drawChainCount) {
     phrase = pickBySeed(DRAW_CHAIN_PHRASES, seedBase, 4)(input.drawChainCount);
   } else if (input.eventType === "ass") {
     phrase = pickBySeed(ASS_PHRASES, seedBase, 5);
   } else if (input.eventType === "unter" && input.wishSuit) {
     phrase = pickBySeed(UNTER_PHRASES, seedBase, 6)();
+  } else if (input.eventType === "invalid") {
+    phrase = pickBySeed(INVALID_PHRASES, seedBase, 34)();
   } else if (input.eventType === "mvp" && input.statsText) {
     phrase = pickBySeed(MVP_PHRASES, seedBase, 7)(input.statsText);
   } else {
