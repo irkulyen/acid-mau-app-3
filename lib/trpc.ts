@@ -101,17 +101,27 @@ export function createTRPCClient() {
               const timeoutDetected =
                 timedOut ||
                 /timed out|timeout|abort/i.test(message);
-              console.error("[tRPC] Request failed", {
-                requestId,
-                method,
-                url: String(url),
-                apiBaseUrl: apiBaseUrl || "(relative)",
-                platform: Platform.OS,
-                timeoutDetected,
-                timeoutMs: requestTimeoutMs,
-                durationMs,
-                message,
-              });
+              const transientNetworkFailure = /network request failed|failed to fetch|network error|load failed/i.test(
+                message.toLowerCase(),
+              );
+              if (__DEV__) {
+                const payload = {
+                  requestId,
+                  method,
+                  url: String(url),
+                  apiBaseUrl: apiBaseUrl || "(relative)",
+                  platform: Platform.OS,
+                  timeoutDetected,
+                  timeoutMs: requestTimeoutMs,
+                  durationMs,
+                  message,
+                };
+                if (timeoutDetected || transientNetworkFailure) {
+                  console.log("[tRPC] Request transient failure", payload);
+                } else {
+                  console.error("[tRPC] Request failed", payload);
+                }
+              }
               if (timedOut) {
                 throw new Error(`Network request timed out after ${requestTimeoutMs}ms`);
               }
