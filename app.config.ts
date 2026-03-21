@@ -104,6 +104,11 @@ const env = {
   androidPackage: bundleId,
 };
 
+// React Compiler slows down first-time Metro bundle compilation in dev tunnel mode.
+// Keep it enabled for production builds, allow explicit opt-in for development.
+const enableReactCompiler =
+  process.env.NODE_ENV === "production" || process.env.EXPO_ENABLE_REACT_COMPILER === "1";
+
 /** @type {import("expo/config").ExpoConfig} */
 const includeBuildPropertiesPlugin = process.env.EXPO_SKIP_BUILD_PROPERTIES !== "1";
 
@@ -197,7 +202,7 @@ const config = {
   plugins,
   experiments: {
     typedRoutes: true,
-    reactCompiler: true,
+    reactCompiler: enableReactCompiler,
   },
 };
 
