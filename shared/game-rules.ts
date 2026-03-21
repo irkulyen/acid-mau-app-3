@@ -113,15 +113,27 @@ export function canPlayCard(card: Card, topCard: Card, wishSuit: CardSuit | null
 /**
  * Checks if a player has any playable cards
  */
-export function hasPlayableCard(hand: Card[], topCard: Card, wishSuit: CardSuit | null, drawChainCount: number = 0): boolean {
-  return hand.some((card) => canPlayCard(card, topCard, wishSuit, drawChainCount).isValid);
+export function hasPlayableCard(
+  hand: Card[],
+  topCard: Card,
+  wishSuit: CardSuit | null,
+  drawChainCount: number = 0,
+  openingFreePlay: boolean = false,
+): boolean {
+  return hand.some((card) => canPlayCard(card, topCard, wishSuit, drawChainCount, openingFreePlay).isValid);
 }
 
 /**
  * Gets all playable cards from a hand
  */
-export function getPlayableCards(hand: Card[], topCard: Card, wishSuit: CardSuit | null, drawChainCount: number = 0): Card[] {
-  return hand.filter((card) => canPlayCard(card, topCard, wishSuit, drawChainCount).isValid);
+export function getPlayableCards(
+  hand: Card[],
+  topCard: Card,
+  wishSuit: CardSuit | null,
+  drawChainCount: number = 0,
+  openingFreePlay: boolean = false,
+): Card[] {
+  return hand.filter((card) => canPlayCard(card, topCard, wishSuit, drawChainCount, openingFreePlay).isValid);
 }
 
 // ============================================================================
@@ -239,13 +251,20 @@ export function isGameOver(players: GameState["players"]): boolean {
  * Gets the loser of a round (player with cards remaining)
  * Note: This function is misnamed - it returns the LOSER, not the winner
  */
-export function getRoundWinner(players: GameState["players"]): number | null {
+export function getRoundLoser(players: GameState["players"]): number | null {
   // The "winner" (actually loser) is the player who still has cards
   const playersWithCards = players.filter((p) => !p.isEliminated && p.hand.length > 0);
   if (playersWithCards.length === 1) {
     return playersWithCards[0].id;
   }
   return null;
+}
+
+/**
+ * @deprecated Use getRoundLoser instead.
+ */
+export function getRoundWinner(players: GameState["players"]): number | null {
+  return getRoundLoser(players);
 }
 
 /**

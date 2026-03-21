@@ -949,7 +949,8 @@ async function executeBotTurn(io: SocketIOServer, roomId: number) {
         currentPlayer.hand,
         topCard,
         state.currentWishSuit,
-        state.drawChainCount
+        state.drawChainCount,
+        state.openingFreePlay
       );
 
       let action: GameAction;

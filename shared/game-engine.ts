@@ -8,7 +8,7 @@ import {
   getInitialCardCount,
   isRoundOver,
   isGameOver,
-  getRoundWinner,
+  getRoundLoser,
   getGameWinner,
   getNextPlayerIndex,
   getNextActivePlayerIndex,
@@ -86,7 +86,11 @@ export function startNewRound(state: GameState): GameState {
   // Deal cards to players based on their loss points
   const players = newState.players.map((player) => {
     if (player.isEliminated) {
-      return player;
+      return {
+        ...player,
+        hand: [],
+        isReady: false,
+      };
     }
 
     const cardCount = getInitialCardCount(player.lossPoints);
@@ -119,34 +123,11 @@ export function startNewRound(state: GameState): GameState {
   newState.currentWishSuit = null;
   newState.drawChainCount = 0;
   newState.openingFreePlay = false;
+  newState.skipNextPlayer = false;
   
   // REGEL: Sonderkarten als Startkarte behandeln
   const startCard = firstCard[0];
-  if (startCard) {
-    if (startCard.rank === "ass") {
-      // REGEL: Ass als Startkarte → erster Spieler setzt aus
-      newState.skipNextPlayer = true;
-    } else if (startCard.rank === "bube") {
-      // REGEL: Unter als Startkarte → freier Eröffnungszug (jede Karte erlaubt)
-      // Wunschfarbe bleibt explizit leer.
-      newState.currentWishSuit = null;
-      newState.skipNextPlayer = false;
-      newState.openingFreePlay = true;
-    } else if (startCard.rank === "7") {
-      // REGEL: 7 als Startkarte → Ziehkette startet
-      newState.drawChainCount = 2;
-      newState.skipNextPlayer = false;
-    } else if (startCard.id === "schellen-8") {
-      // REGEL: Schellen-8 als Startkarte → Richtung umkehren + erster Spieler darf beliebige Karte legen
-      newState.direction = "counterclockwise";
-      newState.skipNextPlayer = false;
-      newState.openingFreePlay = true;
-    } else {
-      newState.skipNextPlayer = false;
-    }
-  } else {
-    newState.skipNextPlayer = false;
-  }
+  applyOpeningCardEffects(newState, startCard);
   
   newState.phase = "playing";
   
@@ -167,6 +148,41 @@ export function startNewRound(state: GameState): GameState {
   }
 
   return newState;
+}
+
+/**
+ * Applies deterministic opening-card effects at round start.
+ * The function mutates the provided state object.
+ */
+export function applyOpeningCardEffects(state: GameState, startCard?: Card): void {
+  if (!startCard) return;
+
+  if (startCard.rank === "ass") {
+    // REGEL: Ass als Startkarte -> der erste Spieler wird sofort uebersprungen.
+    const directionStep = state.direction === "clockwise" ? 1 : -1;
+    state.currentPlayerIndex = getNextActivePlayerIndex(state.players, state.currentPlayerIndex, directionStep, 1);
+    state.skipNextPlayer = false;
+    return;
+  }
+
+  if (startCard.rank === "bube") {
+    // Unter als Startkarte: freier erster Zug, keine aktive Wunschfarbe.
+    state.currentWishSuit = null;
+    state.openingFreePlay = true;
+    return;
+  }
+
+  if (startCard.rank === "7") {
+    // Ziehkette startet direkt mit +2.
+    state.drawChainCount = 2;
+    return;
+  }
+
+  if (startCard.id === "schellen-8") {
+    // Richtung wird sofort umgedreht, erster Zug bleibt frei.
+    state.direction = "counterclockwise";
+    state.openingFreePlay = true;
+  }
 }
 
 // ============================================================================
@@ -452,10 +468,13 @@ function abortRoundWithCollectivePenalty(state: GameState): GameState {
   const newPlayers = newState.players.map((player) => {
     if (lossPoints[player.id]) {
       const newLossPoints = player.lossPoints + lossPoints[player.id];
+      const eliminated = isPlayerEliminated(newLossPoints, totalPlayerCount);
       return {
         ...player,
         lossPoints: newLossPoints,
-        isEliminated: isPlayerEliminated(newLossPoints, totalPlayerCount),
+        isEliminated: eliminated,
+        hand: eliminated ? [] : player.hand,
+        isReady: eliminated ? false : player.isReady,
       };
     }
     return player;
@@ -475,8 +494,8 @@ function abortRoundWithCollectivePenalty(state: GameState): GameState {
  * Handles round end (regular case: one player has no cards left)
  */
 function handleRoundEnd(state: GameState): GameState {
-  const winnerId = getRoundWinner(state.players);
-  if (!winnerId) {
+  const loserId = getRoundLoser(state.players);
+  if (!loserId) {
     return state;
   }
 
@@ -484,17 +503,20 @@ function handleRoundEnd(state: GameState): GameState {
   newState.phase = "round_end";
 
   // Calculate loss points: Nur der Verlierer bekommt +1
-  const lossPoints = calculateRoundLossPoints(newState.players, winnerId);
+  const lossPoints = calculateRoundLossPoints(newState.players, loserId);
 
   // Update player loss points and check for elimination
   const totalPlayerCount = newState.players.length;
   const newPlayers = newState.players.map((player) => {
     if (lossPoints[player.id]) {
       const newLossPoints = player.lossPoints + lossPoints[player.id];
+      const eliminated = isPlayerEliminated(newLossPoints, totalPlayerCount);
       return {
         ...player,
         lossPoints: newLossPoints,
-        isEliminated: isPlayerEliminated(newLossPoints, totalPlayerCount),
+        isEliminated: eliminated,
+        hand: eliminated ? [] : player.hand,
+        isReady: eliminated ? false : player.isReady,
       };
     }
     return player;
