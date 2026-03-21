@@ -118,6 +118,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const lastServerErrorRef = useRef<{ message: string; at: number }>({ message: "", at: 0 });
   const hasEverConnectedRef = useRef(false);
   const lastConnectErrorRef = useRef<{ message: string; at: number }>({ message: "", at: 0 });
+  const lastAvatarLogKeyRef = useRef("");
   const joinInFlightRef = useRef<JoinInFlight | null>(null);
   const lastJoinEmitRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
   const reconnectInFlightRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
@@ -434,6 +435,24 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         recoverAttemptRef.current = 0;
         recoverStartedAtRef.current = 0;
         recoverBlockedUntilRef.current = 0;
+        if (__DEV__) {
+          const avatarKey = `${state.roomId}:${state.players
+            .map((p) => `${p.userId}:${p.avatarUrl ?? "-"}`)
+            .join("|")}`;
+          if (avatarKey !== lastAvatarLogKeyRef.current) {
+            lastAvatarLogKeyRef.current = avatarKey;
+            console.log("[socket] avatar payload", {
+              roomId: state.roomId,
+              players: state.players.map((p) => ({
+                userId: p.userId,
+                username: p.username,
+                hasAvatarUrl: Boolean(p.avatarUrl),
+                avatarUrl: p.avatarUrl ?? null,
+                isBot: p.userId < 0,
+              })),
+            });
+          }
+        }
         setGameState(state);
         // Self-heal: if local user is missing from room state, request a targeted rejoin.
         void (async () => {

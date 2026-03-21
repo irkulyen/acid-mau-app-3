@@ -182,8 +182,97 @@ function getNextPlayerId(players: Player[]): number {
 async function getUserAvatarUrl(userId: number): Promise<string | undefined> {
   try {
     const profile = await db.getPlayerProfile(userId);
-    return profile?.avatarUrl || undefined;
+    const raw = typeof profile?.avatarUrl === "string" ? profile.avatarUrl.trim() : "";
+    return raw || undefined;
   } catch {
+    return undefined;
+  }
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return raw?.split(",")[0]?.trim() || undefined;
+}
+
+function isPrivateOrLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "[::1]" ||
+    host.endsWith(".local")
+  ) {
+    return true;
+  }
+
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
+    const octets = host.split(".").map((part) => Number(part));
+    if (octets.some((part) => Number.isNaN(part) || part < 0 || part > 255)) return false;
+    if (octets[0] === 10) return true;
+    if (octets[0] === 127) return true;
+    if (octets[0] === 192 && octets[1] === 168) return true;
+    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+  }
+
+  if (host.startsWith("fc") || host.startsWith("fd")) return true;
+  return false;
+}
+
+function toOrigin(candidate: string | undefined): string | undefined {
+  if (!candidate) return undefined;
+  const trimmed = candidate.trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function getSocketPublicOrigin(socket: Socket): string | undefined {
+  const envOrigin = toOrigin(ENV.publicBaseUrl || ENV.oAuthServerUrl);
+  if (envOrigin) return envOrigin;
+
+  const forwardedHost = firstHeaderValue(socket.handshake.headers["x-forwarded-host"]);
+  const host = firstHeaderValue(socket.handshake.headers.host);
+  const selectedHost = forwardedHost || host;
+  if (!selectedHost) return undefined;
+  const forwardedProto = firstHeaderValue(socket.handshake.headers["x-forwarded-proto"]);
+  const proto = forwardedProto || (ENV.isProduction ? "https" : "http");
+  return `${proto}://${selectedHost}`;
+}
+
+function normalizeAvatarUrlForClient(avatarUrl: string | undefined, targetOrigin: string | undefined): string | undefined {
+  if (!avatarUrl) return undefined;
+  const raw = avatarUrl.trim();
+  if (!raw) return undefined;
+  if (raw.startsWith("data:image/")) return raw;
+
+  const normalizedOrigin = toOrigin(targetOrigin);
+
+  if (raw.startsWith("/")) {
+    return normalizedOrigin ? `${normalizedOrigin}${raw}` : raw;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return undefined;
+    }
+    if (
+      normalizedOrigin &&
+      isPrivateOrLoopbackHost(parsed.hostname) &&
+      parsed.pathname.startsWith("/uploads/")
+    ) {
+      return `${normalizedOrigin}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+    return raw;
+  } catch {
+    if (normalizedOrigin && /^uploads\//i.test(raw)) {
+      return `${normalizedOrigin}/${raw.replace(/^\/+/, "")}`;
+    }
     return undefined;
   }
 }
@@ -1289,7 +1378,7 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
  * - Other players' hands: replaced with dummy cards (preserves hand.length)
  * - Deck: replaced with dummy cards (preserves deck.length)
  */
-function filterStateForPlayer(state: GameState, userId: number): GameState {
+function filterStateForPlayer(state: GameState, userId: number, targetOrigin?: string): GameState {
   const filtered: GameState = {
     ...state,
     playableCardIds: [],
@@ -1297,11 +1386,16 @@ function filterStateForPlayer(state: GameState, userId: number): GameState {
     deck: state.deck.map(() => ({ suit: "schellen" as const, rank: "7" as const, id: "hidden" })),
     // Filter player hands: only show own cards
     players: state.players.map((p) => {
+      const normalizedAvatarUrl = normalizeAvatarUrlForClient(p.avatarUrl, targetOrigin);
       if (p.userId === userId) {
-        return p; // Own hand: full data
+        return {
+          ...p,
+          avatarUrl: normalizedAvatarUrl,
+        }; // Own hand: full data
       }
       return {
         ...p,
+        avatarUrl: normalizedAvatarUrl,
         hand: p.hand.map(() => ({ suit: "schellen" as const, rank: "7" as const, id: "hidden" })),
       };
     }),
@@ -1486,10 +1580,10 @@ function broadcastFilteredState(io: SocketIOServer, roomId: number, state: GameS
 
     if (userId !== undefined) {
       // Send filtered state for this specific player
-      targetSocket.emit("game-state-update", filterStateForPlayer(state, userId));
+      targetSocket.emit("game-state-update", filterStateForPlayer(state, userId, getSocketPublicOrigin(targetSocket)));
     } else {
       // Fallback: send state with all hands hidden (spectator/unknown)
-      targetSocket.emit("game-state-update", filterStateForPlayer(state, -999));
+      targetSocket.emit("game-state-update", filterStateForPlayer(state, -999, getSocketPublicOrigin(targetSocket)));
     }
   }
 }
@@ -1696,6 +1790,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           const requestedRoomId = parsePositiveInt(data.roomId);
           const requestedPlayerId = parsePositiveInt(data.playerId);
           const requestedRoomCode = normalizeRoomCode(data.roomCode);
+          const requestedUsername = sanitizeUsername(data.username);
 
           console.log(
             `[socket] reconnect-room request userId=${userId} socketId=${socket.id} roomCode=${requestedRoomCode ?? "-"} roomId=${requestedRoomId ?? "-"} playerId=${requestedPlayerId ?? "-"}`,
@@ -1794,6 +1889,41 @@ export function setupGameSocket(httpServer: HTTPServer) {
             return;
           }
 
+          // Keep profile payload deterministic on reconnect (username/avatar can change while app is backgrounded).
+          const rawAvatarUrl = await getUserAvatarUrl(userId);
+          const resolvedAvatarUrl = normalizeAvatarUrlForClient(rawAvatarUrl, getSocketPublicOrigin(socket));
+          const nextUsername = requestedUsername || playerInState.username;
+          const needsProfileSync =
+            playerInState.username !== nextUsername ||
+            (playerInState.avatarUrl ?? undefined) !== (resolvedAvatarUrl ?? undefined);
+          if (needsProfileSync) {
+            gameState = {
+              ...gameState,
+              players: gameState.players.map((player) =>
+                player.userId === userId
+                  ? {
+                      ...player,
+                      username: nextUsername,
+                      avatarUrl: resolvedAvatarUrl,
+                    }
+                  : player,
+              ),
+            };
+            await realtimeStore.setGameState(roomId, gameState);
+            broadcastFilteredState(io, roomId, gameState);
+            console.log(
+              `[socket] reconnect-room profile sync userId=${userId} usernameChanged=${
+                playerInState.username !== nextUsername ? "yes" : "no"
+              } avatarChanged=${(playerInState.avatarUrl ?? undefined) !== (resolvedAvatarUrl ?? undefined) ? "yes" : "no"}`,
+            );
+          } else {
+            console.log(
+              `[socket] reconnect-room avatar userId=${userId} hasRaw=${rawAvatarUrl ? "yes" : "no"} hasResolved=${
+                resolvedAvatarUrl ? "yes" : "no"
+              }`,
+            );
+          }
+
           // Cancel disconnect timeout
           const timeout = disconnectTimeouts.get(userId);
           if (timeout) {
@@ -1816,7 +1946,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           }
 
           // Send filtered game state to reconnected player
-          socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+          socket.emit("game-state-update", filterStateForPlayer(gameState, userId, getSocketPublicOrigin(socket)));
           socket.emit("room-joined", {
             roomId,
             roomCode: gameState.roomCode,
@@ -1907,7 +2037,10 @@ export function setupGameSocket(httpServer: HTTPServer) {
               roomCode: authoritativeSession.state.roomCode,
               maxPlayers: authoritativeSession.state.maxPlayers ?? 5,
             });
-            socket.emit("game-state-update", filterStateForPlayer(authoritativeSession.state, userId));
+            socket.emit(
+              "game-state-update",
+              filterStateForPlayer(authoritativeSession.state, userId, getSocketPublicOrigin(socket)),
+            );
             broadcastFilteredState(io, authoritativeSession.roomId, authoritativeSession.state);
             telemetry.inc("rooms.create_idempotent_reused");
             console.log(
@@ -1943,7 +2076,11 @@ export function setupGameSocket(httpServer: HTTPServer) {
           });
 
           const roomId = newRoom.id;
-          const avatarUrl = await getUserAvatarUrl(userId);
+          const rawAvatarUrl = await getUserAvatarUrl(userId);
+          const avatarUrl = normalizeAvatarUrlForClient(rawAvatarUrl, getSocketPublicOrigin(socket));
+          console.log(
+            `[socket] create-room avatar userId=${userId} hasRaw=${rawAvatarUrl ? "yes" : "no"} hasResolved=${avatarUrl ? "yes" : "no"}`,
+          );
 
           // Erstelle GameState
           const player: Player = {
@@ -1977,7 +2114,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
           // Always send a direct state snapshot to the creator socket.
           // This avoids waiting-screen stalls if room broadcast delivery is delayed.
-          socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+          socket.emit("game-state-update", filterStateForPlayer(gameState, userId, getSocketPublicOrigin(socket)));
           broadcastFilteredState(io, roomId, gameState);
 
           console.log(`[socket] Room created: ${roomCode} (${roomId}) by ${safeUsername} (${userId})`);
@@ -2051,7 +2188,11 @@ export function setupGameSocket(httpServer: HTTPServer) {
             return;
           }
 
-          const avatarUrl = await getUserAvatarUrl(userId);
+          const rawAvatarUrl = await getUserAvatarUrl(userId);
+          const avatarUrl = normalizeAvatarUrlForClient(rawAvatarUrl, getSocketPublicOrigin(socket));
+          console.log(
+            `[socket] join-room avatar userId=${userId} hasRaw=${rawAvatarUrl ? "yes" : "no"} hasResolved=${avatarUrl ? "yes" : "no"}`,
+          );
           const joinResult = await withRoomMutation(roomId, async () => {
             const pendingTimeout = disconnectTimeouts.get(userId);
             if (pendingTimeout) {
@@ -2160,7 +2301,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           }
           // Always send a direct state snapshot to the joining socket.
           // This avoids waiting-screen stalls if room broadcast delivery is delayed.
-          socket.emit("game-state-update", filterStateForPlayer(gameState, userId));
+          socket.emit("game-state-update", filterStateForPlayer(gameState, userId, getSocketPublicOrigin(socket)));
           socket.emit("room-joined", {
             roomId,
             roomCode,
@@ -2317,7 +2458,10 @@ export function setupGameSocket(httpServer: HTTPServer) {
           if (result.preparation) {
             socket.emit("game-preparation", result.preparation);
           }
-          socket.emit("game-state-update", filterStateForPlayer(result.currentState, authenticatedUserId));
+          socket.emit(
+            "game-state-update",
+            filterStateForPlayer(result.currentState, authenticatedUserId, getSocketPublicOrigin(socket)),
+          );
           return;
         }
 

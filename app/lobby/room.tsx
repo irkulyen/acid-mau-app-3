@@ -10,6 +10,7 @@ import { GamePreparationScreen, type PreparationDrawData } from "@/components/ga
 import { getBotProfileByName } from "@/lib/bot-profiles";
 import { trpc } from "@/lib/trpc";
 import { getRoomFlowStatus, toFriendlyRoomError } from "@/lib/ux-status";
+import { resolveAvatarUrl } from "@/lib/avatar-url";
 
 export default function RoomScreen() {
   const router = useRouter();
@@ -328,7 +329,8 @@ export default function RoomScreen() {
               >
                 {(() => {
                   const botImage = player.userId < 0 ? getBotProfileByName(player.username)?.imagePath : undefined;
-                  const avatarSource = player.avatarUrl ? { uri: player.avatarUrl } : botImage;
+                  const resolvedAvatarUrl = resolveAvatarUrl(player.avatarUrl);
+                  const avatarSource = resolvedAvatarUrl ? { uri: resolvedAvatarUrl } : botImage;
                   if (avatarSource) {
                     return (
                       <Image

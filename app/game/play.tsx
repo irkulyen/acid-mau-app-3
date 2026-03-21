@@ -1,5 +1,5 @@
 import { Touchable } from "@/components/ui/button";
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { View, Text, ScrollView, Alert, Modal, ImageBackground, Pressable, TextInput, KeyboardAvoidingView, Platform, FlatList, Vibration, useWindowDimensions } from "react-native";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
@@ -38,6 +38,7 @@ import {
 } from "@/lib/game-fx-performance-budget";
 import { getGameFxUiPlan } from "@/lib/game-fx-ui-plan";
 import { getGamePriorityPills, getPlayableCount, shouldShowSecondaryGameBanner } from "@/lib/ux-status";
+import { resolveAvatarUrl } from "@/lib/avatar-url";
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 /** Mini card backs for opponent hand display */
@@ -99,21 +100,40 @@ function PlayerAvatar({ name, avatarUrl, active, isBot = false, size = 56 }: { n
   const botProfile = isBot ? getBotProfileByName(name) : undefined;
   const initial = (botProfile?.fallbackInitial || (name || "?").charAt(0)).toUpperCase();
   const [remoteAvatarFailed, setRemoteAvatarFailed] = useState(false);
+  const resolvedAvatarUrl = useMemo(() => resolveAvatarUrl(avatarUrl), [avatarUrl]);
   const frameSize = Math.max(44, Math.min(64, size));
   const imageSize = Math.max(40, frameSize - 8);
   const avatarRadius = frameSize / 2;
 
   useEffect(() => {
     setRemoteAvatarFailed(false);
-  }, [avatarUrl, name, isBot]);
+  }, [resolvedAvatarUrl, name, isBot]);
+
+  useEffect(() => {
+    if (!__DEV__) return;
+    if (!avatarUrl) return;
+    console.log("[avatar] player avatar source", {
+      player: name,
+      rawAvatarUrl: avatarUrl,
+      resolvedAvatarUrl: resolvedAvatarUrl ?? null,
+      isBot,
+    });
+  }, [avatarUrl, resolvedAvatarUrl, name, isBot]);
 
   const handleAvatarError = useCallback(() => {
+    if (__DEV__) {
+      console.warn("[avatar] image load failed", {
+        player: name,
+        avatarUrl: resolvedAvatarUrl ?? avatarUrl ?? null,
+        isBot,
+      });
+    }
     setRemoteAvatarFailed(true);
-  }, []);
+  }, [name, resolvedAvatarUrl, avatarUrl, isBot]);
 
   const source =
-    avatarUrl && !remoteAvatarFailed
-      ? { uri: avatarUrl }
+    resolvedAvatarUrl && !remoteAvatarFailed
+      ? { uri: resolvedAvatarUrl }
       : botProfile?.imagePath;
 
   return (
