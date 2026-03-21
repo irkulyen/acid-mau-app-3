@@ -122,6 +122,45 @@ describe("Game Engine - Critical Multiplayer Scenarios", () => {
       // Dealer should be at index 2 (skipped 1)
       expect(state.dealerIndex).toBe(2);
     });
+
+    it("should handle 12 consecutive round transitions without index freeze", () => {
+      const players = createTestPlayers(4);
+      let state = createGameState(1, "TEST", players, 1);
+      state = startGame(state);
+
+      let transitions = 0;
+      let lastRoundNumber = state.roundNumber;
+
+      for (let i = 0; i < 12; i++) {
+        if (state.phase === "game_end") break;
+
+        state = {
+          ...state,
+          phase: "round_end",
+          players: state.players.map((player) =>
+            player.isEliminated ? player : { ...player, isReady: true },
+          ),
+        };
+
+        const actor = state.players.find((player) => !player.isEliminated);
+        expect(actor).toBeDefined();
+
+        state = processAction(state, { type: "NEXT_ROUND" }, actor!.id);
+        transitions += 1;
+
+        if (state.phase !== "game_end") {
+          expect(state.phase).toBe("playing");
+          expect(state.roundNumber).toBeGreaterThan(lastRoundNumber);
+          expect(state.currentPlayerIndex).toBeGreaterThanOrEqual(0);
+          expect(state.currentPlayerIndex).toBeLessThan(state.players.length);
+          expect(state.dealerIndex).toBeGreaterThanOrEqual(0);
+          expect(state.dealerIndex).toBeLessThan(state.players.length);
+          lastRoundNumber = state.roundNumber;
+        }
+      }
+
+      expect(transitions).toBeGreaterThanOrEqual(10);
+    });
   });
 
   describe("2. Index Safety on Player Leave", () => {
