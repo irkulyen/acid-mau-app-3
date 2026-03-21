@@ -17,7 +17,9 @@ if [[ ! -f ".env" ]]; then
 fi
 
 echo "[expo:external] Stopping stale Expo/Metro/ngrok processes..."
-pkill -9 -f "expo start|node .*expo|metro|@expo/cli|ngrok" >/dev/null 2>&1 || true
+if [[ -x "$ROOT_DIR/scripts/stop-expo-external.sh" ]]; then
+  "$ROOT_DIR/scripts/stop-expo-external.sh" >/dev/null 2>&1 || true
+fi
 sleep 1
 
 rm -f "$PID_FILE"
