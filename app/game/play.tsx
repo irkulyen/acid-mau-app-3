@@ -21,6 +21,14 @@ import { useGameSounds } from "@/hooks/use-game-sounds";
 import { getBotProfileByName } from "@/lib/bot-profiles";
 import { hashString, pickBySeed } from "@/lib/deterministic";
 import { getGameFxCueSpec } from "@/lib/game-fx-cue-spec";
+import {
+  getQueueLagMs,
+  getStartDriftMs,
+  shouldWarnQueueDepth,
+  shouldWarnQueueLag,
+  shouldWarnStartDrift,
+} from "@/lib/game-fx-performance-budget";
+import { getGameFxUiPlan } from "@/lib/game-fx-ui-plan";
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 /** Mini card backs for opponent hand display */
@@ -248,6 +256,11 @@ export default function GamePlayScreen() {
   const lastRecoverAttemptAtRef = useRef(0);
   const [loaderMessage, setLoaderMessage] = useState("Lade Spiel...");
   const lastTurnCueRef = useRef<string>("");
+  const gameFxPerfWarnRef = useRef<{ depthAt: number; lagAt: number; driftAt: number }>({
+    depthAt: 0,
+    lagAt: 0,
+    driftAt: 0,
+  });
 
   // Pulsing glow animation for active player
   const glowOpacity = useSharedValue(0.4);
@@ -682,6 +695,16 @@ export default function GamePlayScreen() {
 
     const start = () => {
       gameFxTimerRef.current = null;
+      const startDriftMs = getStartDriftMs(next);
+      if (shouldWarnStartDrift(startDriftMs)) {
+        const warnRef = gameFxPerfWarnRef.current;
+        if (Date.now() - warnRef.driftAt > 1200) {
+          warnRef.driftAt = Date.now();
+          console.warn(
+            `[game-fx] start drift high sequence=${next.sequence} type=${next.type} driftMs=${startDriftMs}`,
+          );
+        }
+      }
       activeGameFxRef.current = next;
       switch (next.type) {
         case "card_play": {
@@ -783,11 +806,14 @@ export default function GamePlayScreen() {
           return;
         }
         case "elimination": {
-          const cue = getGameFxCueSpec(next);
-          playElimination();
-          const label = next.eliminatedPlayerName || next.playerName || "Spieler";
-          showMomentBanner(`💀 ${label} ist eliminiert`, 2100);
-          scheduleGameFxCompletion(next.id, cue.completionMs);
+          const plan = getGameFxUiPlan(next);
+          if (plan?.sound === "elimination") {
+            playElimination();
+          }
+          if (plan?.banner) {
+            showMomentBanner(plan.banner, plan.bannerDurationMs);
+          }
+          scheduleGameFxCompletion(next.id, plan?.completionMs ?? getGameFxCueSpec(next).completionMs);
           return;
         }
         case "round_transition": {
@@ -800,11 +826,14 @@ export default function GamePlayScreen() {
           return;
         }
         case "match_result": {
-          const cue = getGameFxCueSpec(next);
-          const winnerName = next.winnerPlayerName || next.playerName || "Gewinner";
-          showMomentBanner(`🏆 ${winnerName} gewinnt das Match`, 2600);
-          playVictory();
-          scheduleGameFxCompletion(next.id, cue.completionMs);
+          const plan = getGameFxUiPlan(next);
+          if (plan?.banner) {
+            showMomentBanner(plan.banner, plan.bannerDurationMs);
+          }
+          if (plan?.sound === "victory") {
+            playVictory();
+          }
+          scheduleGameFxCompletion(next.id, plan?.completionMs ?? getGameFxCueSpec(next).completionMs);
           return;
         }
         default: {
@@ -945,6 +974,24 @@ export default function GamePlayScreen() {
         if (a.sequence !== b.sequence) return a.sequence - b.sequence;
         return (a.startAt ?? 0) - (b.startAt ?? 0);
       });
+      const queueDepth = gameFxQueueRef.current.length;
+      if (shouldWarnQueueDepth(queueDepth)) {
+        const warnRef = gameFxPerfWarnRef.current;
+        if (now - warnRef.depthAt > 1200) {
+          warnRef.depthAt = now;
+          console.warn(`[game-fx] queue depth high roomId=${event.roomId} depth=${queueDepth}`);
+        }
+      }
+      const queueLagMs = getQueueLagMs(event, now);
+      if (shouldWarnQueueLag(queueLagMs)) {
+        const warnRef = gameFxPerfWarnRef.current;
+        if (now - warnRef.lagAt > 1200) {
+          warnRef.lagAt = now;
+          console.warn(
+            `[game-fx] queue lag high roomId=${event.roomId} sequence=${event.sequence} lagMs=${queueLagMs}`,
+          );
+        }
+      }
       highestQueuedGameFxSequenceRef.current = Math.max(
         highestQueuedGameFxSequenceRef.current,
         event.sequence,

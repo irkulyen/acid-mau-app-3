@@ -13,6 +13,7 @@ import { ENV } from "./_core/env";
 import { createCorsOriginMatcher } from "./_core/cors";
 import { realtimeStore } from "./realtime-store";
 import { telemetry } from "./telemetry";
+import { detectStateTransitionFx } from "./game-fx-transitions";
 
 const roomSockets = new Map<number, Set<string>>();
 
@@ -722,55 +723,10 @@ function emitStateTransitionFx(
   newState: GameState,
   actorPlayerId?: number,
 ) {
-  for (const player of newState.players) {
-    const oldPlayer = oldState.players.find((entry) => entry.id === player.id);
-    if (!oldPlayer) continue;
-    if (!oldPlayer.isEliminated && player.isEliminated) {
-      emitGameFx(io, roomId, {
-        type: "elimination",
-        playerId: player.id,
-        userId: player.userId,
-        playerName: player.username,
-        eliminatedUserId: player.userId,
-        eliminatedPlayerName: player.username,
-      }, 220);
-    }
-  }
-
-  if (oldState.phase === "round_end" && newState.phase === "playing" && newState.roundNumber > oldState.roundNumber) {
-    emitGameFx(io, roomId, {
-      type: "round_transition",
-      roundNumber: newState.roundNumber,
-      playerId: actorPlayerId,
-    }, 240);
-  }
-
-  if (
-    oldState.phase === "playing" &&
-    newState.phase === "playing" &&
-    oldState.currentPlayerIndex !== newState.currentPlayerIndex
-  ) {
-    const turnPlayer = newState.players[newState.currentPlayerIndex];
-    emitGameFx(io, roomId, {
-      type: "turn_transition",
-      roundNumber: newState.roundNumber,
-      playerId: turnPlayer?.id,
-      userId: turnPlayer?.userId,
-      playerName: turnPlayer?.username,
-      startAt: Date.now() + 170,
-    }, 100);
-  }
-
-  if (oldState.phase !== "game_end" && newState.phase === "game_end") {
-    const winner = newState.players.find((player) => !player.isEliminated);
-    emitGameFx(io, roomId, {
-      type: "match_result",
-      roundNumber: newState.roundNumber,
-      winnerUserId: winner?.userId,
-      winnerPlayerName: winner?.username,
-      playerId: winner?.id,
-      playerName: winner?.username,
-    }, 240);
+  const events = detectStateTransitionFx(oldState, newState, actorPlayerId);
+  for (const event of events) {
+    const { minGapMs, ...payload } = event;
+    emitGameFx(io, roomId, payload, minGapMs);
   }
 }
 

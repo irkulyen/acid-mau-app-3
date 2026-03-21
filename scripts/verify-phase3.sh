@@ -20,12 +20,17 @@ echo "[verify-phase3] targeted game-feel gates"
 "${PNPM_CMD[@]}" test -- \
   __tests__/game-sound-policy.test.ts \
   __tests__/game-sound-assets.test.ts \
+  __tests__/game-fx-performance-budget.test.ts \
   __tests__/blackbird-presentation.test.ts \
   __tests__/blackbird-motion-profile.test.ts \
   __tests__/game-fx-cue-spec.test.ts \
-  __tests__/phase3-interaction-hierarchy.test.ts
+  __tests__/phase3-interaction-hierarchy.test.ts \
+  __tests__/game-fx-ui-plan.test.ts \
+  tests/game-fx-transitions.test.ts
 
 echo "[verify-phase3] realtime multiplayer sync gates"
 "${PNPM_CMD[@]}" test -- tests/room-system.test.ts
+
+echo "[verify-phase3] device runbook: docs/phase3-device-qa-runbook.md"
 
 echo "[verify-phase3] PASS"
