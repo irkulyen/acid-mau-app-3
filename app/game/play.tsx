@@ -156,6 +156,7 @@ export default function GamePlayScreen() {
   const blackbirdVisibilityGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gameFxQueueRef = useRef<GameFxEvent[]>([]);
   const pendingGameFxRef = useRef<GameFxEvent[]>([]);
+  const pendingLegacyBlackbirdEventsRef = useRef<BlackbirdEvent[]>([]);
   const gameFxTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gameFxCompletionTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const activeGameFxRef = useRef<GameFxEvent | null>(null);
@@ -313,6 +314,7 @@ export default function GamePlayScreen() {
       reactionExpiryTimersRef.current.clear();
       gameFxCompletionTimersRef.current.forEach(clearTimeout);
       gameFxCompletionTimersRef.current = [];
+      pendingLegacyBlackbirdEventsRef.current = [];
     };
   }, []);
 
@@ -1043,6 +1045,7 @@ export default function GamePlayScreen() {
       hasUnifiedGameFxRef.current = true;
       // Drop legacy queue to avoid race duplicates between legacy and unified streams.
       blackbirdQueueRef.current = [];
+      pendingLegacyBlackbirdEventsRef.current = [];
       cardPlayFxQueueRef.current = [];
       if (cardPlayFxTimerRef.current) {
         clearTimeout(cardPlayFxTimerRef.current);
@@ -1181,6 +1184,7 @@ export default function GamePlayScreen() {
     lastReactionAmselCueAtRef.current = 0;
     pendingManualAmselEventsRef.current = [];
     pendingReactionEventsRef.current = [];
+    pendingLegacyBlackbirdEventsRef.current = [];
     seenGameFxRef.current.clear();
     lastProcessedGameFxSequenceRef.current = 0;
     highestQueuedGameFxSequenceRef.current = 0;
@@ -1246,6 +1250,31 @@ export default function GamePlayScreen() {
     });
     flush.forEach((event) => enqueueUnifiedGameFx(event));
   }, [gameState?.roomId, enqueueUnifiedGameFx]);
+
+  useEffect(() => {
+    const roomId = gameState?.roomId;
+    if (!roomId) return;
+    if (hasUnifiedGameFxRef.current) {
+      pendingLegacyBlackbirdEventsRef.current = [];
+      return;
+    }
+    if (pendingLegacyBlackbirdEventsRef.current.length === 0) return;
+
+    const now = Date.now();
+    const flush = pendingLegacyBlackbirdEventsRef.current
+      .filter((event) => now - (event.startAt ?? now) <= 15_000)
+      .sort((a, b) => (a.startAt ?? 0) - (b.startAt ?? 0));
+    pendingLegacyBlackbirdEventsRef.current = [];
+    if (flush.length === 0) return;
+
+    for (const event of flush) {
+      if (!shouldProcessBlackbirdEvent(event)) continue;
+      blackbirdQueueRef.current.push(event);
+    }
+    if (!showBlackbirdRef.current && blackbirdQueueRef.current.length > 0) {
+      processNextBlackbird();
+    }
+  }, [gameState?.roomId, processNextBlackbird, shouldProcessBlackbirdEvent]);
 
   const consumeReactionEvent = useCallback((event: ReactionEvent) => {
     const now = Date.now();
@@ -1431,6 +1460,12 @@ export default function GamePlayScreen() {
     });
     setOnBlackbirdEvent((event: BlackbirdEvent) => {
       if (hasUnifiedGameFxRef.current) return;
+      const currentState = gameStateRef.current;
+      if (!currentState) {
+        pendingLegacyBlackbirdEventsRef.current.push(event);
+        pendingLegacyBlackbirdEventsRef.current = pendingLegacyBlackbirdEventsRef.current.slice(-60);
+        return;
+      }
       if (!shouldProcessBlackbirdEvent(event)) return;
       blackbirdQueueRef.current.push(event);
       if (!showBlackbirdRef.current) {
@@ -2811,8 +2846,8 @@ export default function GamePlayScreen() {
                   pointerEvents="none"
                   style={{
                     position: "absolute",
-                    top: -24,
-                    alignSelf: "center",
+                    top: 8,
+                    right: 12,
                     zIndex: 30,
                     borderRadius: 999,
                     backgroundColor: "rgba(6, 16, 24, 0.95)",
@@ -2823,6 +2858,7 @@ export default function GamePlayScreen() {
                     flexDirection: "row",
                     alignItems: "center",
                     gap: 5,
+                    maxWidth: 170,
                   }}
                 >
                   <Text style={{ fontSize: 16 }}>{currentPlayerReaction.emoji}</Text>
@@ -2855,8 +2891,8 @@ export default function GamePlayScreen() {
                     pointerEvents="none"
                     style={{
                       position: "absolute",
-                      top: -42,
-                      alignSelf: "center",
+                      top: 36,
+                      right: 12,
                       zIndex: 32,
                       borderRadius: 999,
                       backgroundColor: "rgba(43, 21, 10, 0.95)",
@@ -2864,6 +2900,7 @@ export default function GamePlayScreen() {
                       borderColor: "rgba(255, 193, 107, 0.84)",
                       paddingHorizontal: 10,
                       paddingVertical: 4,
+                      maxWidth: 185,
                     }}
                   >
                     <Text style={{ color: "#FFE9C8", fontSize: 10, fontWeight: "900" }} numberOfLines={1}>
@@ -2893,11 +2930,8 @@ export default function GamePlayScreen() {
               <View className="flex-row justify-between items-center mb-2">
                 <View className="flex-row items-center gap-2">
                   <PlayerAvatar name={currentPlayer.username} avatarUrl={currentPlayer.avatarUrl} active={isMyTurn} isBot={Boolean(currentPlayer.userId != null && currentPlayer.userId < 0)} size={48} />
-                  {isMyTurn && (
-                    <Animated.View style={[{ width: 8, height: 8, borderRadius: 4, backgroundColor: DESIGN.accentSecondary }, pulseStyle]} />
-                  )}
-                  <Text style={{ color: isMyTurn ? DESIGN.accentSecondary : DESIGN.textMain, fontWeight: "800", fontSize: 14 }}>
-                    {isMyTurn ? "DEIN ZUG" : "Deine Hand"}
+                  <Text style={{ color: DESIGN.textMain, fontWeight: "800", fontSize: 14 }}>
+                    Deine Hand
                   </Text>
                 </View>
                 <View style={{ alignItems: "flex-end" }}>
@@ -2909,11 +2943,6 @@ export default function GamePlayScreen() {
                   </Text>
                 </View>
               </View>
-              {!isMyTurn && (
-                <Text style={{ color: DESIGN.accentPrimary, fontSize: 12, marginBottom: 4, fontWeight: "700" }}>
-                  Warte auf deinen Zug
-                </Text>
-              )}
               {isMyTurn && (
                 <View
                   style={{
@@ -2967,50 +2996,15 @@ export default function GamePlayScreen() {
                           shadowRadius: isPlayable ? 10 : 0,
                           elevation: isPlayable ? 6 : 0,
                           opacity: disabledByServerHint ? (hasNoPlayableCards ? 0.34 : 0.43) : (isMyTurn ? 1 : 0.92),
+                          borderWidth: isMyTurn ? 1.2 : 0,
+                          borderColor: isPlayable
+                            ? "rgba(90,230,160,0.9)"
+                            : disabledByServerHint
+                              ? "rgba(255,115,115,0.52)"
+                              : "transparent",
+                          borderRadius: 12,
                         }}
                       >
-                        {isPlayable && (
-                          <View
-                            pointerEvents="none"
-                            style={{
-                              position: "absolute",
-                              top: -18,
-                              alignSelf: "center",
-                              zIndex: 30,
-                              borderRadius: 999,
-                              borderWidth: 1,
-                              borderColor: "rgba(90,230,160,0.95)",
-                              backgroundColor: "rgba(26,110,70,0.9)",
-                              paddingHorizontal: 7,
-                              paddingVertical: 2,
-                            }}
-                          >
-                            <Text style={{ color: "#EAFFF5", fontSize: isCompactHeight ? 10 : 9, fontWeight: "900", letterSpacing: isCompactHeight ? 0 : 0.4 }}>
-                              {isCompactHeight ? "✓" : "SPIELBAR"}
-                            </Text>
-                          </View>
-                        )}
-                        {disabledByServerHint && (
-                          <View
-                            pointerEvents="none"
-                            style={{
-                              position: "absolute",
-                              top: 2,
-                              right: 2,
-                              zIndex: 25,
-                              width: 16,
-                              height: 16,
-                              borderRadius: 8,
-                              backgroundColor: "rgba(40, 12, 12, 0.88)",
-                              borderWidth: 1,
-                              borderColor: "rgba(255,115,115,0.8)",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
-                          >
-                            <Text style={{ color: "#FFB4B4", fontWeight: "900", fontSize: 10 }}>×</Text>
-                          </View>
-                        )}
                         <PlayingCard
                           card={card}
                           onPress={() => handlePlayCard(card)}
