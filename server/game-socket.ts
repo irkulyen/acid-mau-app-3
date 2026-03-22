@@ -20,6 +20,7 @@ import { realtimeStore } from "./realtime-store";
 import { telemetry } from "./telemetry";
 import { detectStateTransitionFx } from "./game-fx-transitions";
 import { getSocketPublicOrigin, normalizeAvatarUrlForClient } from "./socket-public-origin";
+import { createRoomCleanupHelpers } from "./room-cleanup-helpers";
 import { createRoomPresenceHelpers } from "./room-presence-helpers";
 import {
   clearUserRoomMappingIfMatches,
@@ -348,6 +349,26 @@ function clearReactionCooldownForRoom(roomId: number) {
   }
   reactionHistory.delete(roomId);
 }
+
+const {
+  cancelRoomCleanup,
+  scheduleRoomCleanup,
+  handleSocketLeaveRoomTracking,
+  scheduleCleanupForEmptyTrackedRooms,
+} = createRoomCleanupHelpers({
+  roomCleanupTimeouts,
+  roomSockets,
+  botTurnTimeouts,
+  turnTimeouts,
+  seatSelectionFailsafeTimeouts,
+  blackbirdHistory,
+  blackbirdRuntime,
+  gameFxHistory,
+  roomFxSequences,
+  roomFxNextStartAt,
+  disconnectTimeouts,
+  clearReactionCooldownForRoom,
+});
 
 function pushReactionHistory(roomId: number, event: ReactionEvent) {
   const now = Date.now();
@@ -763,14 +784,6 @@ function replayBlackbirdEventsForSocket(socket: Socket, roomId: number) {
   telemetry.inc("blackbird.replayed", replayable.length);
 }
 
-function cancelRoomCleanup(roomId: number) {
-  const timeout = roomCleanupTimeouts.get(roomId);
-  if (timeout) {
-    clearTimeout(timeout);
-    roomCleanupTimeouts.delete(roomId);
-  }
-}
-
 async function withRoomMutation<T>(roomId: number, task: () => Promise<T>): Promise<T> {
   const previous = roomMutationQueues.get(roomId) ?? Promise.resolve();
   let release!: () => void;
@@ -809,60 +822,6 @@ async function withUserMutation<T>(userId: number, task: () => Promise<T>): Prom
       userMutationQueues.delete(userId);
     }
   }
-}
-
-function scheduleRoomCleanup(roomId: number, delayMs = 30 * 60 * 1000) {
-  cancelRoomCleanup(roomId);
-  const timeout = setTimeout(() => {
-    void (async () => {
-    const sockets = roomSockets.get(roomId);
-    if (sockets && sockets.size > 0) return;
-
-    const botTimeout = botTurnTimeouts.get(roomId);
-    if (botTimeout) {
-      clearTimeout(botTimeout);
-      botTurnTimeouts.delete(roomId);
-    }
-    const turnTimeout = turnTimeouts.get(roomId);
-    if (turnTimeout) {
-      clearTimeout(turnTimeout);
-      turnTimeouts.delete(roomId);
-    }
-    const seatTimeout = seatSelectionFailsafeTimeouts.get(roomId);
-    if (seatTimeout) {
-      clearTimeout(seatTimeout);
-      seatSelectionFailsafeTimeouts.delete(roomId);
-    }
-
-    await realtimeStore.deleteGameState(roomId);
-    roomSockets.delete(roomId);
-    await realtimeStore.deletePreparation(roomId);
-    blackbirdHistory.delete(roomId);
-    blackbirdRuntime.delete(roomId);
-    gameFxHistory.delete(roomId);
-    roomFxSequences.delete(roomId);
-    roomFxNextStartAt.delete(roomId);
-    clearReactionCooldownForRoom(roomId);
-
-    // Clear room-related user mappings
-    for (const [uid, mappedRoomId] of await realtimeStore.getUserMappings()) {
-      if (mappedRoomId === roomId) {
-        const disconnectTimeout = disconnectTimeouts.get(uid);
-        if (disconnectTimeout) {
-          clearTimeout(disconnectTimeout);
-          disconnectTimeouts.delete(uid);
-        }
-        await realtimeStore.deleteUserRoom(uid);
-      }
-    }
-    roomCleanupTimeouts.delete(roomId);
-    void roomManager.deleteRoom(roomId);
-    console.log(`[socket] Cleaned up inactive room ${roomId}`);
-    telemetry.inc("rooms.cleaned_up");
-    })();
-  }, delayMs);
-
-  roomCleanupTimeouts.set(roomId, timeout);
 }
 
 /**
@@ -2527,14 +2486,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
           socket.leave(`room-${roomId}`);
 
           // Remove socket from tracking
-          const sockets = roomSockets.get(roomId);
-          if (sockets) {
-            sockets.delete(socket.id);
-            if (sockets.size === 0) {
-              roomSockets.delete(roomId);
-              scheduleRoomCleanup(roomId);
-            }
-          }
+          handleSocketLeaveRoomTracking(roomId, socket.id);
 
           // Clean up socket → user mapping
           socketUserMapping.delete(socket.id);
@@ -3061,13 +3013,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
       }
 
       // Clean up empty rooms
-      for (const roomId of disconnectedRoomIds) {
-        const sockets = roomSockets.get(roomId);
-        if (sockets && sockets.size === 0) {
-          console.log(`[socket] No more sockets in room ${roomId}, but keeping gameState for reconnect`);
-          scheduleRoomCleanup(roomId);
-        }
-      }
+      scheduleCleanupForEmptyTrackedRooms(disconnectedRoomIds);
       })();
     });
   });

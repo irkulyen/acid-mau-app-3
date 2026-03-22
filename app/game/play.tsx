@@ -14,6 +14,9 @@ import { DrawChainEscalation, DrawChainShakeWrapper } from "@/components/game/dr
 import { CardFlyAnimation } from "@/components/game/card-fly-animation";
 import { DrawCardAnimation } from "@/components/game/draw-card-animation";
 import { GamePreparationScreen, type PreparationDrawData } from "@/components/game/game-preparation-screen";
+import { MiniCardFan, PlayerAvatar } from "@/components/game/player-rendering";
+import { GameStatusPanel } from "@/components/game/game-status-panel";
+import { RoundEndModal } from "@/components/game/round-end-modal";
 import { useAuth } from "@/lib/auth-provider";
 import {
   useSocket,
@@ -26,7 +29,6 @@ import {
   type ReactionEvent,
 } from "@/lib/socket-provider";
 import { useGameSounds } from "@/hooks/use-game-sounds";
-import { getBotProfileByName } from "@/lib/bot-profiles";
 import { hashString, pickBySeed } from "@/lib/deterministic";
 import { getGameFxCueSpec } from "@/lib/game-fx-cue-spec";
 import {
@@ -38,135 +40,7 @@ import {
 } from "@/lib/game-fx-performance-budget";
 import { getGameFxUiPlan } from "@/lib/game-fx-ui-plan";
 import { getGamePriorityPills, getPlayableCount, shouldShowSecondaryGameBanner } from "@/lib/ux-status";
-import { resolveAvatarUrl } from "@/lib/avatar-url";
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
-
-/** Mini card backs for opponent hand display */
-function MiniCardFan({ count, maxShow = 6, compact = false }: { count: number; maxShow?: number; compact?: boolean }) {
-  const shown = Math.min(count, maxShow);
-  const cardWidth = compact ? 14 : 18;
-  const cardHeight = compact ? 22 : 26;
-  const overlap = compact ? -6 : -8;
-  const fontSize = compact ? 9 : 10;
-  return (
-    <View style={{ flexDirection: "row", marginTop: compact ? 2 : 4 }}>
-      {Array.from({ length: shown }).map((_, i) => (
-        <View
-          key={i}
-          style={{
-            width: cardWidth,
-            height: cardHeight,
-            backgroundColor: "#1a3a5c",
-            borderRadius: 4,
-            borderWidth: 1,
-            borderColor: "#2a5a8c",
-            marginLeft: i === 0 ? 0 : overlap,
-            transform: [{ rotate: `${(i - (shown - 1) / 2) * 5}deg` }],
-          }}
-        >
-          <View
-            style={{
-              flex: 1,
-              margin: 2,
-              borderRadius: 2,
-              borderWidth: 0.5,
-              borderColor: "#3a6a9c",
-              backgroundColor: "#1e4a7a",
-            }}
-          />
-        </View>
-      ))}
-      {count > maxShow && (
-        <View
-          style={{
-            marginLeft: 5,
-            alignSelf: "center",
-            backgroundColor: "rgba(4, 10, 16, 0.82)",
-            borderRadius: 999,
-            borderWidth: 1,
-            borderColor: "rgba(157, 182, 209, 0.55)",
-            paddingHorizontal: 5,
-            paddingVertical: 1,
-          }}
-        >
-          <Text style={{ color: "#E2EAF1", fontSize: fontSize + 1, fontWeight: "800" }}>+{count - maxShow}</Text>
-        </View>
-      )}
-    </View>
-  );
-}
-
-function PlayerAvatar({ name, avatarUrl, active, isBot = false, size = 56 }: { name: string; avatarUrl?: string; active?: boolean; isBot?: boolean; size?: number }) {
-  const botProfile = isBot ? getBotProfileByName(name) : undefined;
-  const initial = (botProfile?.fallbackInitial || (name || "?").charAt(0)).toUpperCase();
-  const [remoteAvatarFailed, setRemoteAvatarFailed] = useState(false);
-  const resolvedAvatarUrl = useMemo(() => resolveAvatarUrl(avatarUrl), [avatarUrl]);
-  const frameSize = Math.max(44, Math.min(64, size));
-  const imageSize = Math.max(40, frameSize - 8);
-  const avatarRadius = frameSize / 2;
-
-  useEffect(() => {
-    setRemoteAvatarFailed(false);
-  }, [resolvedAvatarUrl, name, isBot]);
-
-  useEffect(() => {
-    if (!__DEV__) return;
-    if (!avatarUrl) return;
-    console.log("[avatar] player avatar source", {
-      player: name,
-      rawAvatarUrl: avatarUrl,
-      resolvedAvatarUrl: resolvedAvatarUrl ?? null,
-      isBot,
-    });
-  }, [avatarUrl, resolvedAvatarUrl, name, isBot]);
-
-  const handleAvatarError = useCallback(() => {
-    if (__DEV__) {
-      console.warn("[avatar] image load failed", {
-        player: name,
-        avatarUrl: resolvedAvatarUrl ?? avatarUrl ?? null,
-        isBot,
-      });
-    }
-    setRemoteAvatarFailed(true);
-  }, [name, resolvedAvatarUrl, avatarUrl, isBot]);
-
-  const source =
-    resolvedAvatarUrl && !remoteAvatarFailed
-      ? { uri: resolvedAvatarUrl }
-      : botProfile?.imagePath;
-
-  return (
-    <View
-      style={{
-        width: frameSize,
-        height: frameSize,
-        borderRadius: avatarRadius,
-        overflow: "hidden",
-        borderWidth: 2,
-        borderColor: active ? "rgba(62, 212, 122, 0.9)" : "rgba(255,255,255,0.18)",
-        backgroundColor: "rgba(10, 20, 18, 0.95)",
-        alignItems: "center",
-        justifyContent: "center",
-        shadowColor: active ? "#3ED47A" : "#000",
-        shadowOpacity: active ? 0.36 : 0.14,
-        shadowRadius: active ? 10 : 5,
-        shadowOffset: { width: 0, height: 3 },
-      }}
-    >
-      {source ? (
-        <Image
-          source={source}
-          style={{ width: imageSize, height: imageSize, borderRadius: imageSize / 2 }}
-          contentFit="cover"
-          onError={handleAvatarError}
-        />
-      ) : (
-        <Text style={{ color: "#E8E8E8", fontSize: Math.floor(frameSize * 0.38), fontWeight: "800" }}>{initial}</Text>
-      )}
-    </View>
-  );
-}
 
 const DESIGN = {
   tableBase: "#0B3D2E",
@@ -2104,28 +1978,6 @@ export default function GamePlayScreen() {
   const wishSuitLabel = gameState.currentWishSuit
     ? `${gameState.currentWishSuit === "eichel" ? "🌰 Eichel" : gameState.currentWishSuit === "gruen" ? "🍀 Grün" : gameState.currentWishSuit === "rot" ? "❤️ Rot" : "🔔 Schellen"} oder Unter`
     : "";
-  const pillPalette: Record<string, { bg: string; border: string; text: string }> = {
-    success: {
-      bg: "rgba(26, 110, 70, 0.86)",
-      border: "rgba(90, 230, 160, 0.9)",
-      text: "#E9FFF4",
-    },
-    warning: {
-      bg: "rgba(120, 72, 14, 0.9)",
-      border: "rgba(255, 196, 87, 0.9)",
-      text: "#FFF3D6",
-    },
-    danger: {
-      bg: "rgba(120, 26, 26, 0.9)",
-      border: "rgba(255, 110, 110, 0.9)",
-      text: "#FFE8E8",
-    },
-    neutral: {
-      bg: "rgba(16, 26, 34, 0.9)",
-      border: "rgba(128, 164, 191, 0.65)",
-      text: "#E3EEF7",
-    },
-  };
   const suitIcon: Record<CardSuit, string> = {
     eichel: "🌰",
     gruen: "🍀",
@@ -2516,81 +2368,16 @@ export default function GamePlayScreen() {
               </View>
             </View>
 
-            <View style={{ marginTop: 12, marginBottom: 10, flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              {decisionPills.map((pill) => {
-                const palette = pillPalette[pill.tone] ?? pillPalette.neutral;
-                return (
-                  <View
-                    key={pill.key}
-                    style={{
-                      borderRadius: 999,
-                      borderWidth: 1,
-                      borderColor: palette.border,
-                      backgroundColor: palette.bg,
-                      paddingHorizontal: 10,
-                      paddingVertical: 6,
-                    }}
-                  >
-                    <Text style={{ color: palette.text, fontSize: 12, fontWeight: "800" }}>
-                      {pill.label}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-            {gameState.currentWishSuit && (
-              <Text style={{ color: "rgba(226, 244, 236, 0.9)", fontSize: 11, fontWeight: "700", marginTop: -3, marginBottom: 6 }}>
-                Aktiv: {wishSuitLabel}
-              </Text>
-            )}
-            {showClutchOrRivalryBanner && (
-              <View style={{ alignItems: "center", marginTop: 8, marginBottom: 8, gap: 6 }}>
-                {clutchBanner && (
-                  <View
-                    style={{
-                      backgroundColor: "rgba(12, 22, 18, 0.9)",
-                      borderWidth: 1,
-                      borderColor: "rgba(255, 200, 80, 0.8)",
-                      borderRadius: 14,
-                      paddingHorizontal: 14,
-                      paddingVertical: 7,
-                    }}
-                  >
-                    <Text style={{ color: "#FFD89A", fontWeight: "800", fontSize: 12 }}>{clutchBanner}</Text>
-                  </View>
-                )}
-                {rivalryBanner && (
-                  <View
-                    style={{
-                      backgroundColor: "rgba(16, 18, 28, 0.92)",
-                      borderWidth: 1,
-                      borderColor: "rgba(255, 95, 95, 0.7)",
-                      borderRadius: 14,
-                      paddingHorizontal: 14,
-                      paddingVertical: 7,
-                    }}
-                  >
-                    <Text style={{ color: "#FFB3B3", fontWeight: "800", fontSize: 12 }}>{rivalryBanner}</Text>
-                  </View>
-                )}
-              </View>
-            )}
-            {showMomentStatusBanner && (
-              <View style={{ alignItems: "center", marginTop: 6, marginBottom: 6 }}>
-                <View
-                  style={{
-                    backgroundColor: "rgba(8, 15, 24, 0.95)",
-                    borderWidth: 1,
-                    borderColor: "rgba(90, 240, 170, 0.8)",
-                    borderRadius: 13,
-                    paddingHorizontal: 14,
-                    paddingVertical: 7,
-                  }}
-                >
-                  <Text style={{ color: "#E6FFF3", fontWeight: "800", fontSize: 12 }}>{momentBanner}</Text>
-                </View>
-              </View>
-            )}
+            <GameStatusPanel
+              decisionPills={decisionPills}
+              hasWishSuit={Boolean(gameState.currentWishSuit)}
+              wishSuitLabel={wishSuitLabel}
+              showClutchOrRivalryBanner={showClutchOrRivalryBanner}
+              clutchBanner={clutchBanner}
+              rivalryBanner={rivalryBanner}
+              showMomentStatusBanner={showMomentStatusBanner}
+              momentBanner={momentBanner}
+            />
 
             <View style={{ height: arenaHeight, marginTop: isCompactHeight ? 16 : 20, marginBottom: isCompactHeight ? 2 : 4, position: "relative" }}>
               <RoundStartGlow
@@ -3294,74 +3081,13 @@ export default function GamePlayScreen() {
         </View>
       </Modal>
 
-      {/* Round End Modal */}
-      <Modal
+      <RoundEndModal
         visible={gameState.phase === "round_end"}
-        transparent
-        animationType="fade"
-      >
-        <View className="flex-1 bg-black/70 items-center justify-center p-6">
-          <View style={{ borderRadius: 20, padding: 24, width: "100%", maxWidth: 380, backgroundColor: "rgba(20, 20, 20, 0.97)", borderWidth: 2, borderColor: "#4A4A4A" }}>
-            <Text style={{ color: "#E8E8E8", fontSize: 22, fontWeight: "800", textAlign: "center", marginBottom: 16 }}>
-              🏁 Runde {gameState.roundNumber} beendet!
-            </Text>
-
-            {/* Loss points */}
-            <View style={{ backgroundColor: "rgba(0, 0, 0, 0.3)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
-              <Text style={{ color: "#9BA1A6", fontSize: 12, marginBottom: 8 }}>Verlustpunkte:</Text>
-              {gameState.players.map((player) => (
-                <View key={player.id} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 }}>
-                  <Text style={{ color: player.isEliminated ? "#666" : "#E8E8E8", textDecorationLine: player.isEliminated ? "line-through" : "none" }}>
-                    {player.username}
-                  </Text>
-                  <Text style={{ fontWeight: "700", color: player.isEliminated ? "#666" : "#FF6B6B" }}>
-                    {player.isEliminated ? "❌ RAUS" : `${player.lossPoints} ❌`}
-                  </Text>
-                </View>
-              ))}
-            </View>
-
-            {/* Ready status */}
-            <View style={{ backgroundColor: "rgba(0, 0, 0, 0.3)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
-              <Text style={{ color: "#9BA1A6", fontSize: 12, marginBottom: 8 }}>Spieler-Status:</Text>
-              {gameState.players.filter(p => !p.isEliminated).map((player) => (
-                <View key={player.id} style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 }}>
-                  <Text style={{ color: "#E8E8E8" }}>{player.username}</Text>
-                  <Text style={{ fontWeight: "600", color: player.isReady ? "#32CD32" : "#FFA500" }}>
-                    {player.isReady ? "✅ READY" : "⏳ Wartet..."}
-                  </Text>
-                </View>
-              ))}
-            </View>
-
-            {/* READY Button */}
-            {!currentPlayer.isEliminated && !currentPlayer.isReady && (
-              <Pressable
-                onPress={() => sendAction(gameState.roomId, currentPlayer.id, { type: "READY" })}
-                style={({ pressed }) => ({
-                  backgroundColor: "#228B22",
-                  borderRadius: 14,
-                  padding: 16,
-                  opacity: pressed ? 0.8 : 1,
-                })}
-              >
-                <Text style={{ color: "#fff", textAlign: "center", fontWeight: "800", fontSize: 16 }}>
-                  ✅ READY für nächste Runde
-                </Text>
-              </Pressable>
-            )}
-
-            {/* Waiting status */}
-            {currentPlayer.isReady && (
-              <View style={{ backgroundColor: "rgba(255, 165, 0, 0.15)", borderWidth: 1, borderColor: "#FFA500", borderRadius: 14, padding: 14 }}>
-                <Text style={{ color: "#E8E8E8", textAlign: "center", fontWeight: "600" }}>
-                  ⏳ Warte auf andere Spieler...
-                </Text>
-              </View>
-            )}
-          </View>
-        </View>
-      </Modal>
+        roundNumber={gameState.roundNumber}
+        players={gameState.players}
+        currentPlayer={currentPlayer}
+        onReady={() => sendAction(gameState.roomId, currentPlayer.id, { type: "READY" })}
+      />
 
       {/* Chat Modal */}
       <Modal
