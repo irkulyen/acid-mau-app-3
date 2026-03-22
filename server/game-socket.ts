@@ -658,11 +658,8 @@ function emitCardPlayFx(
   },
 ) {
   const startAt = reserveFxStartAt(roomId, data.startAt, 160);
-  io.to(`room-${roomId}`).emit("card-play-fx", {
-    card: data.card,
-    playerId: data.playerId,
-    startAt,
-  });
+  // Unified stream first so modern clients can lock onto a single authoritative FX path
+  // and ignore subsequent legacy events without double-triggering.
   emitGameFx(
     io,
     roomId,
@@ -676,6 +673,11 @@ function emitCardPlayFx(
     },
     10,
   );
+  io.to(`room-${roomId}`).emit("card-play-fx", {
+    card: data.card,
+    playerId: data.playerId,
+    startAt,
+  });
 }
 
 function emitDrawCardFx(
@@ -690,11 +692,7 @@ function emitDrawCardFx(
   },
 ) {
   const startAt = reserveFxStartAt(roomId, data.startAt, 120);
-  io.to(`room-${roomId}`).emit("draw-card-fx", {
-    playerId: data.playerId,
-    drawCount: data.drawCount,
-    startAt,
-  });
+  // Emit unified first for deterministic client path selection.
   emitGameFx(
     io,
     roomId,
@@ -708,6 +706,11 @@ function emitDrawCardFx(
     },
     10,
   );
+  io.to(`room-${roomId}`).emit("draw-card-fx", {
+    playerId: data.playerId,
+    drawCount: data.drawCount,
+    startAt,
+  });
 }
 
 function emitStateTransitionFx(
@@ -750,11 +753,7 @@ function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<O
 
   pushBlackbirdHistory(roomId, normalized);
   for (const payload of normalized) {
-    // Legacy dedicated event can stay behind a feature flag.
-    // Unified game-fx blackbird events are always emitted to keep cross-client FX deterministic.
-    if (ENV.enableBlackbirdEvents) {
-      io.to(`room-${roomId}`).emit("blackbird-event", payload);
-    }
+    // Unified first to keep client handover deterministic (same ordering as card/draw FX).
     const { emittedAt, ...blackbirdEvent } = payload;
     emitGameFx(io, roomId, {
       type: "blackbird",
@@ -763,6 +762,10 @@ function emitBlackbirdEvents(io: SocketIOServer, roomId: number, events: Array<O
       startAt: payload.startAt,
       blackbird: blackbirdEvent,
     }, 30);
+    // Legacy dedicated event stays optional behind feature flag.
+    if (ENV.enableBlackbirdEvents) {
+      io.to(`room-${roomId}`).emit("blackbird-event", payload);
+    }
     telemetry.inc("blackbird.emitted");
   }
   if (hasSequence) telemetry.inc("blackbird.sequences");

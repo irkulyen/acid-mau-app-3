@@ -39,7 +39,12 @@ import {
   shouldWarnStartDrift,
 } from "@/lib/game-fx-performance-budget";
 import { getGameFxUiPlan } from "@/lib/game-fx-ui-plan";
-import { getGamePriorityPills, getPlayableCount, shouldShowSecondaryGameBanner } from "@/lib/ux-status";
+import { getGamePriorityPills, getPlayableCount } from "@/lib/ux-status";
+import {
+  getEffectiveDiscardLabel,
+  getSecondaryStatusBannerFlags,
+  getWishSuitLabel,
+} from "@/lib/game-display-helpers";
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 const DESIGN = {
@@ -120,6 +125,7 @@ export default function GamePlayScreen() {
   const [showDrawFly, setShowDrawFly] = useState(false);
   const [drawFlyFx, setDrawFlyFx] = useState<{ targetX: number; targetY: number; drawCount: number; playerName?: string } | null>(null);
   const drawFlyFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const legacyDrawCardFxTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const [discardImpactKey, setDiscardImpactKey] = useState(0);
   const [discardImpactIntensity, setDiscardImpactIntensity] = useState<1 | 2 | 3 | 4 | 5>(2);
   const [showDiscardImpact, setShowDiscardImpact] = useState(false);
@@ -297,6 +303,8 @@ export default function GamePlayScreen() {
         clearTimeout(drawFlyFallbackTimerRef.current);
         drawFlyFallbackTimerRef.current = null;
       }
+      legacyDrawCardFxTimersRef.current.forEach((timer) => clearTimeout(timer));
+      legacyDrawCardFxTimersRef.current.clear();
       if (reactionCooldownTimerRef.current) {
         clearTimeout(reactionCooldownTimerRef.current);
         reactionCooldownTimerRef.current = null;
@@ -757,6 +765,7 @@ export default function GamePlayScreen() {
     if (!event?.card) return;
     if (lastAnimatedDiscardCardIdRef.current === event.card.id) return;
     const activate = () => {
+      if (hasUnifiedGameFxRef.current) return;
       cardPlayFxQueueRef.current.push(event);
       processNextCardPlayFx();
     };
@@ -1034,10 +1043,18 @@ export default function GamePlayScreen() {
       hasUnifiedGameFxRef.current = true;
       // Drop legacy queue to avoid race duplicates between legacy and unified streams.
       blackbirdQueueRef.current = [];
+      cardPlayFxQueueRef.current = [];
+      if (cardPlayFxTimerRef.current) {
+        clearTimeout(cardPlayFxTimerRef.current);
+        cardPlayFxTimerRef.current = null;
+      }
       if (blackbirdDelayTimerRef.current) {
         clearTimeout(blackbirdDelayTimerRef.current);
         blackbirdDelayTimerRef.current = null;
       }
+      // Cancel already scheduled legacy draw-card fallbacks after unified handover.
+      legacyDrawCardFxTimersRef.current.forEach((timer) => clearTimeout(timer));
+      legacyDrawCardFxTimersRef.current.clear();
     }
     if (event.type === "blackbird" && event.blackbird && !shouldProcessBlackbirdEvent(event.blackbird)) {
       return;
@@ -1144,6 +1161,7 @@ export default function GamePlayScreen() {
     hasUnifiedGameFxRef.current = false;
     gameFxQueueRef.current = [];
     blackbirdQueueRef.current = [];
+    cardPlayFxQueueRef.current = [];
     activeGameFxRef.current = null;
     seenBlackbirdEventsRef.current.clear();
     showBlackbirdRef.current = false;
@@ -1170,10 +1188,16 @@ export default function GamePlayScreen() {
       clearTimeout(gameFxTimerRef.current);
       gameFxTimerRef.current = null;
     }
+    if (cardPlayFxTimerRef.current) {
+      clearTimeout(cardPlayFxTimerRef.current);
+      cardPlayFxTimerRef.current = null;
+    }
     if (drawFlyFallbackTimerRef.current) {
       clearTimeout(drawFlyFallbackTimerRef.current);
       drawFlyFallbackTimerRef.current = null;
     }
+    legacyDrawCardFxTimersRef.current.forEach((timer) => clearTimeout(timer));
+    legacyDrawCardFxTimersRef.current.clear();
     if (blackbirdDelayTimerRef.current) {
       clearTimeout(blackbirdDelayTimerRef.current);
       blackbirdDelayTimerRef.current = null;
@@ -1421,11 +1445,14 @@ export default function GamePlayScreen() {
     setOnDrawCardFx((event: DrawCardFxEvent) => {
       if (hasUnifiedGameFxRef.current) return;
       const delay = Math.max(0, (event.startAt ?? Date.now()) - Date.now());
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        legacyDrawCardFxTimersRef.current.delete(timer);
+        if (hasUnifiedGameFxRef.current) return;
         const drawCount = Math.max(1, event.drawCount ?? 1);
         const target = resolveDrawFxTarget(event.playerId);
         playCardDraw(drawCount, target.isSelf);
       }, delay);
+      legacyDrawCardFxTimersRef.current.add(timer);
     });
     setOnReactionEvent((event: ReactionEvent) => {
       const currentState = gameStateRef.current;
@@ -1975,26 +2002,8 @@ export default function GamePlayScreen() {
   }
   const currentPlayerReaction = reactionsBySenderId.get(currentPlayer.id);
   const currentPlayerTargetedReaction = reactionTargetsByPlayerId.get(currentPlayer.id);
-  const wishSuitLabel = gameState.currentWishSuit
-    ? `${gameState.currentWishSuit === "eichel" ? "🌰 Eichel" : gameState.currentWishSuit === "gruen" ? "🍀 Grün" : gameState.currentWishSuit === "rot" ? "❤️ Rot" : "🔔 Schellen"} oder Unter`
-    : "";
-  const suitIcon: Record<CardSuit, string> = {
-    eichel: "🌰",
-    gruen: "🍀",
-    rot: "❤️",
-    schellen: "🔔",
-  };
-  const rankLabel: Record<Card["rank"], string> = {
-    "7": "7",
-    "8": "8",
-    "9": "9",
-    "10": "10",
-    bube: "B",
-    dame: "D",
-    konig: "K",
-    ass: "A",
-  };
-  const effectiveDiscardLabel = effectiveDiscardCard ? `${suitIcon[effectiveDiscardCard.suit]} ${rankLabel[effectiveDiscardCard.rank]}` : "";
+  const wishSuitLabel = getWishSuitLabel(gameState.currentWishSuit);
+  const effectiveDiscardLabel = getEffectiveDiscardLabel(effectiveDiscardCard ?? undefined);
   const discardTopRotation = (((gameState.discardPile.length + 2) % 7) - 3) * 2.5;
   const isCurrentPlayerLoserPulse = loserPulseName === currentPlayer.username;
   const centerSpotSize = isSmallPhone ? 280 : 320;
@@ -2004,15 +2013,16 @@ export default function GamePlayScreen() {
   const handPanelBottom = Math.max(2, insets.bottom - 2);
   const getRoundStartCards = (lossPoints: number) => Math.max(1, lossPoints + 1);
   const hasActivePriorityFx = showBlackbird || showDrawFly || showFlyingCard || showWishFx || showRoundGlow || showSpecialCardFx;
-  const showSecondaryBanners = shouldShowSecondaryGameBanner({
+  const { showClutchOrRivalryBanner, showMomentStatusBanner } = getSecondaryStatusBannerFlags({
     isCompactHeight,
     drawChainCount: gameState.drawChainCount,
     hasWishSuit: Boolean(gameState.currentWishSuit),
     hasNoPlayableCards,
     hasActiveFx: hasActivePriorityFx,
+    clutchBanner,
+    rivalryBanner,
+    momentBanner,
   });
-  const showClutchOrRivalryBanner = showSecondaryBanners && Boolean(clutchBanner || rivalryBanner);
-  const showMomentStatusBanner = showSecondaryBanners && Boolean(momentBanner);
 
   return (
     <View style={{ flex: 1, backgroundColor: DESIGN.tableBase }}>
