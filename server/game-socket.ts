@@ -19,6 +19,14 @@ import { createCorsOriginMatcher } from "./_core/cors";
 import { realtimeStore } from "./realtime-store";
 import { telemetry } from "./telemetry";
 import { detectStateTransitionFx } from "./game-fx-transitions";
+import { getSocketPublicOrigin, normalizeAvatarUrlForClient } from "./socket-public-origin";
+import { createRoomPresenceHelpers } from "./room-presence-helpers";
+import {
+  clearUserRoomMappingIfMatches,
+  getAuthoritativeUserSession,
+  getGameStateWithRetry,
+  getRoomByCodeWithRetry,
+} from "./user-room-authority";
 import {
   createRoomMetadata,
   ensureUserRoomMappingByMembership,
@@ -29,6 +37,12 @@ const roomSockets = new Map<number, Set<string>>();
 
 // Socket → userId mapping (for per-player state filtering)
 const socketUserMapping = new Map<string, number>();
+const {
+  attachSocketToTrackedRoom,
+  detachSocketFromTrackedRooms,
+  evictDuplicateUserSocketsInRoom,
+  isUserConnectedInRoom,
+} = createRoomPresenceHelpers({ roomSockets, socketUserMapping });
 
 // Disconnect timeouts: userId → timeout handle
 const disconnectTimeouts = new Map<number, NodeJS.Timeout>();
@@ -59,7 +73,6 @@ let reactionSequenceCounter = 0;
 const roomMutationQueues = new Map<number, Promise<void>>();
 const userMutationQueues = new Map<number, Promise<void>>();
 const blockedSocketOrigins = new Set<string>();
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function shuffleArray<T>(items: T[]): T[] {
   const copy = [...items];
@@ -194,94 +207,6 @@ async function getUserAvatarUrl(userId: number): Promise<string | undefined> {
   }
 }
 
-function firstHeaderValue(value: string | string[] | undefined): string | undefined {
-  const raw = Array.isArray(value) ? value[0] : value;
-  return raw?.split(",")[0]?.trim() || undefined;
-}
-
-function isPrivateOrLoopbackHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-  if (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "[::1]" ||
-    host.endsWith(".local")
-  ) {
-    return true;
-  }
-
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
-    const octets = host.split(".").map((part) => Number(part));
-    if (octets.some((part) => Number.isNaN(part) || part < 0 || part > 255)) return false;
-    if (octets[0] === 10) return true;
-    if (octets[0] === 127) return true;
-    if (octets[0] === 192 && octets[1] === 168) return true;
-    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
-  }
-
-  if (host.startsWith("fc") || host.startsWith("fd")) return true;
-  return false;
-}
-
-function toOrigin(candidate: string | undefined): string | undefined {
-  if (!candidate) return undefined;
-  const trimmed = candidate.trim();
-  if (!trimmed) return undefined;
-  try {
-    const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return undefined;
-  }
-}
-
-function getSocketPublicOrigin(socket: Socket): string | undefined {
-  const envOrigin = toOrigin(ENV.publicBaseUrl || ENV.oAuthServerUrl);
-  if (envOrigin) return envOrigin;
-
-  const forwardedHost = firstHeaderValue(socket.handshake.headers["x-forwarded-host"]);
-  const host = firstHeaderValue(socket.handshake.headers.host);
-  const selectedHost = forwardedHost || host;
-  if (!selectedHost) return undefined;
-  const forwardedProto = firstHeaderValue(socket.handshake.headers["x-forwarded-proto"]);
-  const proto = forwardedProto || (ENV.isProduction ? "https" : "http");
-  return `${proto}://${selectedHost}`;
-}
-
-function normalizeAvatarUrlForClient(avatarUrl: string | undefined, targetOrigin: string | undefined): string | undefined {
-  if (!avatarUrl) return undefined;
-  const raw = avatarUrl.trim();
-  if (!raw) return undefined;
-  if (raw.startsWith("data:image/")) return raw;
-
-  const normalizedOrigin = toOrigin(targetOrigin);
-
-  if (raw.startsWith("/")) {
-    return normalizedOrigin ? `${normalizedOrigin}${raw}` : raw;
-  }
-
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return undefined;
-    }
-    if (
-      normalizedOrigin &&
-      isPrivateOrLoopbackHost(parsed.hostname) &&
-      parsed.pathname.startsWith("/uploads/")
-    ) {
-      return `${normalizedOrigin}${parsed.pathname}${parsed.search}${parsed.hash}`;
-    }
-    return raw;
-  } catch {
-    if (normalizedOrigin && /^uploads\//i.test(raw)) {
-      return `${normalizedOrigin}/${raw.replace(/^\/+/, "")}`;
-    }
-    return undefined;
-  }
-}
-
 function toPreparationPayload(prep: PendingPreparation) {
   return {
     phase: prep.phase,
@@ -382,110 +307,6 @@ function toMetricSegment(value: string): string {
   return normalized || "unknown";
 }
 
-type UserRoomMembership = {
-  roomId: number;
-  state: GameState;
-};
-
-async function getRoomByCodeWithRetry(roomCode: string, attempts = 3, delayMs = 120) {
-  let lastError: unknown = null;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const room = await roomManager.getRoomByCode(roomCode);
-      if (room) return room;
-    } catch (error) {
-      lastError = error;
-    }
-    if (i < attempts - 1) await sleep(delayMs * (i + 1));
-  }
-  if (lastError) throw lastError;
-  return null;
-}
-
-async function getGameStateWithRetry(roomId: number, attempts = 3, delayMs = 120): Promise<GameState | undefined> {
-  for (let i = 0; i < attempts; i++) {
-    const state = await realtimeStore.getGameState(roomId);
-    if (state) return state;
-    if (i < attempts - 1) await sleep(delayMs * (i + 1));
-  }
-  return undefined;
-}
-
-async function getUserRoomMemberships(userId: number): Promise<UserRoomMembership[]> {
-  const roomIds = await realtimeStore.getAllRoomIds();
-  const memberships: UserRoomMembership[] = [];
-  for (const roomId of roomIds) {
-    const state = await realtimeStore.getGameState(roomId);
-    if (!state) continue;
-    if (state.players.some((player) => player.userId === userId)) {
-      memberships.push({ roomId, state });
-    }
-  }
-  return memberships;
-}
-
-async function getAuthoritativeUserSession(userId: number): Promise<UserRoomMembership | null> {
-  const mappedRoomId = await realtimeStore.getUserRoom(userId);
-  if (mappedRoomId) {
-    const mappedState = await getGameStateWithRetry(mappedRoomId, 2, 80);
-    if (mappedState?.players.some((player) => player.userId === userId)) {
-      return { roomId: mappedRoomId, state: mappedState };
-    }
-    await realtimeStore.deleteUserRoom(userId);
-    telemetry.inc("rooms.mapping_stale_cleared");
-    console.warn(`[socket] Cleared stale user-room mapping userId=${userId} roomId=${mappedRoomId}`);
-  }
-
-  const memberships = await getUserRoomMemberships(userId);
-  if (memberships.length === 1) {
-    await realtimeStore.setUserRoom(userId, memberships[0].roomId);
-    telemetry.inc("rooms.mapping_recovered.scan");
-    return memberships[0];
-  }
-  if (memberships.length > 1) {
-    telemetry.inc("rooms.user_multi_membership_detected");
-    console.error(
-      `[socket] User ${userId} appears in multiple rooms: ${memberships.map((m) => m.roomId).join(", ")}`,
-    );
-  }
-  return null;
-}
-
-async function clearUserRoomMappingIfMatches(userId: number, roomId: number) {
-  const mappedRoomId = await realtimeStore.getUserRoom(userId);
-  if (mappedRoomId === roomId) {
-    await realtimeStore.deleteUserRoom(userId);
-  }
-}
-
-function evictDuplicateUserSocketsInRoom(
-  io: SocketIOServer,
-  roomId: number,
-  userId: number,
-  keepSocketId: string,
-) {
-  const sockets = roomSockets.get(roomId);
-  if (!sockets || sockets.size <= 1) return;
-
-  let evicted = 0;
-  for (const sid of Array.from(sockets)) {
-    if (sid === keepSocketId) continue;
-    if (socketUserMapping.get(sid) !== userId) continue;
-    const staleSocket = io.sockets.sockets.get(sid);
-    staleSocket?.leave(`room-${roomId}`);
-    sockets.delete(sid);
-    socketUserMapping.delete(sid);
-    evicted += 1;
-  }
-
-  if (evicted > 0) {
-    telemetry.inc("rooms.duplicate_user_socket_evicted", evicted);
-    console.warn(
-      `[socket] Evicted ${evicted} duplicate socket(s) for user ${userId} in room ${roomId}; keep=${keepSocketId}`,
-    );
-  }
-}
-
 function isRateLimited(socketId: string, event: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
   const key = `${socketId}:${event}`;
@@ -507,15 +328,6 @@ function isRateLimited(socketId: string, event: string, limit: number, windowMs:
 
 async function isUserMappedToRoom(userId: number, roomId: number): Promise<boolean> {
   return (await realtimeStore.getUserRoom(userId)) === roomId;
-}
-
-function isUserConnectedInRoom(roomId: number, userId: number): boolean {
-  const sockets = roomSockets.get(roomId);
-  if (!sockets) return false;
-  for (const socketId of sockets) {
-    if (socketUserMapping.get(socketId) === userId) return true;
-  }
-  return false;
 }
 
 function getReactionCooldownKey(roomId: number, userId: number): string {
@@ -592,28 +404,6 @@ function emitReactionEvent(
   };
   pushReactionHistory(payload.roomId, message);
   io.to(`room-${payload.roomId}`).emit("reaction:event", message);
-}
-
-function detachSocketFromTrackedRooms(socket: Socket): number[] {
-  const detached: number[] = [];
-  for (const [roomId, sockets] of roomSockets.entries()) {
-    if (!sockets.delete(socket.id)) continue;
-    socket.leave(`room-${roomId}`);
-    detached.push(roomId);
-    if (sockets.size === 0) {
-      roomSockets.delete(roomId);
-    }
-  }
-  return detached;
-}
-
-function attachSocketToTrackedRoom(socket: Socket, roomId: number) {
-  detachSocketFromTrackedRooms(socket);
-  socket.join(`room-${roomId}`);
-  if (!roomSockets.has(roomId)) {
-    roomSockets.set(roomId, new Set());
-  }
-  roomSockets.get(roomId)!.add(socket.id);
 }
 
 function getNextActivePlayerFrom(
