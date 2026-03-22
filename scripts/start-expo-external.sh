@@ -138,13 +138,14 @@ if ! curl -fsS --max-time "$PREWARM_REQUEST_TIMEOUT" "$LOCAL_BUNDLE_URL" -o /tmp
   exit 1
 fi
 
-EXP_LINK="exp://$HOST_URI"
+EXP_LINK="exps://$HOST_URI$MANIFEST_PATH"
 HTTPS_MANIFEST="https://$HOST_URI$MANIFEST_PATH"
 
 echo
 echo "[expo:external] Ready."
 echo "Expo PID: $EXPO_PID"
 echo "Expo Go Link: $EXP_LINK"
+echo "Legacy Link: exp://$HOST_URI"
 echo "Manifest URL: $HTTPS_MANIFEST"
 echo "Log file: $LOG_FILE"
 echo

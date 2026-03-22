@@ -3,12 +3,16 @@ import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { COOKIE_NAME } from "../shared/const.js";
 import * as db from "./db";
-import * as roomManager from "./room-manager";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { storagePut } from "./storage";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { realtimeStore } from "./realtime-store";
+import {
+  createRoomMetadata,
+  deleteRoomAcrossAuthorities,
+  syncRoomMetadataFromGameState,
+} from "./state-authority";
 
 const DATA_IMAGE_REGEX = /^data:image\/(jpeg|jpg|png|webp);base64,[a-z0-9+/=]+$/i;
 
@@ -324,24 +328,13 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        let roomCode = "";
-        let attempts = 0;
-        do {
-          roomCode = roomManager.generateRoomCode();
-          attempts++;
-        } while (attempts < 10 && (await db.getGameRoomByCode(roomCode)));
-        if (!roomCode || (await db.getGameRoomByCode(roomCode))) {
-          throw new Error("Failed to generate room code");
-        }
-        const roomId = await db.createGameRoom({
-          roomCode,
+        const created = await createRoomMetadata({
           hostUserId: ctx.user.id,
-          isPrivate: input.isPrivate ? 1 : 0,
           maxPlayers: input.maxPlayers,
-          currentPlayers: 1,
-          status: "waiting",
+          isPrivate: input.isPrivate,
+          maxAttempts: 10,
         });
-        return { roomId, roomCode };
+        return { roomId: created.roomId, roomCode: created.roomCode };
       }),
     byCode: protectedProcedure.input(z.object({ roomCode: z.string() })).query(async ({ input }) => {
       return db.getGameRoomByCode(input.roomCode);
@@ -374,19 +367,36 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const room = await db.getGameRoomByCode(input.roomCode);
         if (!room) throw new Error("Room not found");
-        if (room.status !== "waiting") throw new Error("Room is not accepting players");
-        if (room.currentPlayers >= room.maxPlayers) throw new Error("Room is full");
-        await db.updateGameRoom(room.id, { currentPlayers: room.currentPlayers + 1 });
-        return { success: true, room };
+        const state = await realtimeStore.getGameState(room.id);
+        if (!state) throw new Error("No active realtime session");
+
+        if (state.phase !== "waiting") throw new Error("Room is not accepting players");
+
+        const maxPlayers = state.maxPlayers ?? room.maxPlayers ?? 5;
+        const alreadyMember = state.players.some((player) => player.userId === ctx.user.id);
+        if (!alreadyMember && state.players.length >= maxPlayers) throw new Error("Room is full");
+
+        await syncRoomMetadataFromGameState(room.id, state);
+        return {
+          success: true,
+          room: {
+            ...room,
+            currentPlayers: state.players.length,
+            maxPlayers,
+            status: "waiting" as const,
+          },
+        };
       }),
     start: protectedProcedure
       .input(z.object({ roomId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const room = await db.getGameRoom(input.roomId);
         if (!room) throw new Error("Room not found");
-        if (room.hostUserId !== ctx.user.id) throw new Error("Only the host can start the game");
-        if (room.currentPlayers < 2) throw new Error("Need at least 2 players to start");
-        await db.updateGameRoom(input.roomId, { status: "playing", startedAt: new Date() });
+        const state = await realtimeStore.getGameState(input.roomId);
+        if (!state) throw new Error("No active realtime session");
+        if (state.hostUserId !== ctx.user.id) throw new Error("Only the host can start the game");
+        if (state.players.length < 2) throw new Error("Need at least 2 players to start");
+        await syncRoomMetadataFromGameState(input.roomId, state);
         return { success: true };
       }),
     delete: protectedProcedure
@@ -396,7 +406,7 @@ export const appRouter = router({
         if (!room) throw new Error("Room not found");
         if (room.hostUserId !== ctx.user.id) throw new Error("Only the host can delete the room");
         if (room.status !== "waiting") throw new Error("Can only delete rooms that are waiting");
-        await db.deleteGameRoom(input.roomId);
+        await deleteRoomAcrossAuthorities(input.roomId);
         return { success: true };
       }),
   }),

@@ -352,19 +352,21 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           username: username ?? undefined,
         });
 
-        // Fallback rejoin only if reconnect did not produce a fresh state update.
+        // Fallback reconnect retry only if reconnect did not produce a fresh state update.
+        // Keep server authoritative for membership recovery (avoid client-side join fallback races).
         if (recoverFallbackTimerRef.current) clearTimeout(recoverFallbackTimerRef.current);
-        if (normalizedRoomCode && username) {
+        if (normalizedRoomCode) {
           recoverFallbackTimerRef.current = setTimeout(() => {
             const staleSinceRecover = lastStateUpdateAtRef.current < recoverStartedAtRef.current;
             if (attempt !== recoverAttemptRef.current) return;
             if (!socket.connected) return;
             if (!staleSinceRecover) return;
-            emitJoinRoomGuarded({
-              roomCode: normalizedRoomCode,
+            emitReconnectRoomGuarded({
               userId,
-              username,
-              source: "recover-fallback",
+              roomCode: normalizedRoomCode,
+              roomId: roomId ?? undefined,
+              playerId: playerId ?? undefined,
+              username: username ?? undefined,
             });
           }, 1400);
         }
@@ -372,7 +374,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     } finally {
       recoveringRef.current = false;
     }
-  }, [emitJoinRoomGuarded, emitReconnectRoomGuarded, normalizeRoomCode]);
+  }, [emitReconnectRoomGuarded, normalizeRoomCode]);
 
   useEffect(() => {
     gameStateRef.current = gameState;
@@ -484,11 +486,11 @@ export function SocketProvider({ children }: { children: ReactNode }) {
           const isMember = state.players.some((p) => p.userId === userId);
           if (!isMember && socket?.connected) {
             lastMembershipRecoverAtRef.current = now;
-            emitJoinRoomGuarded({
-              roomCode: normalizedRoomCode,
+            emitReconnectRoomGuarded({
               userId,
+              roomCode: normalizedRoomCode,
+              roomId: state.roomId,
               username,
-              source: "self-heal",
             });
           }
         })();
@@ -607,20 +609,31 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         }
         if (data.message === "No active session found" || data.message === "Player not found in game") {
           try {
-            const roomCode = await AsyncStorage.getItem(STORAGE_KEYS.roomCode);
-            const userIdStr = await AsyncStorage.getItem(STORAGE_KEYS.userId);
-            const username = await AsyncStorage.getItem(STORAGE_KEYS.username);
+            const values = await AsyncStorage.multiGet([
+              STORAGE_KEYS.roomCode,
+              STORAGE_KEYS.roomId,
+              STORAGE_KEYS.playerId,
+              STORAGE_KEYS.userId,
+              STORAGE_KEYS.username,
+            ]);
+            const map = new Map(values);
+            const roomCode = map.get(STORAGE_KEYS.roomCode);
+            const userIdStr = map.get(STORAGE_KEYS.userId);
+            const username = map.get(STORAGE_KEYS.username);
+            const roomId = parsePositiveInt(map.get(STORAGE_KEYS.roomId));
+            const playerId = parsePositiveInt(map.get(STORAGE_KEYS.playerId));
             const normalizedRoomCode = normalizeRoomCode(roomCode);
             if (normalizedRoomCode && userIdStr && username) {
-              emitJoinRoomGuarded({
-                roomCode: normalizedRoomCode,
+              emitReconnectRoomGuarded({
                 userId: parseInt(userIdStr, 10),
+                roomCode: normalizedRoomCode,
+                roomId: roomId ?? undefined,
+                playerId: playerId ?? undefined,
                 username,
-                source: "server-error-retry",
               });
             }
           } catch (e) {
-            console.error("[socket] Auto-rejoin error:", e);
+            console.error("[socket] Auto-reconnect error:", e);
           }
           return;
         }
@@ -649,17 +662,28 @@ export function SocketProvider({ children }: { children: ReactNode }) {
               clearJoinInFlight("stale-temporary-unavailable");
               return;
             }
-            const roomCode = await AsyncStorage.getItem(STORAGE_KEYS.roomCode);
-            const userIdStr = await AsyncStorage.getItem(STORAGE_KEYS.userId);
-            const username = await AsyncStorage.getItem(STORAGE_KEYS.username);
+            const values = await AsyncStorage.multiGet([
+              STORAGE_KEYS.roomCode,
+              STORAGE_KEYS.roomId,
+              STORAGE_KEYS.playerId,
+              STORAGE_KEYS.userId,
+              STORAGE_KEYS.username,
+            ]);
+            const map = new Map(values);
+            const roomCode = map.get(STORAGE_KEYS.roomCode);
+            const roomId = parsePositiveInt(map.get(STORAGE_KEYS.roomId));
+            const playerId = parsePositiveInt(map.get(STORAGE_KEYS.playerId));
+            const userIdStr = map.get(STORAGE_KEYS.userId);
+            const username = map.get(STORAGE_KEYS.username);
             const normalizedRoomCode = normalizeRoomCode(roomCode);
             if (normalizedRoomCode && userIdStr && username) {
               setTimeout(() => {
-                emitJoinRoomGuarded({
-                  roomCode: normalizedRoomCode,
+                emitReconnectRoomGuarded({
                   userId: parseInt(userIdStr, 10),
+                  roomCode: normalizedRoomCode,
+                  roomId: roomId ?? undefined,
+                  playerId: playerId ?? undefined,
                   username,
-                  source: "server-error-retry",
                 });
               }, 850);
             }
@@ -708,6 +732,7 @@ export function SocketProvider({ children }: { children: ReactNode }) {
     clearJoinInFlight,
     classifyConnectError,
     emitJoinRoomGuarded,
+    emitReconnectRoomGuarded,
     emitErrorDeduped,
     normalizeRoomCode,
     persistSessionHints,

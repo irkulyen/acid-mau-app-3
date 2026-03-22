@@ -159,13 +159,12 @@ export function useGameSounds() {
     }
     if (typeof profile?.playbackRate === "number") {
       const safeRate = Math.max(0.25, Math.min(2, profile.playbackRate));
-      try {
-        player.setPlaybackRate(safeRate);
-      } catch (error) {
+      const playerWithRate = player as AudioPlayer & { setPlaybackRate?: (value: number) => void };
+      if (typeof playerWithRate.setPlaybackRate === "function") {
         try {
-          player.playbackRate = safeRate;
-        } catch (fallbackError) {
-          console.warn(`[useGameSounds] Failed to set playback rate for ${label}:`, fallbackError ?? error);
+          playerWithRate.setPlaybackRate(safeRate);
+        } catch (error) {
+          console.warn(`[useGameSounds] Failed to set playback rate for ${label}:`, error);
         }
       }
     }

@@ -19,6 +19,11 @@ import { createCorsOriginMatcher } from "./_core/cors";
 import { realtimeStore } from "./realtime-store";
 import { telemetry } from "./telemetry";
 import { detectStateTransitionFx } from "./game-fx-transitions";
+import {
+  createRoomMetadata,
+  ensureUserRoomMappingByMembership,
+  syncRoomMetadataFromGameState,
+} from "./state-authority";
 
 const roomSockets = new Map<number, Set<string>>();
 
@@ -1746,8 +1751,8 @@ export function setupGameSocket(httpServer: HTTPServer) {
       dealerIndex,
     });
 
-    await roomManager.updateRoomStatus(roomId, "playing");
     await realtimeStore.setGameState(roomId, startedState);
+    await syncRoomMetadataFromGameState(roomId, startedState);
 
     setTimeout(() => {
       void (async () => {
@@ -1812,8 +1817,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
               if (playerByUser && playerIdMatches) {
                 roomId = requestedRoomId;
                 gameState = stateByRoomId;
-                await realtimeStore.setUserRoom(userId, requestedRoomId);
-                telemetry.inc("rooms.reconnect_mapping_recovered.room_id");
+                if (await ensureUserRoomMappingByMembership(userId, requestedRoomId, stateByRoomId)) {
+                  telemetry.inc("rooms.reconnect_mapping_recovered.room_id");
+                }
               }
             }
           }
@@ -1827,8 +1833,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
               if (fallbackState && isMember) {
                 roomId = fallbackRoom.id;
                 gameState = fallbackState;
-                await realtimeStore.setUserRoom(userId, roomId);
-                telemetry.inc("rooms.reconnect_mapping_recovered");
+                if (await ensureUserRoomMappingByMembership(userId, roomId, fallbackState)) {
+                  telemetry.inc("rooms.reconnect_mapping_recovered");
+                }
               }
             }
           }
@@ -1936,7 +1943,11 @@ export function setupGameSocket(httpServer: HTTPServer) {
           attachSocketToTrackedRoom(socket, roomId);
           evictDuplicateUserSocketsInRoom(io, roomId, userId, socket.id);
           cancelRoomCleanup(roomId);
-          await realtimeStore.setUserRoom(userId, roomId);
+          const mappingSet = await ensureUserRoomMappingByMembership(userId, roomId, gameState);
+          if (!mappingSet) {
+            socket.emit("error", { message: "Player not found in game" });
+            return;
+          }
 
           // If preparation is pending, send preparation data to reconnected player
           const prepData = await realtimeStore.getPreparation(roomId);
@@ -2052,30 +2063,15 @@ export function setupGameSocket(httpServer: HTTPServer) {
           // Track socket → user mapping
           socketUserMapping.set(socket.id, userId);
 
-          // Generiere eindeutigen Room-Code
-          let roomCode: string;
-          let room = null;
-          let attempts = 0;
-          do {
-            roomCode = roomManager.generateRoomCode();
-            room = await roomManager.getRoomByCode(roomCode);
-            attempts++;
-          } while (room && attempts < 10);
-
-          if (room) {
-            socket.emit("error", { message: "Failed to generate unique room code" });
-            return;
-          }
-
-          // Erstelle Raum
-          const newRoom = await roomManager.createRoom({
-            roomCode,
+          const createdRoom = await createRoomMetadata({
             hostUserId: userId,
             maxPlayers,
             isPrivate,
+            maxAttempts: 10,
           });
 
-          const roomId = newRoom.id;
+          const roomId = createdRoom.roomId;
+          const roomCode = createdRoom.roomCode;
           const rawAvatarUrl = await getUserAvatarUrl(userId);
           const avatarUrl = normalizeAvatarUrlForClient(rawAvatarUrl, getSocketPublicOrigin(socket));
           console.log(
@@ -2296,6 +2292,9 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
           // Broadcast only when room state actually changed (new player/profile update).
           // Pure duplicate join retries should be idempotent and not fan out noisy snapshots.
+          if (joinResult.playerAdded) {
+            await syncRoomMetadataFromGameState(roomId, gameState);
+          }
           if (joinResult.stateMutated) {
             broadcastFilteredState(io, roomId, gameState);
           }
@@ -2632,7 +2631,7 @@ export function setupGameSocket(httpServer: HTTPServer) {
         if (newState.phase === "game_end") {
           console.log(`[socket] Game ${roomId} ended`);
           telemetry.inc("games.ended");
-          await roomManager.updateRoomStatus(roomId, "finished");
+          await syncRoomMetadataFromGameState(roomId, newState);
           
           // Save stats for all human players (bots have negative userId)
           try {
@@ -2731,10 +2730,8 @@ export function setupGameSocket(httpServer: HTTPServer) {
               gameStateBeforeLeave.newState,
               gameStateBeforeLeave.actorPlayerId,
             );
+            await syncRoomMetadataFromGameState(roomId, gameStateBeforeLeave.newState);
             broadcastFilteredState(io, roomId, gameStateBeforeLeave.newState);
-            if (gameStateBeforeLeave.newState.phase === "game_end") {
-              await roomManager.updateRoomStatus(roomId, "finished");
-            }
           }
 
           socket.leave(`room-${roomId}`);
@@ -3258,10 +3255,8 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
             if (result && result.removed && result.newState) {
               emitStateTransitionFx(io, roomId, result.previousState, result.newState, result.actorPlayerId);
+              await syncRoomMetadataFromGameState(roomId, result.newState);
               broadcastFilteredState(io, roomId, result.newState);
-              if (result.newState.phase === "game_end") {
-                void roomManager.updateRoomStatus(roomId, "finished");
-              }
             }
           } catch (err) {
             console.error(`[socket] Error during disconnect timeout cleanup:`, err);

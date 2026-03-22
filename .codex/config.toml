@@ -1,0 +1,4 @@
+model = "gpt-5.3-codex"
+reasoning_effort = "high"
+
+approval_policy = "never"

@@ -228,6 +228,37 @@ export async function updateRoomStatus(
   }
 }
 
+export async function updateRoomSnapshot(
+  roomId: number,
+  data: { status: "waiting" | "playing" | "finished"; currentPlayers: number; maxPlayers: number }
+): Promise<void> {
+  for (const room of inMemoryRooms.values()) {
+    if (room.id === roomId) {
+      room.status = data.status;
+      room.maxPlayers = data.maxPlayers;
+      break;
+    }
+  }
+
+  try {
+    await Promise.race([
+      db.updateGameRoom(roomId, {
+        status: data.status,
+        currentPlayers: data.currentPlayers,
+        maxPlayers: data.maxPlayers,
+      }),
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error("DB update timeout")), 3000)
+      ),
+    ]);
+  } catch (error) {
+    if (!shouldUseInMemoryFallback()) {
+      throw error;
+    }
+    console.warn(`[room-manager] DB snapshot update failed for room ${roomId}: ${error}`);
+  }
+}
+
 /**
  * Lösche einen Raum
  */
