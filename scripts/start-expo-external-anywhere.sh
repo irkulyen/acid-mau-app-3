@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ---------- Config ----------
-PROJECT_DIR="${EXPO_PROJECT_DIR:-$HOME/Documents/GitHub/acid-mau-app-3}"
+PROJECT_DIR="${EXPO_PROJECT_DIR:-$HOME/Documents/GitHub/crazyamsel-app}"
 PORT="${EXPO_PORT:-8081}"
 API_URL="${EXPO_PUBLIC_API_URL:-http://185.215.165.148:3000}"
 MANIFEST_PATH="/?platform=ios&dev=true&hot=false"

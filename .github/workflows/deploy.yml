@@ -60,7 +60,7 @@ jobs:
         id: meta
         if: ${{ steps.guard.outputs.enabled == 'true' }}
         run: |
-          IMAGE_REF="${DOCKER_USERNAME}/acid-mau:${{ github.sha }}"
+          IMAGE_REF="${DOCKER_USERNAME}/crazyamsel:${{ github.sha }}"
           echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
           echo "IMAGE_REF=${IMAGE_REF}" >> "$GITHUB_ENV"
 
@@ -78,8 +78,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.DOCKER_USERNAME }}/acid-mau:latest
-            ${{ env.DOCKER_USERNAME }}/acid-mau:${{ github.sha }}
+            ${{ env.DOCKER_USERNAME }}/crazyamsel:latest
+            ${{ env.DOCKER_USERNAME }}/crazyamsel:${{ github.sha }}
 
   deploy:
     needs: build_and_push
@@ -118,10 +118,10 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
-            APP_DIR="${DEPLOY_PATH:-/opt/acid-mau}"
+            APP_DIR="${DEPLOY_PATH:-/opt/crazyamsel}"
             cd "$APP_DIR"
 
-            EFFECTIVE_IMAGE="${IMAGE_REF:-${DOCKER_USERNAME}/acid-mau:latest}"
+            EFFECTIVE_IMAGE="${IMAGE_REF:-${DOCKER_USERNAME}/crazyamsel:latest}"
 
             if [ -f ".env" ]; then
               if grep -q '^SERVER_BUILD_ID=' .env; then

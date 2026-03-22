@@ -12,7 +12,7 @@ import {
   type SoundPriority,
 } from "./game-sound-policy";
 
-export const GAME_SFX_ENABLED_KEY = "acid-mau:sfx-enabled";
+export const GAME_SFX_ENABLED_KEY = "crazyamsel:sfx-enabled";
 
 type SoundLabel =
   | "card-play"

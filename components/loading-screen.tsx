@@ -8,7 +8,7 @@ export function LoadingScreen() {
       
       {/* Loading Text */}
       <Text className="text-foreground text-2xl font-bold mt-4">
-        Acid-Mau
+        CrazyAmsel
       </Text>
       <Text className="text-muted text-base mt-2">
         Lade...

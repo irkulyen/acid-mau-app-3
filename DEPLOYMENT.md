@@ -1,4 +1,4 @@
-# Deployment-Dokumentation: Acid-Mau Online Multiplayer
+# Deployment-Dokumentation: CrazyAmsel Online Multiplayer
 
 ## Überblick
 
@@ -14,7 +14,7 @@ Die App nutzt **GitHub Actions** für automatisiertes Deployment. Bei jedem Push
 
 ### 2. Docker Hub Account
 - Account erstellen auf [hub.docker.com](https://hub.docker.com)
-- Repository `acid-mau` erstellen
+- Repository `crazyamsel-app` erstellen
 
 ### 3. Produktionsserver
 - Linux-Server (Ubuntu 22.04 empfohlen)
@@ -34,7 +34,7 @@ Gehe zu **Settings → Secrets and variables → Actions** und füge hinzu:
 | `DEPLOY_HOST` | Server IP/Domain | `123.45.67.89` |
 | `DEPLOY_USER` | SSH Benutzername | `ubuntu` |
 | `DEPLOY_SSH_KEY` | Private SSH Key | `-----BEGIN RSA PRIVATE KEY-----...` |
-| `DEPLOY_PATH` | App-Pfad auf Server (optional) | `/opt/acid-mau` |
+| `DEPLOY_PATH` | App-Pfad auf Server (optional) | `/opt/crazyamsel` |
 | `DEPLOY_API_URL` | Öffentliche API-URL für Post-Deploy Verify | `https://deine-domain.com` |
 
 ---
@@ -59,9 +59,9 @@ sudo usermod -aG docker $USER
 ### 2. Projektverzeichnis erstellen
 
 ```bash
-sudo mkdir -p /opt/acid-mau
-sudo chown $USER:$USER /opt/acid-mau
-cd /opt/acid-mau
+sudo mkdir -p /opt/crazyamsel
+sudo chown $USER:$USER /opt/crazyamsel
+cd /opt/crazyamsel
 ```
 
 ### 3. docker-compose.yml hochladen
@@ -69,7 +69,7 @@ cd /opt/acid-mau
 Kopiere `docker-compose.yml` auf den Server:
 
 ```bash
-scp docker-compose.yml user@server:/opt/acid-mau/
+scp docker-compose.yml user@server:/opt/crazyamsel/
 ```
 
 ### 4. Umgebungsvariablen setzen
@@ -77,7 +77,7 @@ scp docker-compose.yml user@server:/opt/acid-mau/
 Erstelle `.env` Datei auf dem Server:
 
 ```bash
-cd /opt/acid-mau
+cd /opt/crazyamsel
 nano .env
 ```
 
@@ -101,7 +101,7 @@ ADMIN_USER_IDS=123,456
 ### 5. Erste Deployment
 
 ```bash
-cd /opt/acid-mau
+cd /opt/crazyamsel
 docker-compose up -d
 ```
 
@@ -127,11 +127,11 @@ Falls GitHub Actions nicht genutzt wird:
 
 ```bash
 # Auf lokalem Rechner
-docker build -t deinusername/acid-mau:latest .
-docker push deinusername/acid-mau:latest
+docker build -t deinusername/crazyamsel:latest .
+docker push deinusername/crazyamsel:latest
 
 # Auf Server
-cd /opt/acid-mau
+cd /opt/crazyamsel
 docker-compose pull
 docker-compose up -d
 ```
@@ -260,13 +260,13 @@ Nutze **nginx** oder **Traefik** als Reverse Proxy vor den API-Containern.
 ### Datenbank-Backup
 
 ```bash
-docker-compose exec db mysqldump -uroot -p"$DB_ROOT_PASSWORD" acid_mau > backup_$(date +%Y%m%d).sql
+docker-compose exec db mysqldump -uroot -p"$DB_ROOT_PASSWORD" crazyamsel > backup_$(date +%Y%m%d).sql
 ```
 
 ### Datenbank wiederherstellen
 
 ```bash
-docker-compose exec -T db mysql -uroot -p"$DB_ROOT_PASSWORD" acid_mau < backup_20260226.sql
+docker-compose exec -T db mysql -uroot -p"$DB_ROOT_PASSWORD" crazyamsel < backup_20260226.sql
 ```
 
 ---

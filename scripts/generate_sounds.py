@@ -56,7 +56,7 @@ def generate_round_end():
     return np.concatenate([tone1, silence1, tone2, silence2, tone3])
 
 def main():
-    output_dir = "/home/ubuntu/acid-mau-app/assets/sounds"
+    output_dir = "/home/ubuntu/crazyamsel-app/assets/sounds"
     os.makedirs(output_dir, exist_ok=True)
     
     print("Generating card game sounds...")

@@ -178,7 +178,7 @@ export default function RegisterScreen() {
               <Text className="text-primary text-lg">← Zurück zum Login</Text>
             </Pressable>
             <Text className="text-4xl font-bold text-foreground mb-2">Registrieren</Text>
-            <Text className="text-muted text-lg">Erstelle dein Acid-Mau Konto</Text>
+            <Text className="text-muted text-lg">Erstelle dein CrazyAmsel Konto</Text>
           </View>
 
           {/* Error Message */}

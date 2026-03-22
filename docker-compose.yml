@@ -2,10 +2,10 @@ services:
   # MySQL Database
   db:
     image: mysql:8
-    container_name: acid-mau-db
+    container_name: crazyamsel-db
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
-      MYSQL_DATABASE: acid_mau
+      MYSQL_DATABASE: crazyamsel
     ports:
       - "3306:3306"
     volumes:
@@ -18,7 +18,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: acid-mau-redis
+    container_name: crazyamsel-redis
     ports:
       - "6379:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
@@ -27,10 +27,10 @@ services:
   # Backend API Server
   api:
     image: ${API_IMAGE}
-    container_name: acid-mau-api
+    container_name: crazyamsel-api
     environment:
       NODE_ENV: production
-      DATABASE_URL: mysql://root:${DB_ROOT_PASSWORD:-root}@db:3306/acid_mau
+      DATABASE_URL: mysql://root:${DB_ROOT_PASSWORD:-root}@db:3306/crazyamsel
       JWT_SECRET: ${JWT_SECRET}
       REDIS_URL: redis://redis:6379
       ENFORCE_SINGLE_SOCKET_INSTANCE: ${ENFORCE_SINGLE_SOCKET_INSTANCE:-true}

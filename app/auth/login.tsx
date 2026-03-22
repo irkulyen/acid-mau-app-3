@@ -136,7 +136,7 @@ export default function LoginScreen() {
     <ScreenContainer>
       <View style={{ flex: 1, padding: 24, justifyContent: 'center' }}>
         <Text style={{ fontSize: 32, fontWeight: 'bold', color: '#4CAF50', textAlign: 'center', marginBottom: 8 }}>
-          Acid-Mau
+          CrazyAmsel
         </Text>
         <Text style={{ fontSize: 16, color: '#999', textAlign: 'center', marginBottom: 32 }}>
           Willkommen zurück!

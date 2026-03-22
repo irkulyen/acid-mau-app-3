@@ -13,7 +13,7 @@ FILES = [
     "app/results/game-summary.tsx",
 ]
 
-BASE = "/home/ubuntu/acid-mau-app"
+BASE = "/home/ubuntu/crazyamsel-app"
 
 for f in FILES:
     path = os.path.join(BASE, f)

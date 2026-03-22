@@ -71,37 +71,13 @@ if (!process.env.EXPO_PUBLIC_API_URL && process.env.NODE_ENV === "production") {
   throw new Error("EXPO_PUBLIC_API_URL ist nicht gesetzt");
 }
 
-// Bundle ID format: space.manus.<project_name_dots>.<timestamp>
-// e.g., "my-app" created at 2024-01-15 10:30:45 -> "space.manus.my.app.t20240115103045"
-// Bundle ID can only contain letters, numbers, and dots
-// Android requires each dot-separated segment to start with a letter
-const rawBundleId = "space.manus.acid.mau.app.t20260130220313";
-const bundleId =
-  rawBundleId
-    .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
-    .replace(/[^a-zA-Z0-9.]/g, "") // Remove invalid chars
-    .replace(/\.+/g, ".") // Collapse consecutive dots
-    .replace(/^\.+|\.+$/g, "") // Trim leading/trailing dots
-    .toLowerCase()
-    .split(".")
-    .map((segment) => {
-      // Android requires each segment to start with a letter
-      // Prefix with 'x' if segment starts with a digit
-      return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
-    })
-    .join(".") || "space.manus.app";
-// Extract timestamp from bundle ID and prefix with "manus" for deep link scheme
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
-
 const env = {
   // App branding - update these values directly (do not use env vars)
-  appName: "Acid-Mau",
-  appSlug: "{{project_name}}",
-  scheme: schemeFromBundleId,
-  iosBundleId: bundleId,
-  androidPackage: bundleId,
+  appName: "CrazyAmsel",
+  appSlug: "crazyamsel",
+  scheme: "crazyamsel",
+  iosBundleId: "com.maikscheibe.crazyamsel",
+  androidPackage: "com.maikscheibe.crazyamsel",
 };
 
 // React Compiler slows down first-time Metro bundle compilation in dev tunnel mode.

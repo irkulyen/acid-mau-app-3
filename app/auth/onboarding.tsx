@@ -60,7 +60,7 @@ export default function OnboardingScreen() {
           <Text className="text-6xl mb-4">🃏</Text>
           <Text className="text-4xl font-bold text-foreground mb-2">Willkommen!</Text>
           <Text className="text-muted text-lg text-center">
-            Wähle einen Benutzernamen für dein Acid-Mau Profil
+            Wähle einen Benutzernamen für dein CrazyAmsel Profil
           </Text>
         </View>
 
