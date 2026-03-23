@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
+import { TRPCError } from "@trpc/server";
 import { COOKIE_NAME } from "../shared/const.js";
 import * as db from "./db";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -15,6 +16,39 @@ import {
 } from "./state-authority";
 
 const DATA_IMAGE_REGEX = /^data:image\/(jpeg|jpg|png|webp);base64,[a-z0-9+/=]+$/i;
+const AUTH_DB_TIMEOUT_MS = 1500;
+
+function isDbConnectivityIssue(error: unknown): boolean {
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    message.includes("database not available") ||
+    message.includes("failed to connect") ||
+    message.includes("connect") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("econn") ||
+    message.includes("pool")
+  );
+}
+
+async function withTimeout<T>(
+  task: () => Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([task(), timeoutPromise]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
 
 function isValidAvatarUrl(value: string): boolean {
   if (DATA_IMAGE_REGEX.test(value)) return true;
@@ -141,7 +175,30 @@ export const appRouter = router({
         }
         
         // Find user by email
-        const user = await db.getUserByEmail(input.email);
+        let user: Awaited<ReturnType<typeof db.getUserByEmail>>;
+        try {
+          user = await withTimeout(
+            () => db.getUserByEmail(input.email),
+            AUTH_DB_TIMEOUT_MS,
+            "auth.login.getUserByEmail",
+          );
+        } catch (error) {
+          if (process.env.NODE_ENV !== "production") {
+            console.error("[auth.login] User lookup failed", {
+              email: input.email,
+              ip: clientIp,
+              durationMs: Date.now() - startedAt,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          if (isDbConnectivityIssue(error)) {
+            throw new TRPCError({
+              code: "SERVICE_UNAVAILABLE",
+              message: "Login aktuell nicht verfuegbar. Bitte erneut versuchen.",
+            });
+          }
+          throw error;
+        }
         if (!user || !user.passwordHash) {
           if (process.env.NODE_ENV !== "production") {
             console.warn("[auth.login] Invalid credentials (user not found/password missing)", {
@@ -150,7 +207,7 @@ export const appRouter = router({
               durationMs: Date.now() - startedAt,
             });
           }
-          throw new Error("Ungültige Anmeldedaten");
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Ungültige Anmeldedaten" });
         }
         
         // Verify password
@@ -163,11 +220,22 @@ export const appRouter = router({
               durationMs: Date.now() - startedAt,
             });
           }
-          throw new Error("Ungültige Anmeldedaten");
+          throw new TRPCError({ code: "UNAUTHORIZED", message: "Ungültige Anmeldedaten" });
         }
         
-        // Update last signed in
-        await db.updateUserLastSignedIn(user.id);
+        // Update last signed in (best effort, should not block login success path)
+        void withTimeout(
+          () => db.updateUserLastSignedIn(user.id),
+          Math.min(AUTH_DB_TIMEOUT_MS, 750),
+          "auth.login.updateUserLastSignedIn",
+        ).catch((error) => {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[auth.login] lastSignedIn update skipped", {
+              userId: user.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
         
         // Create token
         const token = await createToken(user.id, user.email!);
