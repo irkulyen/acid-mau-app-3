@@ -25,7 +25,6 @@ import {
   type CardPlayFxEvent,
   type DrawCardFxEvent,
   type GameFxEvent,
-  type ReactionEmoji,
   type ReactionEvent,
 } from "@/lib/socket-provider";
 import { useGameSounds } from "@/hooks/use-game-sounds";
@@ -48,10 +47,10 @@ import {
 import type { Card, CardSuit, GameState } from "@/shared/game-types";
 
 const DESIGN = {
-  tableBase: "#0B3D2E",
-  tableDark: "#072E22",
-  tableLight: "#14533C",
-  bgTint: "rgba(6, 24, 18, 0.22)",
+  tableBase: "#0F543F",
+  tableDark: "#0A3A2C",
+  tableLight: "#1B6A4D",
+  bgTint: "rgba(8, 28, 21, 0.12)",
   hudGlass: "#1A1F25",
   panelGlass: "rgba(17, 24, 32, 0.94)",
   accentPrimary: "#FF9D1A",
@@ -61,15 +60,6 @@ const DESIGN = {
   lineSoft: "rgba(109, 142, 173, 0.35)",
   lineStrong: "rgba(46, 224, 128, 0.65)",
 };
-
-const QUICK_REACTIONS: Array<{ emoji: ReactionEmoji; label: string }> = [
-  { emoji: "😈", label: "Schadenfreude" },
-  { emoji: "😤", label: "Druck" },
-  { emoji: "😂", label: "Lachen" },
-  { emoji: "🐦", label: "Amsel" },
-  { emoji: "👀", label: "Beobachten" },
-  { emoji: "⚡", label: "Impact" },
-];
 
 type ActiveReaction = ReactionEvent & { localKey: string };
 
@@ -246,12 +236,8 @@ export default function GamePlayScreen() {
   const [showChat, setShowChat] = useState(false);
   const [chatInput, setChatInput] = useState("");
   const chatListRef = useRef<FlatList>(null);
-  const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [activeReactions, setActiveReactions] = useState<ActiveReaction[]>([]);
-  const [reactionCooldownActive, setReactionCooldownActive] = useState(false);
-  const [selectedReactionTargetUserId, setSelectedReactionTargetUserId] = useState<number | null>(null);
   const reactionExpiryTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const reactionCooldownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seenReactionEventIdsRef = useRef<Map<string, number>>(new Map());
   const lastReactionAmselCueAtRef = useRef(0);
   const pendingManualAmselEventsRef = useRef<BlackbirdEvent[]>([]);
@@ -306,10 +292,6 @@ export default function GamePlayScreen() {
       }
       legacyDrawCardFxTimersRef.current.forEach((timer) => clearTimeout(timer));
       legacyDrawCardFxTimersRef.current.clear();
-      if (reactionCooldownTimerRef.current) {
-        clearTimeout(reactionCooldownTimerRef.current);
-        reactionCooldownTimerRef.current = null;
-      }
       reactionExpiryTimersRef.current.forEach((timer) => clearTimeout(timer));
       reactionExpiryTimersRef.current.clear();
       gameFxCompletionTimersRef.current.forEach(clearTimeout);
@@ -1128,7 +1110,6 @@ export default function GamePlayScreen() {
     unreadCount,
     sendAction,
     sendChatMessage,
-    sendReaction,
     markChatRead,
     markChatClosed,
     sendPreparationDone,
@@ -1176,10 +1157,7 @@ export default function GamePlayScreen() {
     setSpecialCardFxWishSuit(undefined);
     setSpecialCardFxDirection(undefined);
     setSpecialCardFxDrawChain(undefined);
-    setShowReactionPicker(false);
     setActiveReactions([]);
-    setReactionCooldownActive(false);
-    setSelectedReactionTargetUserId(null);
     seenReactionEventIdsRef.current.clear();
     lastReactionAmselCueAtRef.current = 0;
     pendingManualAmselEventsRef.current = [];
@@ -1213,10 +1191,6 @@ export default function GamePlayScreen() {
     if (blackbirdVisibilityGuardTimerRef.current) {
       clearTimeout(blackbirdVisibilityGuardTimerRef.current);
       blackbirdVisibilityGuardTimerRef.current = null;
-    }
-    if (reactionCooldownTimerRef.current) {
-      clearTimeout(reactionCooldownTimerRef.current);
-      reactionCooldownTimerRef.current = null;
     }
     reactionExpiryTimersRef.current.forEach((timer) => clearTimeout(timer));
     reactionExpiryTimersRef.current.clear();
@@ -1433,6 +1407,14 @@ export default function GamePlayScreen() {
   }, [consumeReactionEvent, gameState?.roomId]);
 
   useEffect(() => {
+    const bufferPendingGameFx = (event: GameFxEvent) => {
+      const now = Date.now();
+      pendingGameFxRef.current.push(event);
+      pendingGameFxRef.current = pendingGameFxRef.current
+        .filter((entry) => now - entry.emittedAt <= 15_000)
+        .slice(-120);
+    };
+
     setOnPreparation((data: PreparationData) => {
       setPrepSeatDraws(data.seatDraws.map(d => ({ playerId: d.playerId, username: d.username, card: d.card })));
       setPrepDealerDraws(data.dealerDraws.map(d => ({ playerId: d.playerId, username: d.username, card: d.card })));
@@ -1446,14 +1428,13 @@ export default function GamePlayScreen() {
       if (!event?.id) return;
       const currentState = gameStateRef.current;
       if (!currentState) {
-        const now = Date.now();
-        pendingGameFxRef.current.push(event);
-        pendingGameFxRef.current = pendingGameFxRef.current
-          .filter((entry) => now - entry.emittedAt <= 15_000)
-          .slice(-120);
+        bufferPendingGameFx(event);
         return;
       }
       if (event.roomId !== currentState.roomId) {
+        // Reconnect/join race: keep authoritative FX until room state catches up
+        // instead of dropping them and risking missing multiplayer Amsel moments.
+        bufferPendingGameFx(event);
         return;
       }
       enqueueUnifiedGameFx(event);
@@ -1621,35 +1602,7 @@ export default function GamePlayScreen() {
     return () => clearInterval(interval);
   }, [currentPlayer, expectedRoomCode, gameState, isConnected, recoverSession, router]);
 
-  useEffect(() => {
-    if (!gameState || !currentPlayer) {
-      setSelectedReactionTargetUserId(null);
-      return;
-    }
-    const availableTargets = gameState.players.filter(
-      (player) => !player.isEliminated && player.userId !== currentPlayer.userId,
-    );
-    if (availableTargets.length === 0) {
-      setSelectedReactionTargetUserId(null);
-      return;
-    }
-    const currentlyValid = availableTargets.some((player) => player.userId === selectedReactionTargetUserId);
-    if (currentlyValid) return;
-
-    const turnUserId = gameState.players[gameState.currentPlayerIndex]?.userId;
-    const preferred =
-      typeof turnUserId === "number" && turnUserId !== currentPlayer.userId
-        ? turnUserId
-        : availableTargets[0].userId;
-    setSelectedReactionTargetUserId(preferred);
-  }, [
-    gameState,
-    currentPlayer,
-    selectedReactionTargetUserId,
-  ]);
-
   const handleOpenChat = () => {
-    setShowReactionPicker(false);
     setShowChat(true);
     markChatRead();
   };
@@ -1664,30 +1617,6 @@ export default function GamePlayScreen() {
     sendChatMessage(gameState.roomId, currentPlayer.userId, currentPlayer.username, chatInput.trim());
     setChatInput("");
   };
-
-  const handleSendReaction = useCallback((emoji: ReactionEmoji) => {
-    if (!gameState || !currentPlayer || reactionCooldownActive) return;
-    const availableTargets = gameState.players.filter(
-      (player) => !player.isEliminated && player.userId !== currentPlayer.userId,
-    );
-    const selectedTargetIsValid =
-      selectedReactionTargetUserId != null &&
-      availableTargets.some((player) => player.userId === selectedReactionTargetUserId);
-    const targetUserId = selectedTargetIsValid
-      ? selectedReactionTargetUserId ?? undefined
-      : (availableTargets.find((player) => player.userId === gameState.players[gameState.currentPlayerIndex]?.userId)?.userId
-          ?? availableTargets[0]?.userId);
-    sendReaction(gameState.roomId, emoji, targetUserId);
-    setShowReactionPicker(false);
-    setReactionCooldownActive(true);
-    if (reactionCooldownTimerRef.current) {
-      clearTimeout(reactionCooldownTimerRef.current);
-    }
-    reactionCooldownTimerRef.current = setTimeout(() => {
-      reactionCooldownTimerRef.current = null;
-      setReactionCooldownActive(false);
-    }, 1_150);
-  }, [currentPlayer, gameState, reactionCooldownActive, selectedReactionTargetUserId, sendReaction]);
 
   const isMyTurn = Boolean(gameState && currentPlayer && gameState.players[gameState.currentPlayerIndex]?.id === currentPlayer.id);
   const playableCardIds = new Set(gameState?.playableCardIds ?? []);
@@ -1895,7 +1824,9 @@ export default function GamePlayScreen() {
     if (myTurn && Platform.OS !== "web") {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    showMomentBanner(myTurn ? "🎯 Du bist am Zug" : `👉 ${turnPlayer.username} ist am Zug`, 900);
+    if (!myTurn) {
+      showMomentBanner(`👉 ${turnPlayer.username} ist am Zug`, 900);
+    }
   }, [
     gameState?.roomId,
     gameState?.phase,
@@ -1950,21 +1881,6 @@ export default function GamePlayScreen() {
   const opponents = gameState.players
     .filter((p) => p.id !== currentPlayer.id)
     .filter((p) => !p.isEliminated);
-  const reactionTargetPlayers = gameState.players.filter(
-    (player) => !player.isEliminated && player.userId !== currentPlayer.userId,
-  );
-  const reactionAutoTarget = (() => {
-    const turnUserId = gameState.players[gameState.currentPlayerIndex]?.userId;
-    if (typeof turnUserId === "number" && turnUserId !== currentPlayer.userId) {
-      const turnTarget = reactionTargetPlayers.find((player) => player.userId === turnUserId);
-      if (turnTarget) return turnTarget;
-    }
-    return reactionTargetPlayers[0];
-  })();
-  const selectedReactionTarget =
-    selectedReactionTargetUserId == null
-      ? reactionAutoTarget
-      : reactionTargetPlayers.find((player) => player.userId === selectedReactionTargetUserId) ?? reactionAutoTarget;
   const playerCount = gameState.players.length;
   const mySeat = currentPlayer.seatPosition ?? gameState.players.findIndex((p) => p.id === currentPlayer.id);
   const seatAwareOpponents = [...opponents].sort((a, b) => {
@@ -1977,51 +1893,53 @@ export default function GamePlayScreen() {
   const isCompactHeight = viewportHeight < 790;
   const isNarrowWidth = viewportWidth < 390;
   const isSmallPhone = viewportWidth <= 393;
+  const handPanelMinHeight = isMyTurn ? (isCompactHeight ? 98 : 110) : 70;
   const opponentChipWidth = isSmallPhone ? 102 : 108;
   const opponentChipMinHeight = isCompactHeight ? 82 : 88;
   const arenaHeight = isCompactHeight ? 360 : 404;
   const arenaInset = isNarrowWidth ? 8 : 14;
   const arenaUsableWidth = Math.max(260, viewportWidth - arenaInset * 2);
   const tableCenterX = arenaInset + arenaUsableWidth / 2;
-  const playerCircleRadius = 320;
-  const leftX = arenaInset;
-  const rightX = arenaInset + arenaUsableWidth - opponentChipWidth;
-  const centerX = tableCenterX - opponentChipWidth / 2;
-  const yTop = isCompactHeight ? 2 : 4;
-  const yUpper = isCompactHeight ? 68 : 82;
-  const yMiddle = Math.min(isCompactHeight ? 138 : 156, Math.round(playerCircleRadius * 0.48));
-  const yLower = Math.min(isCompactHeight ? 286 : 324, arenaHeight - opponentChipMinHeight - 2);
-  const anchorMap: Record<number, Array<{ left: number; top: number }>> = {
-    1: [{ left: centerX, top: yTop + 10 }],
-    2: [
-      { left: rightX, top: yMiddle },
-      { left: leftX, top: yMiddle },
-    ],
-    3: [
-      { left: rightX, top: yLower - 12 },
-      { left: centerX, top: yTop },
-      { left: leftX, top: yLower - 12 },
-    ],
-    4: [
-      { left: rightX, top: yLower },
-      { left: rightX, top: yUpper },
-      { left: leftX, top: yUpper },
-      { left: leftX, top: yLower },
-    ],
-    5: [
-      { left: rightX, top: yLower },
-      { left: rightX, top: yUpper },
-      { left: centerX, top: yTop },
-      { left: leftX, top: yUpper },
-      { left: leftX, top: yLower },
-    ],
+  const arenaCenterY = Math.round(arenaHeight * 0.36);
+  const topSlotSpreadX = Math.min(156, Math.max(112, arenaUsableWidth * 0.36));
+  const bottomSlotSpreadX = Math.min(118, Math.max(88, arenaUsableWidth * 0.26));
+  const topSideOffset = isCompactHeight ? 170 : 190;
+  const topMidOffset = isCompactHeight ? 190 : 210;
+  const bottomOffset = isCompactHeight ? 74 : 84;
+  type OpponentSlot = "topLeft" | "topMid" | "topRight" | "bottomLeft" | "bottomMid" | "bottomRight";
+  const slotCenters: Record<OpponentSlot, { x: number; y: number }> = {
+    topLeft: { x: tableCenterX - topSlotSpreadX, y: arenaCenterY - topSideOffset },
+    topMid: { x: tableCenterX, y: arenaCenterY - topMidOffset },
+    topRight: { x: tableCenterX + topSlotSpreadX, y: arenaCenterY - topSideOffset },
+    bottomLeft: { x: tableCenterX - bottomSlotSpreadX, y: arenaCenterY + bottomOffset },
+    bottomMid: { x: tableCenterX, y: arenaCenterY + bottomOffset },
+    bottomRight: { x: tableCenterX + bottomSlotSpreadX, y: arenaCenterY + bottomOffset },
   };
-  const fallbackAnchors = anchorMap[5];
+  const slotOrderByOpponentCount: Record<number, OpponentSlot[]> = {
+    1: ["topMid"],
+    2: ["topLeft", "topRight"],
+    3: ["topMid", "bottomLeft", "bottomRight"],
+    4: ["topLeft", "topRight", "bottomLeft", "bottomRight"],
+    5: ["topMid", "topLeft", "topRight", "bottomLeft", "bottomRight"],
+    6: ["topLeft", "topMid", "topRight", "bottomLeft", "bottomMid", "bottomRight"],
+  };
+  const opponentCount = seatAwareOpponents.length;
+  const slotOrder =
+    slotOrderByOpponentCount[opponentCount] ??
+    slotOrderByOpponentCount[6].slice(0, Math.max(1, Math.min(6, opponentCount)));
+  const minLeft = arenaInset;
+  const maxLeft = arenaInset + arenaUsableWidth - opponentChipWidth;
+  const minTop = -Math.round(opponentChipMinHeight * 0.55);
+  const maxTop = arenaHeight - opponentChipMinHeight - 10;
   const anchorsForOpponents = seatAwareOpponents.map((_, idx) => {
-    const proposed = (anchorMap[seatAwareOpponents.length] ?? fallbackAnchors)[idx] ?? fallbackAnchors[idx % fallbackAnchors.length];
-    const clampedLeft = Math.max(arenaInset, Math.min(arenaInset + arenaUsableWidth - opponentChipWidth, proposed.left));
-    const clampedTop = Math.max(2, Math.min(arenaHeight - opponentChipMinHeight - 4, proposed.top));
-    return { left: clampedLeft, top: clampedTop };
+    const slot = slotOrder[idx] ?? slotOrder[slotOrder.length - 1] ?? "topMid";
+    const center = slotCenters[slot];
+    const rawLeft = center.x - opponentChipWidth / 2;
+    const rawTop = center.y - opponentChipMinHeight / 2;
+    return {
+      left: Math.round(Math.min(maxLeft, Math.max(minLeft, rawLeft))),
+      top: Math.round(Math.min(maxTop, Math.max(minTop, rawTop))),
+    };
   });
   const now = Date.now();
   const visibleReactions = activeReactions.filter((reaction) => reaction.expiresAt > now);
@@ -2042,12 +1960,19 @@ export default function GamePlayScreen() {
   const discardTopRotation = (((gameState.discardPile.length + 2) % 7) - 3) * 2.5;
   const isCurrentPlayerLoserPulse = loserPulseName === currentPlayer.username;
   const centerSpotSize = isSmallPhone ? 280 : 320;
-  const centerSpotTop = isCompactHeight ? 268 : 292;
+  const centerSpotTop = arenaCenterY - centerSpotSize / 2;
+  const centerSpotLeft = tableCenterX - centerSpotSize / 2;
   const tableLogoSize = isSmallPhone ? 132 : 156;
-  const tableLogoTop = centerSpotTop + centerSpotSize / 2 - tableLogoSize / 2;
+  const tableLogoTop = arenaCenterY - tableLogoSize / 2;
+  const tableLogoLeft = tableCenterX - tableLogoSize / 2;
+  const stackCardsWidth = 58 * 2 + (isCompactHeight ? 24 : 28);
+  const stackCardsHeight = 85;
+  const stackCenterLift = isCompactHeight ? 30 : 34;
   const handPanelBottom = Math.max(2, insets.bottom - 2);
+  const statusPanelReservedHeight = isCompactHeight ? 118 : 132;
   const getRoundStartCards = (lossPoints: number) => Math.max(1, lossPoints + 1);
   const hasActivePriorityFx = showBlackbird || showDrawFly || showFlyingCard || showWishFx || showRoundGlow || showSpecialCardFx;
+  const contextPills = decisionPills.filter((pill) => pill.key !== "turn").slice(0, 1);
   const { showClutchOrRivalryBanner, showMomentStatusBanner } = getSecondaryStatusBannerFlags({
     isCompactHeight,
     drawChainCount: gameState.drawChainCount,
@@ -2082,7 +2007,7 @@ export default function GamePlayScreen() {
           right: 0,
           bottom: 0,
         }}
-        imageStyle={{ opacity: 0.03, tintColor: "#DDEBDF" }}
+        imageStyle={{ opacity: 0.07, tintColor: "#E7F4EA" }}
       />
       <View
         style={{
@@ -2092,57 +2017,21 @@ export default function GamePlayScreen() {
           backgroundColor: DESIGN.bgTint,
         }}
       />
-      <View
-        pointerEvents="none"
-        style={{
-          position: "absolute",
-          alignSelf: "center",
-          top: tableLogoTop,
-          width: tableLogoSize,
-          height: tableLogoSize,
-          opacity: hasActivePriorityFx ? 0.04 : 0.08,
-        }}
-      >
-        <Image
-          source={require("@/assets/images/acid-mau-logo.png")}
-          style={{ width: "100%", height: "100%" }}
-          contentFit="contain"
-        />
-      </View>
-      <View
-        pointerEvents="none"
-        style={{
-          position: "absolute",
-          width: centerSpotSize,
-          height: centerSpotSize,
-          alignSelf: "center",
-          top: centerSpotTop,
-          backgroundColor: "rgba(80,200,120,0.09)",
-          borderRadius: 9999,
-          shadowColor: "#66D092",
-          shadowOpacity: 0.08,
-          shadowRadius: 70,
-        }}
-      />
-
       <SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1 }}>
         <View className={isCompactHeight ? "px-2 pt-2 pb-0 flex-1" : "px-3 pt-3 pb-0 flex-1"}>
         <DrawChainShakeWrapper drawChainCount={gameState?.drawChainCount ?? 0}>
           <View className="flex-1" style={{ position: "relative" }}>
-            <View style={{ minHeight: 68, marginBottom: 8, paddingTop: 2 }}>
-              <View
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  borderRadius: 16,
-                  backgroundColor: DESIGN.hudGlass,
-                  borderWidth: 1,
-                  borderColor: "rgba(96, 112, 126, 0.6)",
-                }}
-              />
+            <View
+              style={{
+                minHeight: 58,
+                marginBottom: 6,
+                paddingTop: 2,
+                paddingHorizontal: 6,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
               <Animated.View
                 style={[
                   {
@@ -2154,8 +2043,8 @@ export default function GamePlayScreen() {
                     flexDirection: "row",
                     alignItems: "center",
                     gap: 8,
-                    marginTop: 7,
-                    marginLeft: 8,
+                    marginTop: 0,
+                    marginLeft: 0,
                     borderWidth: 1.2,
                     borderColor: isMyTurn ? "rgba(255, 186, 94, 0.95)" : "rgba(141, 171, 194, 0.52)",
                     shadowColor: isMyTurn ? "#ff9d1a" : "#0b1722",
@@ -2188,243 +2077,98 @@ export default function GamePlayScreen() {
                   <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14, letterSpacing: 0.2 }}>
                     {isMyTurn ? "DEIN ZUG" : (currentTurnPlayer?.username ?? "-")}
                   </Text>
-                  <Text style={{ color: "rgba(255,255,255,0.84)", fontWeight: "700", fontSize: 11 }}>
-                    {isMyTurn ? "Karte spielen oder ziehen" : "ist jetzt am Zug"}
-                  </Text>
-                </View>
-                <View
-                  style={{
-                    marginLeft: 2,
-                    borderRadius: 10,
-                    borderWidth: 1,
-                    borderColor: "rgba(255,255,255,0.24)",
-                    backgroundColor: "rgba(8, 15, 22, 0.42)",
-                    paddingHorizontal: 7,
-                    paddingVertical: 4,
-                  }}
-                >
-                  <Text style={{ color: "rgba(255,255,255,0.96)", fontWeight: "800", fontSize: 11 }}>
-                    R{gameState.roundNumber}
-                  </Text>
-                  <Text style={{ color: "rgba(224,240,252,0.86)", fontWeight: "700", fontSize: 10 }}>
-                    {gameState.players.length}/{gameState.maxPlayers ?? gameState.players.length}
-                  </Text>
                 </View>
               </Animated.View>
-              <View
-                style={{
-                  position: "absolute",
-                  left: 10,
-                  right: 10,
-                  bottom: 6,
-                  height: 4,
-                  borderRadius: 999,
-                  overflow: "hidden",
-                  backgroundColor: "rgba(255,255,255,0.18)",
-                }}
+              <Pressable
+                onPress={handleOpenChat}
+                accessibilityRole="button"
+                accessibilityLabel="Chat öffnen"
+                accessibilityHint="Öffnet den Raum-Chat."
+                style={({ pressed }) => ({
+                    width: 40,
+                    height: 40,
+                    borderRadius: 20,
+                  backgroundColor: pressed ? "rgba(80,80,80,0.8)" : "rgba(10, 19, 28, 0.85)",
+                  borderWidth: 1.2,
+                  borderColor: "rgba(255,255,255,0.35)",
+                  alignItems: "center",
+                  justifyContent: "center",
+                })}
               >
-                <Animated.View
-                  style={[
-                    {
-                      height: "100%",
-                      borderRadius: 999,
-                      backgroundColor: isMyTurn ? DESIGN.accentSecondary : "rgba(255,255,255,0.25)",
-                    },
-                    turnBarStyle,
-                  ]}
-                />
-              </View>
-              <View style={{ position: "absolute", right: 10, top: 10, alignItems: "flex-end", gap: 8 }}>
-                <View style={{ flexDirection: "row", gap: 10 }}>
-                  {currentPlayer.userId === gameState.hostUserId && (
-                    <Pressable
-                      onPress={() => {
-                        Alert.alert(
-                          "Runde neu starten?",
-                          "Die aktuelle Runde wird abgebrochen und neu ausgeteilt. Verlustpunkte bleiben erhalten.",
-                          [
-                            { text: "Abbrechen", style: "cancel" },
-                            { text: "Neu starten", style: "destructive", onPress: () => sendAction(gameState.roomId, currentPlayer.id, { type: "RESTART_ROUND" }) },
-                          ]
-                        );
-                      }}
-                      accessibilityRole="button"
-                      accessibilityLabel="Runde neu starten"
-                      accessibilityHint="Startet die aktuelle Runde neu und behält Verlustpunkte."
-                      style={({ pressed }) => ({
-                        minWidth: 88,
-                        height: 40,
-                        borderRadius: 14,
-                        backgroundColor: pressed ? "rgba(255,157,26,0.34)" : "rgba(10, 19, 28, 0.85)",
-                        borderWidth: 1.2,
-                        borderColor: "rgba(255,157,26,0.8)",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        paddingHorizontal: 10,
-                      })}
-                    >
-                      <Text style={{ color: "#FFD89A", fontSize: 12, fontWeight: "800" }}>Runde neu</Text>
-                    </Pressable>
-                  )}
-                  <Pressable
-                    onPress={() => setShowReactionPicker((prev) => !prev)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Reaktionen öffnen"
-                    accessibilityHint="Schnelle Reaktion an alle Spieler senden."
-                    style={({ pressed }) => ({
-                      width: 40,
-                      height: 40,
-                      borderRadius: 20,
-                      backgroundColor: pressed ? "rgba(60,120,95,0.92)" : "rgba(10, 19, 28, 0.85)",
-                      borderWidth: 1.2,
-                      borderColor: "rgba(110, 240, 175, 0.55)",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      opacity: reactionCooldownActive ? 0.56 : 1,
-                    })}
-                    disabled={reactionCooldownActive}
-                  >
-                    <Text style={{ fontSize: 16 }}>⚡</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={handleOpenChat}
-                    accessibilityRole="button"
-                    accessibilityLabel="Chat öffnen"
-                    accessibilityHint="Öffnet den Raum-Chat."
-                    style={({ pressed }) => ({
-                        width: 40,
-                        height: 40,
-                        borderRadius: 20,
-                      backgroundColor: pressed ? "rgba(80,80,80,0.8)" : "rgba(10, 19, 28, 0.85)",
-                      borderWidth: 1.2,
-                      borderColor: "rgba(255,255,255,0.35)",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    })}
-                  >
-                    <Text style={{ fontSize: 16 }}>💬</Text>
-                    {unreadCount > 0 && (
-                      <View
-                        style={{
-                          position: "absolute",
-                          top: -4,
-                          right: -2,
-                          minWidth: 16,
-                          height: 16,
-                          borderRadius: 8,
-                          backgroundColor: "#DC2626",
-                          borderWidth: 1,
-                          borderColor: "rgba(255,255,255,0.8)",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          paddingHorizontal: 3,
-                        }}
-                      >
-                        <Text style={{ color: "#FFF", fontSize: 9, fontWeight: "800" }}>{Math.min(99, unreadCount)}</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                </View>
-
-                {showReactionPicker && (
+                <Text style={{ fontSize: 16 }}>💬</Text>
+                {unreadCount > 0 && (
                   <View
                     style={{
-                      gap: 8,
-                      maxWidth: 236,
-                      backgroundColor: "rgba(6, 16, 24, 0.96)",
+                      position: "absolute",
+                      top: -4,
+                      right: -2,
+                      minWidth: 16,
+                      height: 16,
+                      borderRadius: 8,
+                      backgroundColor: "#DC2626",
                       borderWidth: 1,
-                      borderColor: "rgba(100, 220, 165, 0.42)",
-                      borderRadius: 14,
-                      paddingHorizontal: 8,
-                      paddingVertical: 8,
+                      borderColor: "rgba(255,255,255,0.8)",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      paddingHorizontal: 3,
                     }}
                   >
-                    <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6 }}>
-                      <Pressable
-                        onPress={() => setSelectedReactionTargetUserId(null)}
-                        style={({ pressed }) => ({
-                          minHeight: 24,
-                          borderRadius: 999,
-                          paddingHorizontal: 8,
-                          paddingVertical: 3,
-                          borderWidth: 1,
-                          borderColor: selectedReactionTargetUserId == null ? "rgba(255, 209, 126, 0.9)" : "rgba(142, 181, 208, 0.45)",
-                          backgroundColor:
-                            selectedReactionTargetUserId == null
-                              ? "rgba(123, 77, 24, 0.92)"
-                              : (pressed ? "rgba(33, 56, 70, 0.92)" : "rgba(19, 33, 42, 0.88)"),
-                        })}
-                      >
-                        <Text style={{ color: "#F6EDD8", fontSize: 10, fontWeight: "800" }}>AUTO</Text>
-                      </Pressable>
-                      {reactionTargetPlayers.map((player) => (
-                        <Pressable
-                          key={player.id}
-                          onPress={() => setSelectedReactionTargetUserId(player.userId)}
-                          style={({ pressed }) => ({
-                            minHeight: 24,
-                            borderRadius: 999,
-                            paddingHorizontal: 8,
-                            paddingVertical: 3,
-                            borderWidth: 1,
-                            borderColor:
-                              selectedReactionTargetUserId === player.userId
-                                ? "rgba(255, 209, 126, 0.9)"
-                                : "rgba(142, 181, 208, 0.45)",
-                            backgroundColor:
-                              selectedReactionTargetUserId === player.userId
-                                ? "rgba(123, 77, 24, 0.92)"
-                                : (pressed ? "rgba(33, 56, 70, 0.92)" : "rgba(19, 33, 42, 0.88)"),
-                          })}
-                        >
-                          <Text style={{ color: "#E5F6FF", fontSize: 10, fontWeight: "800" }}>
-                            {player.username.slice(0, 8)}
-                          </Text>
-                        </Pressable>
-                      ))}
-                    </View>
-                    <Text style={{ color: "#BDE7D1", fontSize: 10, fontWeight: "700", textAlign: "right", paddingRight: 2 }}>
-                      Ziel: {selectedReactionTarget?.username ?? "kein Ziel"}
-                    </Text>
-                    <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: 6 }}>
-                    {QUICK_REACTIONS.map((reaction) => (
-                      <Pressable
-                        key={reaction.emoji}
-                        onPress={() => handleSendReaction(reaction.emoji)}
-                        style={({ pressed }) => ({
-                          width: 34,
-                          height: 34,
-                          borderRadius: 17,
-                          backgroundColor: pressed ? "rgba(72, 153, 112, 0.45)" : "rgba(19, 33, 42, 0.88)",
-                          borderWidth: 1,
-                          borderColor: "rgba(156, 239, 197, 0.45)",
-                          alignItems: "center",
-                          justifyContent: "center",
-                        })}
-                        accessibilityRole="button"
-                        accessibilityLabel={`Reaktion ${reaction.label}`}
-                      >
-                        <Text style={{ fontSize: 18 }}>{reaction.emoji}</Text>
-                      </Pressable>
-                    ))}
-                    </View>
+                    <Text style={{ color: "#FFF", fontSize: 9, fontWeight: "800" }}>{Math.min(99, unreadCount)}</Text>
                   </View>
                 )}
-              </View>
+              </Pressable>
             </View>
 
-            <GameStatusPanel
-              decisionPills={decisionPills}
-              hasWishSuit={Boolean(gameState.currentWishSuit)}
-              wishSuitLabel={wishSuitLabel}
-              showClutchOrRivalryBanner={showClutchOrRivalryBanner}
-              clutchBanner={clutchBanner}
-              rivalryBanner={rivalryBanner}
-              showMomentStatusBanner={showMomentStatusBanner}
-              momentBanner={momentBanner}
-            />
+            <View style={{ minHeight: statusPanelReservedHeight }}>
+              <GameStatusPanel
+                decisionPills={contextPills}
+                hasWishSuit={false}
+                wishSuitLabel={wishSuitLabel}
+                showClutchOrRivalryBanner={false}
+                clutchBanner={clutchBanner}
+                rivalryBanner={rivalryBanner}
+                showMomentStatusBanner={false}
+                momentBanner={momentBanner}
+              />
+            </View>
 
             <View style={{ height: arenaHeight, marginTop: isCompactHeight ? 16 : 20, marginBottom: isCompactHeight ? 2 : 4, position: "relative" }}>
+              <View
+                pointerEvents="none"
+                style={{
+                  position: "absolute",
+                  width: centerSpotSize,
+                  height: centerSpotSize,
+                  left: centerSpotLeft,
+                  top: centerSpotTop,
+                  backgroundColor: "rgba(110,220,146,0.14)",
+                  borderRadius: 9999,
+                  shadowColor: "#66D092",
+                  shadowOpacity: 0.14,
+                  shadowRadius: 70,
+                }}
+              />
+              <View
+                pointerEvents="none"
+                style={{
+                  position: "absolute",
+                  left: tableLogoLeft,
+                  top: tableLogoTop,
+                  width: tableLogoSize,
+                  height: tableLogoSize,
+                  opacity: hasActivePriorityFx ? 0.12 : 0.2,
+                  shadowColor: "#9FF1C2",
+                  shadowOpacity: 0.22,
+                  shadowRadius: 20,
+                  shadowOffset: { width: 0, height: 6 },
+                }}
+              >
+                <Image
+                  source={require("@/assets/images/acid-mau-logo.png")}
+                  style={{ width: "100%", height: "100%" }}
+                  contentFit="contain"
+                />
+              </View>
               <RoundStartGlow
                 visible={showRoundGlow}
                 eventKey={roundGlowKey}
@@ -2461,6 +2205,8 @@ export default function GamePlayScreen() {
                 const senderReaction = reactionsBySenderId.get(player.id);
                 const targetReaction = reactionTargetsByPlayerId.get(player.id);
                 const isTargeted = Boolean(targetReaction);
+                const hasPriorityHighlight = isActive || player.hand.length === 1 || isLoserPulse || isTargeted;
+                const hasStrongHighlight = isLoserPulse || isTargeted || player.hand.length === 1;
                 return (
                   <View
                     key={player.id}
@@ -2470,27 +2216,29 @@ export default function GamePlayScreen() {
                       left: anchor.left,
                       width: opponentChipWidth,
                       height: opponentChipMinHeight,
-                      backgroundColor: player.hand.length === 1
-                        ? "rgba(10,18,16,0.34)"
-                        : (isLoserPulse ? "rgba(130, 24, 24, 0.3)" : "rgba(10,18,16,0.28)"),
+                      backgroundColor: hasPriorityHighlight
+                        ? (player.hand.length === 1
+                            ? "rgba(10,18,16,0.14)"
+                            : (isLoserPulse ? "rgba(130, 24, 24, 0.16)" : "rgba(10,18,16,0.08)"))
+                        : "transparent",
                       borderRadius: 14,
-                      paddingHorizontal: 7,
+                      paddingHorizontal: 6,
                       paddingVertical: 6,
-                      borderWidth: isActive ? 1.2 : 1,
+                      borderWidth: hasStrongHighlight ? 0.9 : (isActive ? 0.8 : 0),
                       borderColor: player.hand.length === 0
-                        ? "rgba(255,255,255,0.12)"
+                        ? "rgba(255,255,255,0.16)"
                         : player.hand.length === 1
-                        ? "rgba(236, 195, 78, 0.35)"
-                        : (isLoserPulse ? "rgba(255, 88, 88, 0.82)" : "rgba(255,255,255,0.10)"),
+                        ? "rgba(236, 195, 78, 0.46)"
+                        : (isLoserPulse ? "rgba(255, 88, 88, 0.82)" : "rgba(255,255,255,0.22)"),
                       flexDirection: "column",
                       alignItems: "center",
                       justifyContent: "space-between",
                       overflow: "visible",
                       shadowColor: isActive ? "#FFD200" : "#000",
-                      shadowOpacity: isActive ? 0.32 : 0.15,
-                      shadowRadius: isActive ? 10 : 7,
+                      shadowOpacity: isActive ? 0.14 : 0,
+                      shadowRadius: isActive ? 6 : 0,
                       shadowOffset: { width: 0, height: 8 },
-                      elevation: 7,
+                      elevation: isActive ? 4 : 0,
                       opacity: player.hand.length === 0 ? 0.7 : 1,
                         }}
                       >
@@ -2655,23 +2403,29 @@ export default function GamePlayScreen() {
               <View
                 style={{
                   position: "absolute",
-                  alignSelf: "center",
-                  top: isCompactHeight ? "45%" : "46%",
+                  left: tableCenterX,
+                  top: arenaCenterY,
+                  transform: [
+                    { translateX: -stackCardsWidth / 2 },
+                    { translateY: -(stackCardsHeight / 2) - stackCenterLift },
+                  ],
+                  width: stackCardsWidth,
                   zIndex: 10,
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: isCompactHeight ? 24 : 28,
-                  backgroundColor: "rgba(7, 16, 22, 0.48)",
-                  borderWidth: 1,
-                  borderColor: "rgba(142, 181, 208, 0.28)",
-                  borderRadius: 18,
-                  paddingHorizontal: isCompactHeight ? 12 : 14,
-                  paddingVertical: isCompactHeight ? 10 : 11,
+                  justifyContent: "space-between",
+                  gap: 0,
+                  backgroundColor: "transparent",
+                  borderWidth: 0,
+                  borderColor: "transparent",
+                  borderRadius: 0,
+                  paddingHorizontal: 0,
+                  paddingVertical: 0,
                   shadowColor: "#02060a",
-                  shadowOpacity: 0.34,
-                  shadowRadius: 16,
-                  shadowOffset: { width: 0, height: 8 },
-                  elevation: 8,
+                  shadowOpacity: 0,
+                  shadowRadius: 0,
+                  shadowOffset: { width: 0, height: 0 },
+                  elevation: 0,
                 }}
               >
                 <View className="items-center">
@@ -2730,14 +2484,13 @@ export default function GamePlayScreen() {
                   {isMyTurn && (
                     <Text
                       style={{
-                        color: hasNoPlayableCards ? "#FFE9B8" : DESIGN.accentSecondary,
-                        fontSize: 11,
-                        fontWeight: "900",
-                        marginTop: 5,
-                        letterSpacing: hasNoPlayableCards ? 0.4 : 0,
+                        color: hasNoPlayableCards ? "rgba(236, 255, 244, 0.88)" : "rgba(214, 236, 224, 0.82)",
+                        fontSize: 10,
+                        fontWeight: "700",
+                        marginTop: 4,
                       }}
                     >
-                      {hasNoPlayableCards ? "JETZT ZIEHEN" : "Ziehen"}
+                      Ziehen
                     </Text>
                   )}
                 </View>
@@ -2825,19 +2578,19 @@ export default function GamePlayScreen() {
                 left: 0,
                 right: 0,
                 bottom: handPanelBottom,
-                backgroundColor: "rgba(20, 30, 38, 0.95)",
-                borderColor: isCurrentPlayerLoserPulse ? "rgba(255,88,88,0.95)" : (isMyTurn ? DESIGN.lineStrong : DESIGN.lineSoft),
-                borderWidth: isMyTurn ? 1.8 : 1,
+                backgroundColor: "rgba(20,30,38,0.7)",
+                borderColor: isCurrentPlayerLoserPulse ? "rgba(255,88,88,0.95)" : (isMyTurn ? "rgba(46, 224, 128, 0.38)" : "rgba(109, 142, 173, 0.24)"),
+                borderWidth: isMyTurn ? 0.9 : 0.5,
                 borderRadius: 20,
                 paddingHorizontal: 12,
-                paddingTop: 11,
-                paddingBottom: isCompactHeight ? 10 : 12,
+                paddingTop: 6,
+                paddingBottom: isCompactHeight ? 5 : 6,
                 shadowColor: isMyTurn ? DESIGN.accentSecondary : "#03070a",
                 shadowOffset: { width: 0, height: -4 },
-                shadowOpacity: isMyTurn ? 0.45 : 0.28,
-                shadowRadius: isMyTurn ? 18 : 9,
-                elevation: isMyTurn ? 13 : 5,
-                minHeight: isMyTurn ? (isCompactHeight ? 144 : 166) : 100,
+                shadowOpacity: isMyTurn ? 0.16 : 0.08,
+                shadowRadius: isMyTurn ? 8 : 4,
+                elevation: isMyTurn ? 5 : 2,
+                minHeight: handPanelMinHeight,
                 zIndex: 22,
               }}
             >
@@ -2943,43 +2696,20 @@ export default function GamePlayScreen() {
                   </Text>
                 </View>
               </View>
-              {isMyTurn && (
-                <View
-                  style={{
-                    marginBottom: 6,
-                    borderRadius: 10,
-                    borderWidth: 1,
-                    borderColor: hasNoPlayableCards ? "rgba(255, 196, 87, 0.72)" : "rgba(90, 230, 160, 0.6)",
-                    backgroundColor: hasNoPlayableCards ? "rgba(120, 72, 14, 0.34)" : "rgba(26, 110, 70, 0.32)",
-                    paddingHorizontal: 8,
-                    paddingVertical: 5,
-                    alignSelf: "flex-start",
-                  }}
-                >
-                  <Text
-                    style={{
-                      color: hasNoPlayableCards ? "#FFE9B8" : "#DDFBEF",
-                      fontSize: 11,
-                      fontWeight: "800",
-                    }}
-                  >
-                    {hasNoPlayableCards ? "🂠 Ziehstapel aktiv" : `${playableCount} spielbar`}
-                  </Text>
-                </View>
-              )}
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
-                style={{ minHeight: isMyTurn ? (isCompactHeight ? 86 : 98) : 62 }}
+                style={{ minHeight: isMyTurn ? (isCompactHeight ? 72 : 82) : 56 }}
                 contentContainerStyle={{ paddingHorizontal: 2, paddingTop: 4, paddingBottom: 8 }}
               >
-                <View style={{ flexDirection: "row", gap: 6, alignItems: "flex-end" }}>
+                <View style={{ flexDirection: "row", gap: 10, alignItems: "flex-end" }}>
                   {currentPlayer.hand.map((card, index) => {
                     const disabledByServerHint = isMyTurn && Boolean(gameState.playableCardIds) && !playableCardIds.has(card.id);
                     const centerIndex = (currentPlayer.hand.length - 1) / 2;
                     const offset = index - centerIndex;
                     const fanSpread = currentPlayer.hand.length <= 5 ? 10 : 7;
                     const isPlayable = !disabledByServerHint && isMyTurn;
+                    const canPlayCard = isMyTurn && !disabledByServerHint;
                     const arcLift = Math.max(0, 8 - Math.abs(offset) * 1.8);
                     return (
                       <View
@@ -2988,27 +2718,26 @@ export default function GamePlayScreen() {
                           transform: [
                             { rotate: `${offset * fanSpread}deg` },
                             { translateY: 9 - arcLift + (isPlayable ? -5 : 0) },
+                            { scale: isPlayable ? 1.18 : 1.1 },
                           ],
-                          marginHorizontal: -1,
+                          marginHorizontal: 0,
                           zIndex: 1000 - Math.abs(offset) * 10,
-                          shadowColor: isPlayable ? DESIGN.accentSecondary : "#000",
-                          shadowOpacity: isPlayable ? 0.38 : 0,
-                          shadowRadius: isPlayable ? 10 : 0,
-                          elevation: isPlayable ? 6 : 0,
-                          opacity: disabledByServerHint ? (hasNoPlayableCards ? 0.34 : 0.43) : (isMyTurn ? 1 : 0.92),
-                          borderWidth: isMyTurn ? 1.2 : 0,
-                          borderColor: isPlayable
-                            ? "rgba(90,230,160,0.9)"
-                            : disabledByServerHint
-                              ? "rgba(255,115,115,0.52)"
-                              : "transparent",
+                          backgroundColor: "#FFFFFF",
+                          shadowColor: "#000",
+                          shadowOpacity: isPlayable ? 0.36 : 0.2,
+                          shadowRadius: isPlayable ? 8 : 6,
+                          elevation: isPlayable ? 6 : 3,
+                          opacity: disabledByServerHint ? 0.85 : 1,
+                          borderWidth: isPlayable ? 1.5 : 1.2,
+                          borderColor: isPlayable ? "#4CAF50" : "rgba(0,0,0,0.15)",
                           borderRadius: 12,
                         }}
                       >
                         <PlayingCard
                           card={card}
-                          onPress={() => handlePlayCard(card)}
-                          disabled={!isMyTurn || disabledByServerHint}
+                          onPress={canPlayCard ? () => handlePlayCard(card) : undefined}
+                          disabled={false}
+                          highContrast
                           size="small"
                         />
                       </View>

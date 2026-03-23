@@ -103,6 +103,8 @@ export function SocketProvider({ children }: { children: ReactNode }) {
   const onCardPlayFxRef = useRef<((event: CardPlayFxEvent) => void) | null>(null);
   const onDrawCardFxRef = useRef<((event: DrawCardFxEvent) => void) | null>(null);
   const onGameFxRef = useRef<((event: GameFxEvent) => void) | null>(null);
+  const pendingBlackbirdEventsRef = useRef<BlackbirdEvent[]>([]);
+  const pendingGameFxEventsRef = useRef<GameFxEvent[]>([]);
   const onReactionEventRef = useRef<((event: ReactionEvent) => void) | null>(null);
   const onErrorRef = useRef<((error: string) => void) | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -563,7 +565,16 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       });
 
       socket.on("blackbird-event", (event: BlackbirdEvent) => {
-        onBlackbirdEventRef.current?.(event);
+        const handler = onBlackbirdEventRef.current;
+        if (handler) {
+          handler(event);
+          return;
+        }
+        const now = Date.now();
+        pendingBlackbirdEventsRef.current.push(event);
+        pendingBlackbirdEventsRef.current = pendingBlackbirdEventsRef.current
+          .filter((entry) => now - (entry.startAt ?? now) <= 15_000)
+          .slice(-80);
       });
       socket.on("card-play-fx", (event: CardPlayFxEvent) => {
         onCardPlayFxRef.current?.(event);
@@ -572,7 +583,16 @@ export function SocketProvider({ children }: { children: ReactNode }) {
         onDrawCardFxRef.current?.(event);
       });
       socket.on("game-fx", (event: GameFxEvent) => {
-        onGameFxRef.current?.(event);
+        const handler = onGameFxRef.current;
+        if (handler) {
+          handler(event);
+          return;
+        }
+        const now = Date.now();
+        pendingGameFxEventsRef.current.push(event);
+        pendingGameFxEventsRef.current = pendingGameFxEventsRef.current
+          .filter((entry) => now - entry.emittedAt <= 15_000)
+          .slice(-120);
       });
       socket.on("reaction:event", (event: ReactionEvent) => {
         onReactionEventRef.current?.(event);
@@ -875,6 +895,13 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const setOnBlackbirdEvent = useCallback((cb: ((event: BlackbirdEvent) => void) | null) => {
     onBlackbirdEventRef.current = cb;
+    if (!cb || pendingBlackbirdEventsRef.current.length === 0) return;
+    const now = Date.now();
+    const flush = pendingBlackbirdEventsRef.current
+      .filter((event) => now - (event.startAt ?? now) <= 15_000)
+      .sort((a, b) => (a.startAt ?? 0) - (b.startAt ?? 0));
+    pendingBlackbirdEventsRef.current = [];
+    flush.forEach((event) => cb(event));
   }, []);
 
   const setOnCardPlayFx = useCallback((cb: ((event: CardPlayFxEvent) => void) | null) => {
@@ -887,6 +914,16 @@ export function SocketProvider({ children }: { children: ReactNode }) {
 
   const setOnGameFx = useCallback((cb: ((event: GameFxEvent) => void) | null) => {
     onGameFxRef.current = cb;
+    if (!cb || pendingGameFxEventsRef.current.length === 0) return;
+    const now = Date.now();
+    const flush = pendingGameFxEventsRef.current
+      .filter((event) => now - event.emittedAt <= 15_000)
+      .sort((a, b) => {
+        if (a.sequence !== b.sequence) return a.sequence - b.sequence;
+        return (a.startAt ?? 0) - (b.startAt ?? 0);
+      });
+    pendingGameFxEventsRef.current = [];
+    flush.forEach((event) => cb(event));
   }, []);
 
   const setOnReactionEvent = useCallback((cb: ((event: ReactionEvent) => void) | null) => {

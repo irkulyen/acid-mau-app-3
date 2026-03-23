@@ -328,7 +328,47 @@ function isRateLimited(socketId: string, event: string, limit: number, windowMs:
 }
 
 async function isUserMappedToRoom(userId: number, roomId: number): Promise<boolean> {
-  return (await realtimeStore.getUserRoom(userId)) === roomId;
+  let state = await realtimeStore.getGameState(roomId);
+  if (!state) {
+    state = await getGameStateWithRetry(roomId, 2, 60);
+  }
+  const mappedRoomId = await realtimeStore.getUserRoom(userId);
+
+  // Authoritative membership check: game state is source of truth while a room is active.
+  if (state) {
+    const isMember = state.players.some((player) => player.userId === userId);
+    if (isMember) {
+      if (mappedRoomId !== roomId) {
+        await realtimeStore.setUserRoom(userId, roomId);
+        telemetry.inc("rooms.mapping_recovered.event_guard");
+        console.warn(
+          `[socket] Recovered user-room mapping in auth guard userId=${userId} oldRoomId=${mappedRoomId ?? "-"} roomId=${roomId}`,
+        );
+      }
+      return true;
+    }
+
+    const knownPlayers = (state?.players ?? []).map((player) => ({
+      userId: player.userId,
+      playerId: player.id,
+      username: player.username,
+    }));
+    console.warn(
+      `[socket] Unauthorized room access guard userId=${userId} roomId=${roomId} mappedRoomId=${mappedRoomId ?? "-"} knownPlayers=${JSON.stringify(knownPlayers)}`,
+    );
+    return false;
+  }
+
+  // Cache fallback for short realtime-store gaps: preserve valid session continuity.
+  if (mappedRoomId === roomId) {
+    telemetry.inc("rooms.mapping_cache_fallback");
+    return true;
+  }
+
+  console.warn(
+    `[socket] Unauthorized room access guard userId=${userId} roomId=${roomId} mappedRoomId=${mappedRoomId ?? "-"} knownPlayers=[]`,
+  );
+  return false;
 }
 
 function getReactionCooldownKey(roomId: number, userId: number): string {
@@ -848,7 +888,7 @@ function scheduleBotTurn(io: SocketIOServer, roomId: number) {
 async function executeBotTurn(io: SocketIOServer, roomId: number) {
   try {
     const result = await withRoomMutation(roomId, async () => {
-      const state = await realtimeStore.getGameState(roomId);
+      const state = await getGameStateWithRetry(roomId, 3, 80);
       if (!state || state.phase !== "playing") return null;
 
       const currentPlayer = state.players[state.currentPlayerIndex];
@@ -980,7 +1020,7 @@ function scheduleDisconnectedPlayerTimeout(io: SocketIOServer, roomId: number, s
       turnTimeouts.delete(roomId);
       try {
         const result = await withRoomMutation(roomId, async () => {
-          const currentState = await realtimeStore.getGameState(roomId);
+          const currentState = await getGameStateWithRetry(roomId, 3, 80);
           if (!currentState || currentState.phase !== "playing") return null;
 
           const currentTurnPlayer = currentState.players[currentState.currentPlayerIndex];
@@ -1046,7 +1086,7 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
         void (async () => {
           try {
             const result = await withRoomMutation(roomId, async () => {
-              const currentState = await realtimeStore.getGameState(roomId);
+              const currentState = await getGameStateWithRetry(roomId, 3, 80);
               if (!currentState || currentState.phase !== "round_end") return null;
               const updatedState = processAction(currentState, { type: "READY" }, bot.id);
               await realtimeStore.setGameState(roomId, updatedState);
@@ -1075,7 +1115,7 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
         void (async () => {
         try {
           const result = await withRoomMutation(roomId, async () => {
-            const currentState = await realtimeStore.getGameState(roomId);
+            const currentState = await getGameStateWithRetry(roomId, 3, 80);
             if (!currentState || currentState.phase !== "round_end") return null;
             if (isUserConnectedInRoom(roomId, human.userId)) return null;
             const player = currentState.players.find(p => p.id === human.id);
@@ -1105,7 +1145,7 @@ function handleRoundEndBotReady(io: SocketIOServer, roomId: number, newState: Ga
       void (async () => {
       try {
         const result = await withRoomMutation(roomId, async () => {
-          const currentState = await realtimeStore.getGameState(roomId);
+          const currentState = await getGameStateWithRetry(roomId, 3, 80);
           if (!currentState || currentState.phase !== "round_end") return null;
           const nonEliminated = currentState.players.filter(p => !p.isEliminated);
           const allReady = nonEliminated.every(p => p.isReady);
@@ -1648,6 +1688,26 @@ export function setupGameSocket(httpServer: HTTPServer) {
             return;
           }
 
+          // Restore tracked room membership early in reconnect flow.
+          // This closes the race where game actions/guards can run while the
+          // socket is already connected but not yet re-attached to room presence.
+          attachSocketToTrackedRoom(socket, roomId);
+          evictDuplicateUserSocketsInRoom(io, roomId, userId, socket.id);
+          cancelRoomCleanup(roomId);
+          const mappingSet = await ensureUserRoomMappingByMembership(userId, roomId, gameState);
+          if (!mappingSet) {
+            socket.emit("error", { message: "Player not found in game" });
+            return;
+          }
+
+          // Cancel disconnect timeout immediately after membership is restored.
+          const timeout = disconnectTimeouts.get(userId);
+          if (timeout) {
+            clearTimeout(timeout);
+            disconnectTimeouts.delete(userId);
+            console.log(`[socket] Cancelled disconnect timeout for user ${userId}`);
+          }
+
           // Keep profile payload deterministic on reconnect (username/avatar can change while app is backgrounded).
           const rawAvatarUrl = await getUserAvatarUrl(userId);
           const resolvedAvatarUrl = normalizeAvatarUrlForClient(rawAvatarUrl, getSocketPublicOrigin(socket));
@@ -1681,24 +1741,6 @@ export function setupGameSocket(httpServer: HTTPServer) {
                 resolvedAvatarUrl ? "yes" : "no"
               }`,
             );
-          }
-
-          // Cancel disconnect timeout
-          const timeout = disconnectTimeouts.get(userId);
-          if (timeout) {
-            clearTimeout(timeout);
-            disconnectTimeouts.delete(userId);
-            console.log(`[socket] Cancelled disconnect timeout for user ${userId}`);
-          }
-
-          // Rejoin socket room (single tracked room per socket)
-          attachSocketToTrackedRoom(socket, roomId);
-          evictDuplicateUserSocketsInRoom(io, roomId, userId, socket.id);
-          cancelRoomCleanup(roomId);
-          const mappingSet = await ensureUserRoomMappingByMembership(userId, roomId, gameState);
-          if (!mappingSet) {
-            socket.emit("error", { message: "Player not found in game" });
-            return;
           }
 
           // If preparation is pending, send preparation data to reconnected player
@@ -2156,11 +2198,20 @@ export function setupGameSocket(httpServer: HTTPServer) {
 
         const { roomId, action } = data;
         if (!(await isUserMappedToRoom(authenticatedUserId, roomId))) {
+          const debugState = await realtimeStore.getGameState(roomId);
+          const knownPlayers = (debugState?.players ?? []).map((player) => ({
+            userId: player.userId,
+            playerId: player.id,
+            username: player.username,
+          }));
+          console.warn(
+            `[socket] Unauthorized room access (game-action) socketId=${socket.id} userId=${authenticatedUserId} roomId=${roomId} playerId=${data.playerId ?? "-"} action=${action?.type ?? "-"} knownPlayers=${JSON.stringify(knownPlayers)}`,
+          );
           socket.emit("error", { message: "Unauthorized room access" });
           return;
         }
         const result = await withRoomMutation(roomId, async () => {
-          const gameState = await realtimeStore.getGameState(roomId);
+          const gameState = await getGameStateWithRetry(roomId, 3, 80);
           if (!gameState) {
             throw new Error("Game not found");
           }
@@ -2634,15 +2685,6 @@ export function setupGameSocket(httpServer: HTTPServer) {
           return;
         }
 
-        // Persist to DB
-        await db.saveChatMessage({
-          roomId,
-          userId: authenticatedUserId,
-          username: player.username,
-          message: trimmed,
-        });
-
-        // Broadcast to all in room
         const chatMsg = {
           id: Date.now(),
           roomId,
@@ -2651,6 +2693,21 @@ export function setupGameSocket(httpServer: HTTPServer) {
           message: trimmed,
           createdAt: new Date().toISOString(),
         };
+
+        // Persist best-effort. Realtime delivery must not fail when DB persistence fails.
+        try {
+          await db.saveChatMessage({
+            roomId,
+            userId: authenticatedUserId,
+            username: player.username,
+            message: trimmed,
+          });
+        } catch (persistError) {
+          console.warn("[socket] Chat persistence failed, delivering realtime only:", persistError);
+          telemetry.inc("errors.chat_persist");
+        }
+
+        // Broadcast to all in room
         io.to(`room-${roomId}`).emit("chat:message", chatMsg);
         io.to(`room-${roomId}`).emit("chat-message", chatMsg);
         // Also emit to room:${roomId} for backwards compatibility
@@ -3006,7 +3063,14 @@ export function setupGameSocket(httpServer: HTTPServer) {
           } catch (err) {
             console.error(`[socket] Error during disconnect timeout cleanup:`, err);
           } finally {
-            await clearUserRoomMappingIfMatches(disconnectedUserId!, roomId);
+            // Do not clear membership if user already reconnected during timeout window.
+            if (!isUserConnectedInRoom(roomId, disconnectedUserId!)) {
+              await clearUserRoomMappingIfMatches(disconnectedUserId!, roomId);
+            } else {
+              console.log(
+                `[socket] Skip mapping clear after disconnect-timeout: user ${disconnectedUserId} already reconnected in room ${roomId}`,
+              );
+            }
             disconnectTimeouts.delete(disconnectedUserId!);
           }
           })();

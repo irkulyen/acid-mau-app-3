@@ -10,6 +10,7 @@ interface PlayingCardProps {
   size?: "small" | "medium" | "large";
   faceDown?: boolean;
   elevated?: boolean;
+  highContrast?: boolean;
 }
 
 const SUIT_SYMBOLS: Record<string, string> = {
@@ -69,7 +70,7 @@ const SYMBOL_SIZES = {
   large: 24,
 };
 
-export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown, elevated }: PlayingCardProps) {
+export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown, elevated, highContrast = false }: PlayingCardProps) {
   const scale = useSharedValue(1);
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -134,7 +135,7 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
           cardSize,
           {
             borderColor: suitColor,
-            backgroundColor: "#F5F2E8",
+            backgroundColor: highContrast ? "#FFFFFF" : "#F5F2E8",
             shadowColor: isSpecial ? suitColor : "#000",
             shadowOpacity: isSpecial ? 0.32 : 0.2,
             shadowRadius: isSpecial ? 9 : 6,
@@ -143,27 +144,31 @@ export function PlayingCard({ card, onPress, disabled, size = "medium", faceDown
           disabled && styles.disabled,
         ]}
       >
-        {/* Paper tone surface */}
-        <View
-          style={[
-            StyleSheet.absoluteFill,
-            {
-              backgroundColor: suitBg,
-              borderRadius: 10,
-            },
-          ]}
-        />
+        {!highContrast && (
+          <>
+            {/* Paper tone surface */}
+            <View
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  backgroundColor: suitBg,
+                  borderRadius: 10,
+                },
+              ]}
+            />
 
-        {/* Slight paper grain illusion */}
-        <View
-          style={[
-            StyleSheet.absoluteFill,
-            {
-              borderRadius: 10,
-              backgroundColor: "rgba(111, 92, 61, 0.05)",
-            },
-          ]}
-        />
+            {/* Slight paper grain illusion */}
+            <View
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  borderRadius: 10,
+                  backgroundColor: "rgba(111, 92, 61, 0.05)",
+                },
+              ]}
+            />
+          </>
+        )}
 
         {/* Top-left corner: rank + suit mini */}
         <View style={styles.cornerTopLeft}>

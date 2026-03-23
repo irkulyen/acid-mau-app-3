@@ -107,10 +107,15 @@ class RealtimeStore {
         this.gameStates.set(roomId, fromRedis);
         return fromRedis;
       }
+      const lastKnown = this.gameStates.get(roomId);
+      if (lastKnown) {
+        // Redis can briefly return null during transient availability gaps.
+        // Keep room state continuity by serving last known in-memory snapshot.
+        return lastKnown;
+      }
       if (!this.redisReady) {
         return this.gameStates.get(roomId);
       }
-      this.gameStates.delete(roomId);
       return undefined;
     }
 
