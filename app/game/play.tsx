@@ -1,6 +1,6 @@
 import { Touchable } from "@/components/ui/button";
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
-import { View, Text, ScrollView, Alert, Modal, ImageBackground, Pressable, TextInput, KeyboardAvoidingView, Platform, FlatList, Vibration, useWindowDimensions } from "react-native";
+import { View, Text, ScrollView, Alert, Modal, ImageBackground, Pressable, TextInput, KeyboardAvoidingView, Platform, FlatList, Vibration, useWindowDimensions, type LayoutChangeEvent } from "react-native";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -243,6 +243,9 @@ export default function GamePlayScreen() {
   const pendingManualAmselEventsRef = useRef<BlackbirdEvent[]>([]);
   const pendingReactionEventsRef = useRef<ReactionEvent[]>([]);
   const recoverSessionRef = useRef<(() => void | Promise<void>) | null>(null);
+  const [playSurfaceHeight, setPlaySurfaceHeight] = useState<number | null>(null);
+  const [headerBottomBoundary, setHeaderBottomBoundary] = useState<number | null>(null);
+  const [handPanelTopBoundary, setHandPanelTopBoundary] = useState<number | null>(null);
 
   useEffect(() => {
     showBlackbirdRef.current = showBlackbird;
@@ -1894,26 +1897,45 @@ export default function GamePlayScreen() {
   const isNarrowWidth = viewportWidth < 390;
   const isSmallPhone = viewportWidth <= 393;
   const handPanelMinHeight = isMyTurn ? (isCompactHeight ? 98 : 110) : 70;
+  const handPanelBottom = Math.max(2, insets.bottom - 2);
+  const statusPanelReservedHeight = isCompactHeight ? 118 : 132;
   const opponentChipWidth = isSmallPhone ? 102 : 108;
   const opponentChipMinHeight = isCompactHeight ? 82 : 88;
-  const arenaHeight = isCompactHeight ? 360 : 404;
   const arenaInset = isNarrowWidth ? 8 : 14;
   const arenaUsableWidth = Math.max(260, viewportWidth - arenaInset * 2);
-  const tableCenterX = arenaInset + arenaUsableWidth / 2;
-  const arenaCenterY = Math.round(arenaHeight * 0.36);
-  const topSlotSpreadX = Math.min(156, Math.max(112, arenaUsableWidth * 0.36));
-  const bottomSlotSpreadX = Math.min(118, Math.max(88, arenaUsableWidth * 0.26));
-  const topSideOffset = isCompactHeight ? 170 : 190;
-  const topMidOffset = isCompactHeight ? 190 : 210;
-  const bottomOffset = isCompactHeight ? 74 : 84;
+  const fallbackSurfaceHeight = Math.max(420, viewportHeight - insets.top - insets.bottom - 20);
+  const resolvedSurfaceHeight = playSurfaceHeight ?? fallbackSurfaceHeight;
+  const fallbackHeaderBottom = (isCompactHeight ? 58 + statusPanelReservedHeight : 58 + statusPanelReservedHeight) + 6;
+  const resolvedHeaderBottom = headerBottomBoundary ?? fallbackHeaderBottom;
+  const fallbackHandTop = resolvedSurfaceHeight - handPanelMinHeight - handPanelBottom;
+  const resolvedHandTop = handPanelTopBoundary ?? fallbackHandTop;
+  const arenaTopGap = isCompactHeight ? 10 : 12;
+  const arenaBottomGap = isCompactHeight ? 6 : 8;
+  const arenaTop = Math.max(0, Math.round(resolvedHeaderBottom + arenaTopGap));
+  const arenaBottom = Math.max(arenaTop + (isCompactHeight ? 250 : 280), Math.round(resolvedHandTop - arenaBottomGap));
+  const arenaHeight = Math.max(isCompactHeight ? 250 : 280, arenaBottom - arenaTop);
+  const arenaFrame = {
+    top: arenaTop,
+    left: arenaInset,
+    width: arenaUsableWidth,
+    height: arenaHeight,
+  };
+  const tableCenterX = arenaFrame.left + arenaFrame.width / 2;
+  const arenaCenterY = Math.round(arenaFrame.height * 0.5);
+  const sideSlotReach = Math.max(88, Math.min(156, (arenaFrame.width - opponentChipWidth) / 2 - 8));
+  const topSlotSpreadX = Math.round(sideSlotReach);
+  const bottomSlotSpreadX = Math.round(Math.max(72, sideSlotReach * 0.78));
+  const topBandY = Math.round(arenaFrame.height * (isCompactHeight ? 0.2 : 0.22));
+  const topMidLift = isCompactHeight ? 22 : 26;
+  const bottomBandY = Math.round(arenaFrame.height * (isCompactHeight ? 0.72 : 0.74));
   type OpponentSlot = "topLeft" | "topMid" | "topRight" | "bottomLeft" | "bottomMid" | "bottomRight";
   const slotCenters: Record<OpponentSlot, { x: number; y: number }> = {
-    topLeft: { x: tableCenterX - topSlotSpreadX, y: arenaCenterY - topSideOffset },
-    topMid: { x: tableCenterX, y: arenaCenterY - topMidOffset },
-    topRight: { x: tableCenterX + topSlotSpreadX, y: arenaCenterY - topSideOffset },
-    bottomLeft: { x: tableCenterX - bottomSlotSpreadX, y: arenaCenterY + bottomOffset },
-    bottomMid: { x: tableCenterX, y: arenaCenterY + bottomOffset },
-    bottomRight: { x: tableCenterX + bottomSlotSpreadX, y: arenaCenterY + bottomOffset },
+    topLeft: { x: tableCenterX - topSlotSpreadX, y: topBandY },
+    topMid: { x: tableCenterX, y: topBandY - topMidLift },
+    topRight: { x: tableCenterX + topSlotSpreadX, y: topBandY },
+    bottomLeft: { x: tableCenterX - bottomSlotSpreadX, y: bottomBandY },
+    bottomMid: { x: tableCenterX, y: bottomBandY },
+    bottomRight: { x: tableCenterX + bottomSlotSpreadX, y: bottomBandY },
   };
   const slotOrderByOpponentCount: Record<number, OpponentSlot[]> = {
     1: ["topMid"],
@@ -1927,18 +1949,12 @@ export default function GamePlayScreen() {
   const slotOrder =
     slotOrderByOpponentCount[opponentCount] ??
     slotOrderByOpponentCount[6].slice(0, Math.max(1, Math.min(6, opponentCount)));
-  const minLeft = arenaInset;
-  const maxLeft = arenaInset + arenaUsableWidth - opponentChipWidth;
-  const minTop = -Math.round(opponentChipMinHeight * 0.55);
-  const maxTop = arenaHeight - opponentChipMinHeight - 10;
   const anchorsForOpponents = seatAwareOpponents.map((_, idx) => {
     const slot = slotOrder[idx] ?? slotOrder[slotOrder.length - 1] ?? "topMid";
     const center = slotCenters[slot];
-    const rawLeft = center.x - opponentChipWidth / 2;
-    const rawTop = center.y - opponentChipMinHeight / 2;
     return {
-      left: Math.round(Math.min(maxLeft, Math.max(minLeft, rawLeft))),
-      top: Math.round(Math.min(maxTop, Math.max(minTop, rawTop))),
+      left: Math.round(center.x - opponentChipWidth / 2),
+      top: Math.round(center.y - opponentChipMinHeight / 2),
     };
   });
   const now = Date.now();
@@ -1967,9 +1983,7 @@ export default function GamePlayScreen() {
   const tableLogoLeft = tableCenterX - tableLogoSize / 2;
   const stackCardsWidth = 58 * 2 + (isCompactHeight ? 24 : 28);
   const stackCardsHeight = 85;
-  const stackCenterLift = isCompactHeight ? 30 : 34;
-  const handPanelBottom = Math.max(2, insets.bottom - 2);
-  const statusPanelReservedHeight = isCompactHeight ? 118 : 132;
+  const stackCenterLift = 0;
   const getRoundStartCards = (lossPoints: number) => Math.max(1, lossPoints + 1);
   const hasActivePriorityFx = showBlackbird || showDrawFly || showFlyingCard || showWishFx || showRoundGlow || showSpecialCardFx;
   const contextPills = decisionPills.filter((pill) => pill.key !== "turn").slice(0, 1);
@@ -1983,6 +1997,19 @@ export default function GamePlayScreen() {
     rivalryBanner,
     momentBanner,
   });
+  const handlePlaySurfaceLayout = useCallback((event: LayoutChangeEvent) => {
+    const nextHeight = Math.round(event.nativeEvent.layout.height);
+    setPlaySurfaceHeight((prev) => (prev === nextHeight ? prev : nextHeight));
+  }, []);
+  const handleHeaderBoundaryLayout = useCallback((event: LayoutChangeEvent) => {
+    const { y, height } = event.nativeEvent.layout;
+    const nextBoundary = Math.round(y + height);
+    setHeaderBottomBoundary((prev) => (prev === nextBoundary ? prev : nextBoundary));
+  }, []);
+  const handleHandPanelLayout = useCallback((event: LayoutChangeEvent) => {
+    const nextTop = Math.round(event.nativeEvent.layout.y);
+    setHandPanelTopBoundary((prev) => (prev === nextTop ? prev : nextTop));
+  }, []);
 
   return (
     <View style={{ flex: 1, backgroundColor: DESIGN.tableBase }}>
@@ -2020,119 +2047,129 @@ export default function GamePlayScreen() {
       <SafeAreaView edges={["top", "left", "right"]} style={{ flex: 1 }}>
         <View className={isCompactHeight ? "px-2 pt-2 pb-0 flex-1" : "px-3 pt-3 pb-0 flex-1"}>
         <DrawChainShakeWrapper drawChainCount={gameState?.drawChainCount ?? 0}>
-          <View className="flex-1" style={{ position: "relative" }}>
-            <View
-              style={{
-                minHeight: 58,
-                marginBottom: 6,
-                paddingTop: 2,
-                paddingHorizontal: 6,
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <Animated.View
-                style={[
-                  {
-                    alignSelf: "flex-start",
-                    backgroundColor: isMyTurn ? DESIGN.accentPrimary : "rgba(19, 30, 40, 0.95)",
-                    borderRadius: 999,
-                    paddingHorizontal: 10,
-                    paddingVertical: 7,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 8,
-                    marginTop: 0,
-                    marginLeft: 0,
-                    borderWidth: 1.2,
-                    borderColor: isMyTurn ? "rgba(255, 186, 94, 0.95)" : "rgba(141, 171, 194, 0.52)",
-                    shadowColor: isMyTurn ? "#ff9d1a" : "#0b1722",
-                    shadowOpacity: isMyTurn ? 0.35 : 0.2,
-                    shadowRadius: isMyTurn ? 16 : 10,
-                    elevation: isMyTurn ? 8 : 4,
-                  },
-                  isMyTurn ? turnChipPulseStyle : null,
-                ]}
+          <View className="flex-1" style={{ position: "relative" }} onLayout={handlePlaySurfaceLayout}>
+            <View onLayout={handleHeaderBoundaryLayout}>
+              <View
+                style={{
+                  minHeight: 58,
+                  marginBottom: 6,
+                  paddingTop: 2,
+                  paddingHorizontal: 6,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
               >
                 <Animated.View
                   style={[
                     {
-                      width: 8,
-                      height: 8,
-                      borderRadius: 4,
-                      backgroundColor: isMyTurn ? "#fff" : "rgba(171, 196, 215, 0.85)",
-                    },
-                    isMyTurn ? pulseStyle : null,
-                  ]}
-                />
-                <PlayerAvatar
-                  name={currentTurnPlayer?.username ?? "-"}
-                  avatarUrl={currentTurnPlayer?.avatarUrl}
-                  active={isMyTurn}
-                  isBot={Boolean(currentTurnPlayer?.userId != null && currentTurnPlayer.userId < 0)}
-                  size={34}
-                />
-                <View style={{ marginRight: 4 }}>
-                  <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14, letterSpacing: 0.2 }}>
-                    {isMyTurn ? "DEIN ZUG" : (currentTurnPlayer?.username ?? "-")}
-                  </Text>
-                </View>
-              </Animated.View>
-              <Pressable
-                onPress={handleOpenChat}
-                accessibilityRole="button"
-                accessibilityLabel="Chat öffnen"
-                accessibilityHint="Öffnet den Raum-Chat."
-                style={({ pressed }) => ({
-                    width: 40,
-                    height: 40,
-                    borderRadius: 20,
-                  backgroundColor: pressed ? "rgba(80,80,80,0.8)" : "rgba(10, 19, 28, 0.85)",
-                  borderWidth: 1.2,
-                  borderColor: "rgba(255,255,255,0.35)",
-                  alignItems: "center",
-                  justifyContent: "center",
-                })}
-              >
-                <Text style={{ fontSize: 16 }}>💬</Text>
-                {unreadCount > 0 && (
-                  <View
-                    style={{
-                      position: "absolute",
-                      top: -4,
-                      right: -2,
-                      minWidth: 16,
-                      height: 16,
-                      borderRadius: 8,
-                      backgroundColor: "#DC2626",
-                      borderWidth: 1,
-                      borderColor: "rgba(255,255,255,0.8)",
+                      alignSelf: "flex-start",
+                      backgroundColor: isMyTurn ? DESIGN.accentPrimary : "rgba(19, 30, 40, 0.95)",
+                      borderRadius: 999,
+                      paddingHorizontal: 10,
+                      paddingVertical: 7,
+                      flexDirection: "row",
                       alignItems: "center",
-                      justifyContent: "center",
-                      paddingHorizontal: 3,
-                    }}
-                  >
-                    <Text style={{ color: "#FFF", fontSize: 9, fontWeight: "800" }}>{Math.min(99, unreadCount)}</Text>
+                      gap: 8,
+                      marginTop: 0,
+                      marginLeft: 0,
+                      borderWidth: 1.2,
+                      borderColor: isMyTurn ? "rgba(255, 186, 94, 0.95)" : "rgba(141, 171, 194, 0.52)",
+                      shadowColor: isMyTurn ? "#ff9d1a" : "#0b1722",
+                      shadowOpacity: isMyTurn ? 0.35 : 0.2,
+                      shadowRadius: isMyTurn ? 16 : 10,
+                      elevation: isMyTurn ? 8 : 4,
+                    },
+                    isMyTurn ? turnChipPulseStyle : null,
+                  ]}
+                >
+                  <Animated.View
+                    style={[
+                      {
+                        width: 8,
+                        height: 8,
+                        borderRadius: 4,
+                        backgroundColor: isMyTurn ? "#fff" : "rgba(171, 196, 215, 0.85)",
+                      },
+                      isMyTurn ? pulseStyle : null,
+                    ]}
+                  />
+                  <PlayerAvatar
+                    name={currentTurnPlayer?.username ?? "-"}
+                    avatarUrl={currentTurnPlayer?.avatarUrl}
+                    active={isMyTurn}
+                    isBot={Boolean(currentTurnPlayer?.userId != null && currentTurnPlayer.userId < 0)}
+                    size={34}
+                  />
+                  <View style={{ marginRight: 4 }}>
+                    <Text style={{ color: "#fff", fontWeight: "900", fontSize: 14, letterSpacing: 0.2 }}>
+                      {isMyTurn ? "DEIN ZUG" : (currentTurnPlayer?.username ?? "-")}
+                    </Text>
                   </View>
-                )}
-              </Pressable>
+                </Animated.View>
+                <Pressable
+                  onPress={handleOpenChat}
+                  accessibilityRole="button"
+                  accessibilityLabel="Chat öffnen"
+                  accessibilityHint="Öffnet den Raum-Chat."
+                  style={({ pressed }) => ({
+                      width: 40,
+                      height: 40,
+                      borderRadius: 20,
+                    backgroundColor: pressed ? "rgba(80,80,80,0.8)" : "rgba(10, 19, 28, 0.85)",
+                    borderWidth: 1.2,
+                    borderColor: "rgba(255,255,255,0.35)",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  })}
+                >
+                  <Text style={{ fontSize: 16 }}>💬</Text>
+                  {unreadCount > 0 && (
+                    <View
+                      style={{
+                        position: "absolute",
+                        top: -4,
+                        right: -2,
+                        minWidth: 16,
+                        height: 16,
+                        borderRadius: 8,
+                        backgroundColor: "#DC2626",
+                        borderWidth: 1,
+                        borderColor: "rgba(255,255,255,0.8)",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        paddingHorizontal: 3,
+                      }}
+                    >
+                      <Text style={{ color: "#FFF", fontSize: 9, fontWeight: "800" }}>{Math.min(99, unreadCount)}</Text>
+                    </View>
+                  )}
+                </Pressable>
+              </View>
+
+              <View style={{ minHeight: statusPanelReservedHeight }}>
+                <GameStatusPanel
+                  decisionPills={contextPills}
+                  hasWishSuit={false}
+                  wishSuitLabel={wishSuitLabel}
+                  showClutchOrRivalryBanner={false}
+                  clutchBanner={clutchBanner}
+                  rivalryBanner={rivalryBanner}
+                  showMomentStatusBanner={false}
+                  momentBanner={momentBanner}
+                />
+              </View>
             </View>
 
-            <View style={{ minHeight: statusPanelReservedHeight }}>
-              <GameStatusPanel
-                decisionPills={contextPills}
-                hasWishSuit={false}
-                wishSuitLabel={wishSuitLabel}
-                showClutchOrRivalryBanner={false}
-                clutchBanner={clutchBanner}
-                rivalryBanner={rivalryBanner}
-                showMomentStatusBanner={false}
-                momentBanner={momentBanner}
-              />
-            </View>
-
-            <View style={{ height: arenaHeight, marginTop: isCompactHeight ? 16 : 20, marginBottom: isCompactHeight ? 2 : 4, position: "relative" }}>
+            <View
+              style={{
+                position: "absolute",
+                left: 0,
+                right: 0,
+                top: arenaFrame.top,
+                height: arenaFrame.height,
+              }}
+            >
               <View
                 pointerEvents="none"
                 style={{
@@ -2573,6 +2610,7 @@ export default function GamePlayScreen() {
             </View>
 
             <View
+              onLayout={handleHandPanelLayout}
               style={{
                 position: "absolute",
                 left: 0,
